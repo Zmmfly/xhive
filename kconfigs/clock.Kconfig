@@ -1,0 +1,256 @@
+menu "Clock Configuration"
+
+# HSE (High Speed External) Clock Configuration
+config CLOCK_HSE_ENABLE
+    bool "Enable HSE (High Speed External) Clock"
+    default n
+    help
+      Enable the High Speed External clock source.
+      HSE is typically a crystal or ceramic resonator connected to OSC_IN/OSC_OUT pins.
+      Common frequencies: 4MHz, 8MHz, 12MHz, 16MHz, 24MHz, 25MHz.
+
+config CLOCK_HSE_FREQ
+    int "HSE Clock Frequency (Hz)"
+    depends on CLOCK_HSE_ENABLE
+    default 8000000
+    range 1000000 48000000
+    help
+      Set the frequency of the HSE crystal in Hz.
+      Typical values: 4000000, 8000000, 12000000, 16000000, 24000000, 25000000.
+      Check your hardware specifications for the correct value.
+
+# LSE (Low Speed External) Clock Configuration
+config CLOCK_LSE_ENABLE
+    bool "Enable LSE (Low Speed External) Clock"
+    default n
+    help
+      Enable the Low Speed External clock source.
+      LSE is typically a 32.768kHz crystal used for RTC and low-power applications.
+
+config CLOCK_LSE_FREQ
+    int "LSE Clock Frequency (Hz)"
+    depends on CLOCK_LSE_ENABLE
+    default 32768
+    range 1000 100000
+    help
+      Set the frequency of the LSE crystal in Hz.
+      Typical value: 32768 Hz for standard RTC crystals.
+
+# HSI (High Speed Internal) Clock Configuration
+config CLOCK_HSI_ENABLE
+    bool "Enable HSI (High Speed Internal) Clock"
+    default y
+    help
+      Enable the High Speed Internal clock source.
+      HSI is a factory-trimmed internal RC oscillator.
+      Typical frequency: 8MHz or 16MHz depending on the MCU.
+
+config CLOCK_HSI_FREQ
+    int "HSI Clock Frequency (Hz)"
+    depends on CLOCK_HSI_ENABLE
+    default 8000000
+    range 1000000 24000000
+    help
+      Set the frequency of the HSI internal oscillator in Hz.
+      Common values: 8000000, 16000000.
+      Check your MCU datasheet for the correct value.
+
+# LSI (Low Speed Internal) Clock Configuration
+config CLOCK_LSI_ENABLE
+    bool "Enable LSI (Low Speed Internal) Clock"
+    default y
+    help
+      Enable the Low Speed Internal clock source.
+      LSI is a low-power internal RC oscillator used for watchdog and low-power applications.
+
+config CLOCK_LSI_FREQ
+    int "LSI Clock Frequency (Hz)"
+    depends on CLOCK_LSI_ENABLE
+    default 40000
+    range 10000 100000
+    help
+      Set the frequency of the LSI internal oscillator in Hz.
+      Typical values: 32000, 40000 Hz.
+      Check your MCU datasheet for the correct value.
+
+# Disable options for LSE/LSI as system clock sources
+config CLOCK_LSE_AS_SYSCLK_SRC_DISABLED
+    bool
+    default n
+    help
+      Disable LSE (Low Speed External) as a system clock source.
+      Set to 'y' only if your specific MCU does NOT support LSE as system clock source.
+      Default is 'n' (allowed), disabled by MCU-specific Kconfig if needed.
+
+config CLOCK_LSI_AS_SYSCLK_SRC_DISABLED
+    bool
+    default n
+    help
+      Disable LSI (Low Speed Internal) as a system clock source.
+      Set to 'y' only if your specific MCU does NOT support LSI as system clock source.
+      Default is 'n' (allowed), disabled by MCU-specific Kconfig if needed.
+
+# SYSCLK Clock Source Selection
+choice
+    prompt "System Clock Source"
+    default CLOCK_SYSCLK_HSI
+    help
+      Select the system clock source:
+
+      - HSI: High Speed Internal oscillator
+      - HSE: High Speed External crystal
+      - PLL: Phase-Locked Loop (multiples input frequency)
+      - LSE: Low Speed External crystal (if supported)
+      - LSI: Low Speed Internal oscillator (if supported)
+
+config CLOCK_SYSCLK_HSI
+    bool "HSI as System Clock"
+    select CLOCK_HSI_ENABLE
+    help
+      Use High Speed Internal oscillator as system clock source.
+
+config CLOCK_SYSCLK_HSE
+    bool "HSE as System Clock"
+    select CLOCK_HSE_ENABLE
+    help
+      Use High Speed External crystal as system clock source.
+
+config CLOCK_SYSCLK_PLL
+    bool "PLL as System Clock"
+    select CLOCK_PLL_ENABLE
+    help
+      Use Phase-Locked Loop as system clock source.
+
+config CLOCK_SYSCLK_LSE
+    bool "LSE as System Clock"
+    depends on !CLOCK_LSE_AS_SYSCLK_SRC_DISABLED
+    select CLOCK_LSE_ENABLE
+    help
+      Use Low Speed External crystal as system clock source.
+      Only available if enabled by the specific MCU configuration.
+      Generally not recommended due to low frequency.
+
+config CLOCK_SYSCLK_LSI
+    bool "LSI as System Clock"
+    depends on !CLOCK_LSI_AS_SYSCLK_SRC_DISABLED
+    select CLOCK_LSI_ENABLE
+    help
+      Use Low Speed Internal oscillator as system clock source.
+      Only available if enabled by the specific MCU configuration.
+      Generally not recommended due to poor precision.
+
+endchoice
+
+# Disable options for LSE/LSI as PLL sources
+config CLOCK_LSE_AS_PLL_SRC_DISABLED
+    bool
+    default n
+    help
+      Disable LSE (Low Speed External) as PLL input source.
+      Set to 'y' only if your specific MCU does NOT support LSE as PLL input source.
+      Default is 'n' (allowed), disabled by MCU-specific Kconfig if needed.
+
+config CLOCK_LSI_AS_PLL_SRC_DISABLED
+    bool
+    default n
+    help
+      Disable LSI (Low Speed Internal) as PLL input source.
+      Set to 'y' only if your specific MCU does NOT support LSI as PLL input source.
+      Default is 'n' (allowed), disabled by MCU-specific Kconfig if needed.
+
+# PLL Configuration
+config CLOCK_PLL_ENABLE
+    bool "Enable PLL (Phase-Locked Loop)"
+    default n
+    help
+      Enable the Phase-Locked Loop for frequency multiplication.
+      PLL can multiply the input frequency to achieve higher system clock speeds.
+
+choice
+    prompt "PLL Input Clock Source"
+    depends on CLOCK_PLL_ENABLE
+    default CLOCK_PLL_SRC_HSI
+    help
+      Select the PLL input clock source:
+
+      - HSI: High Speed Internal oscillator
+      - HSE: High Speed External crystal
+      - LSE: Low Speed External crystal (if supported)
+      - LSI: Low Speed Internal oscillator (if supported)
+
+config CLOCK_PLL_SRC_HSI
+    bool "HSI as PLL Source"
+    select CLOCK_HSI_ENABLE
+    help
+      Use High Speed Internal oscillator as PLL input source.
+
+config CLOCK_PLL_SRC_HSE
+    bool "HSE as PLL Source"
+    select CLOCK_HSE_ENABLE
+    help
+      Use High Speed External crystal as PLL input source.
+
+config CLOCK_PLL_SRC_LSE
+    bool "LSE as PLL Source"
+    depends on !CLOCK_LSE_AS_PLL_SRC_DISABLED
+    select CLOCK_LSE_ENABLE
+    help
+      Use Low Speed External crystal as PLL input source.
+      Only available if enabled by the specific MCU configuration.
+      Generally not recommended due to low frequency.
+
+config CLOCK_PLL_SRC_LSI
+    bool "LSI as PLL Source"
+    depends on !CLOCK_LSI_AS_PLL_SRC_DISABLED
+    select CLOCK_LSI_ENABLE
+    help
+      Use Low Speed Internal oscillator as PLL input source.
+      Only available if enabled by the specific MCU configuration.
+      Generally not recommended due to poor precision.
+
+endchoice
+
+config CLOCK_PLLM
+    int "PLL VCO Input Division (PLLM)"
+    depends on CLOCK_PLL_ENABLE
+    default 1
+    range 1 63
+    help
+      Division factor for PLL input clock.
+      VCO input frequency = PLL source frequency / PLLM.
+      Typical range: 1-63, depends on MCU family.
+      Check your MCU reference manual for valid range.
+
+config CLOCK_PLLN
+    int "PLL VCO Multiplication (PLLN)"
+    depends on CLOCK_PLL_ENABLE
+    default 8
+    range 4 512
+    help
+      Multiplication factor for PLL VCO.
+      VCO frequency = (PLL source frequency / PLLM) * PLLN.
+      Typical range: 4-512, depends on MCU family.
+      Check your MCU reference manual for valid range.
+
+config CLOCK_PLLP
+    int "PLL Output Division (PLLP)"
+    depends on CLOCK_PLL_ENABLE
+    default 2
+    range 2 128
+    help
+      Division factor for PLL output clock (SYSCLK).
+      PLL output frequency = VCO frequency / PLLP.
+      Typical range: 2-128, depends on MCU family.
+      Check your MCU reference manual for valid range.
+
+# Clock Validation
+config CLOCK_MAX_SYSCLK_FREQ
+    int "Maximum System Clock Frequency (Hz)"
+    default 72000000
+    range 1000000 1000000000
+    help
+      Maximum allowed system clock frequency for your MCU.
+      Check your MCU datasheet for the maximum frequency.
+      Common values: 72MHz, 84MHz, 100MHz, 120MHz, 168MHz, 180MHz, 216MHz, 240MHz, 480MHz.
+
+endmenu

@@ -1,0 +1,401 @@
+# CPU architecture configuration
+#
+# Copyright (c) 2024, XMCU
+# SPDX-License-Identifier: MIT
+
+menu "CPU Architecture Configuration"
+
+choice
+	prompt "CPU Architecture"
+	default CPU_ARM
+
+config CPU_ARM
+	bool "ARM Cortex-M/R Series"
+	help
+	  Select ARM Cortex-M or Cortex-R series processors
+
+config CPU_RISCV
+	bool "RISC-V"
+	help
+	  Select RISC-V processors
+
+endchoice
+
+# ARM Cortex-M/R Configuration
+if CPU_ARM
+
+choice
+	prompt "ARM Cortex Core Selection"
+	help
+	  Select the specific ARM Cortex core
+
+config CPU_CORTEX_M0
+	bool "Cortex-M0"
+	help
+	  ARM Cortex-M0 processor
+
+config CPU_CORTEX_M0PLUS
+	bool "Cortex-M0+"
+	help
+	  ARM Cortex-M0+ processor
+
+config CPU_CORTEX_M1
+	bool "Cortex-M1"
+	help
+	  ARM Cortex-M1 processor
+
+config CPU_CORTEX_M3
+	bool "Cortex-M3"
+	help
+	  ARM Cortex-M3 processor
+
+config CPU_CORTEX_M4
+	bool "Cortex-M4"
+	help
+	  ARM Cortex-M4 processor with DSP instructions
+
+config CPU_CORTEX_M7
+	bool "Cortex-M7"
+	help
+	  ARM Cortex-M7 processor with DSP instructions
+
+config CPU_CORTEX_M23
+	bool "Cortex-M23"
+	help
+	  ARM Cortex-M23 processor
+
+config CPU_CORTEX_M33
+	bool "Cortex-M33"
+	help
+	  ARM Cortex-M33 processor with DSP instructions
+
+config CPU_CORTEX_M35P
+	bool "Cortex-M35P"
+	help
+	  ARM Cortex-M35P processor with DSP instructions
+
+config CPU_CORTEX_M55
+	bool "Cortex-M55"
+	help
+	  ARM Cortex-M55 processor with DSP instructions and Helium MVE
+
+config CPU_CORTEX_M85
+	bool "Cortex-M85"
+	help
+	  ARM Cortex-M85 processor with DSP instructions and Helium MVE v2
+
+endchoice
+
+# DSP Instructions Configuration
+config CPU_HAS_DSP
+	bool
+	default y if CPU_CORTEX_M4 || CPU_CORTEX_M7 || CPU_CORTEX_M33 || CPU_CORTEX_M35P || CPU_CORTEX_M55 || CPU_CORTEX_M85
+	default n
+	help
+	  CPU supports DSP instructions (SIMD)
+
+# FPU Configuration
+if CPU_CORTEX_M4 || CPU_CORTEX_M7 || CPU_CORTEX_M33 || CPU_CORTEX_M35P || CPU_CORTEX_M55 || CPU_CORTEX_M85
+
+choice
+	prompt "Floating Point Unit"
+	default CPU_FPU_NONE if CPU_CORTEX_M23
+	default CPU_FPU_SP if CPU_CORTEX_M4 || CPU_CORTEX_M33 || CPU_CORTEX_M35P || CPU_CORTEX_M55
+	default CPU_FPU_NONE if CPU_CORTEX_M7
+
+config CPU_FPU_NONE
+	bool "No FPU"
+	depends on !CPU_CORTEX_M55 && !CPU_CORTEX_M85
+	help
+	  No floating point unit
+
+config CPU_FPU_SP
+	bool "Single Precision FPU"
+	depends on !CPU_CORTEX_M23
+	help
+	  Single precision floating point unit (FPv4-SP or FPv5-SP)
+
+config CPU_FPU_DP
+	bool "Double Precision FPU"
+	depends on CPU_CORTEX_M7 || CPU_CORTEX_M85
+	help
+	  Double precision floating point unit (FPv5-DP)
+
+endchoice
+
+# Force FPU configuration for certain cores
+config CPU_HAS_FPU
+	bool
+	default y if CPU_CORTEX_M55 || CPU_CORTEX_M85
+	default n
+
+config CPU_HAS_FPU_SP
+	bool
+	default y if CPU_FPU_SP || CPU_CORTEX_M55 || CPU_CORTEX_M85
+	default n
+
+config CPU_HAS_FPU_DP
+	bool
+	default y if CPU_FPU_DP || CPU_CORTEX_M85
+	default n
+
+endif
+
+# TrustZone Configuration
+if CPU_CORTEX_M23 || CPU_CORTEX_M33 || CPU_CORTEX_M35P || CPU_CORTEX_M55 || CPU_CORTEX_M85
+
+config CPU_HAS_TRUSTZONE
+	bool "TrustZone Support"
+	default n
+	help
+	  Enable ARM TrustZone for Cortex-M Security Extensions
+
+endif
+
+# Helium MVE Configuration
+if CPU_CORTEX_M55 || CPU_CORTEX_M85
+
+config CPU_HAS_HELIUM
+	bool
+	default y
+	help
+	  CPU supports Arm Helium technology
+
+config CPU_HELIUM_VERSION
+	int
+	default 1 if CPU_CORTEX_M55
+	default 2 if CPU_CORTEX_M85
+	help
+	  Helium MVE version (1 = MVE, 2 = MVE v2)
+
+endif
+
+# ARM Architecture Version
+config CPU_ARM_ARCH
+	int
+	default 6 if CPU_CORTEX_M0 || CPU_CORTEX_M0PLUS || CPU_CORTEX_M1
+	default 7 if CPU_CORTEX_M3 || CPU_CORTEX_M4
+	default 8 if CPU_CORTEX_M7 || CPU_CORTEX_M23 || CPU_CORTEX_M33 || CPU_CORTEX_M35P
+	default 81 if CPU_CORTEX_M55
+	default 85 if CPU_CORTEX_M85
+	help
+	  ARM architecture version
+
+endif # CPU_ARM
+
+# RISC-V Configuration
+if CPU_RISCV
+
+menu "RISC-V ISA Extensions"
+
+config RISCV_ISA_I
+	bool "Integer Base (I)"
+	default y
+	help
+	  Base integer instruction set
+
+config RISCV_ISA_M
+	bool "Integer Multiplication and Division (M)"
+	default y
+	help
+	  Integer multiplication and division extension
+
+config RISCV_ISA_A
+	bool "Atomic Instructions (A)"
+	default y
+	help
+	  Atomic instruction set
+
+config RISCV_ISA_F
+	bool "Single-Precision Floating-Point (F)"
+	default y
+	help
+	  Single-precision floating-point extension
+
+config RISCV_ISA_D
+	bool "Double-Precision Floating-Point (D)"
+	default y
+	help
+	  Double-precision floating-point extension
+
+config RISCV_ISA_C
+	bool "Compressed Instructions (C)"
+	default n
+	help
+	  Compressed instruction extension
+
+config RISCV_ISA_B
+	bool "Bit-Manipulation (B)"
+	default n
+	help
+	  Bit-manipulation extension
+
+config RISCV_ISA_V
+	bool "Vector Instructions (V)"
+	default n
+	help
+	  Vector instruction extension
+
+config RISCV_ISA_ZICSR
+	bool "Control and Status Register (Zicsr)"
+	default y
+	help
+	  Control and status register instructions
+
+config RISCV_ISA_ZIFENCEI
+	bool "Instruction-Fetch Fence (Zifencei)"
+	default y
+	help
+	  Instruction-fetch fence
+
+config RISCV_ISA_ZIHINTPAUSE
+	bool "Pause Hint (Zihintpause)"
+	default n
+	help
+	  Pause hint instruction
+
+config RISCV_ISA_ZKN
+	bool "NIST Algorithm Suite (Zkn)"
+	default n
+	help
+	  NIST algorithm suite (AES, GCM, SHA, etc.)
+
+config RISCV_ISA_ZKND
+	bool "NIST AES Decryption (Zknd)"
+	default n
+	help
+	  NIST AES decryption instructions
+
+config RISCV_ISA_ZKNE
+	bool "NIST AES Encryption (Zkne)"
+	default n
+	help
+	  NIST AES encryption instructions
+
+config RISCV_ISA_ZKNH
+	bool "NIST SHA (Zknh)"
+	default n
+	help
+	  NIST SHA-2/SHA-3 instructions
+
+config RISCV_ISA_ZKR
+	bool "Random Number (Zkr)"
+	default n
+	help
+	  Random number generator extension
+
+config RISCV_ISA_ZKT
+	bool "Data Independent Execution Time (Zkt)"
+	default n
+	help
+	  Data-independent execution time
+
+config RISCV_ISA_ZFH
+	bool "Half-Precision Floating-Point (Zfh)"
+	default n
+	help
+	  Half-precision floating-point extension
+
+config RISCV_ISA_ZFHMIN
+	bool "Half-Precision Floating-Point Minimal (Zfhmin)"
+	default n
+	help
+	  Minimal half-precision floating-point extension
+
+config RISCV_ISA_ZDINX
+	bool "Double in Single (Zdinx)"
+	depends on RISCV_ISA_F && RISCV_ISA_D
+	default n
+	help
+      Double-precision floating-point in integer registers
+
+config RISCV_ISA_ZFINX
+	bool "Single in Single (Zfinx)"
+	depends on RISCV_ISA_F
+	default n
+	help
+      Single-precision floating-point in integer registers
+
+config RISCV_ISA_ZCA
+	bool "Compressed Instructions Alternative (Zca)"
+	default n
+	help
+      Compressed instructions alternative
+
+config RISCV_ISA_ZCB
+	bool "Compressed Basic Instructions (Zcb)"
+	default n
+	help
+      Compressed basic instructions
+
+config RISCV_ISA_ZCD
+	bool "Compressed Double-Precision FP (Zcd)"
+	depends on RISCV_ISA_F && RISCV_ISA_D
+	default n
+	help
+      Compressed double-precision floating-point
+
+config RISCV_ISA_ZCF
+	bool "Compressed Single-Precision FP (Zcf)"
+	depends on RISCV_ISA_F
+	default n
+	help
+      Compressed single-precision floating-point
+
+config RISCV_ISA_ZCMP
+	bool "Compressed Push/Pop (Zcmp)"
+	default n
+	help
+      Compressed push/pop instructions
+
+config RISCV_ISA_ZCMT
+	bool "Compressed Table Jump (Zcmt)"
+	default n
+	help
+      Compressed table jump instructions
+
+endmenu
+
+# RISC-V XLEN Configuration
+choice
+	prompt "RISC-V Register Width"
+	default RISCV_XLEN_32
+
+config RISCV_XLEN_32
+	bool "32-bit (RV32)"
+	help
+	  32-bit RISC-V architecture
+
+config RISCV_XLEN_64
+	bool "64-bit (RV64)"
+	help
+	  64-bit RISC-V architecture
+
+endchoice
+
+# RISC-V Architecture Version
+config RISCV_VERSION
+	string
+	default "2.1"
+	help
+	  RISC-V Unprivileged Architecture version
+
+endif # CPU_RISCV
+
+# Common CPU Configuration
+config CPU_ENDIAN
+	bool
+	default y if CPU_ARM
+	default y if CPU_RISCV
+	help
+	  CPU is little-endian
+
+config CPU_ALIGNMENT
+	int
+	default 4 if CPU_ARM
+	default 4 if RISCV_XLEN_32
+	default 8 if RISCV_XLEN_64
+	help
+	  CPU alignment requirement in bytes
+
+endmenu

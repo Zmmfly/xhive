@@ -1,0 +1,15 @@
+# Main Kconfig configuration file
+# Include common clock configuration and vendor-specific configurations
+
+# menu "Platform Configuration"
+
+# Include CPU architecture configuration
+rsource "kconfigs/arch.Kconfig"
+
+# Include common Kconfig configuration
+rsource "kconfigs/clock.Kconfig"
+
+# Include vendor-specific configuration
+rsource "vendor/Kconfig"
+
+# endmenu
