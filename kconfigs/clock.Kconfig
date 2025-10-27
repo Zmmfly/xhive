@@ -210,9 +210,17 @@ config CLOCK_PLL_SRC_LSI
 
 endchoice
 
+config CLOCK_PLLM_DISABLED
+    bool
+    default n
+    help
+      Disable PLLM configuration if your MCU does not support or not need it.
+      Set to 'y' only if PLLM is not applicable for your specific MCU.
+      Default is 'n' (enabled), disabled by MCU-specific Kconfig if needed.
+
 config CLOCK_PLLM
     int "PLL VCO Input Division (PLLM)"
-    depends on CLOCK_PLL_ENABLE
+    depends on CLOCK_PLL_ENABLE && !CLOCK_PLLM_DISABLED
     default 1
     range 1 63
     help
@@ -221,9 +229,17 @@ config CLOCK_PLLM
       Typical range: 1-63, depends on MCU family.
       Check your MCU reference manual for valid range.
 
+config CLOCK_PLLN_DISABLED
+    bool
+    default n
+    help
+      Disable PLLN configuration if your MCU does not support or not need it.
+      Set to 'y' only if PLLN is not applicable for your specific MCU.
+      Default is 'n' (enabled), disabled by MCU-specific Kconfig if needed.
+
 config CLOCK_PLLN
     int "PLL VCO Multiplication (PLLN)"
-    depends on CLOCK_PLL_ENABLE
+    depends on CLOCK_PLL_ENABLE && !CLOCK_PLLM_DISABLED
     default 8
     range 4 512
     help
@@ -232,9 +248,17 @@ config CLOCK_PLLN
       Typical range: 4-512, depends on MCU family.
       Check your MCU reference manual for valid range.
 
+config CLOCK_PLLP_DISABLED
+    bool
+    default n
+    help
+      Disable PLLP configuration if your MCU does not support or not need it.
+      Set to 'y' only if PLLP is not applicable for your specific MCU.
+      Default is 'n' (enabled), disabled by MCU-specific Kconfig if needed.
+
 config CLOCK_PLLP
     int "PLL Output Division (PLLP)"
-    depends on CLOCK_PLL_ENABLE
+    depends on CLOCK_PLL_ENABLE && !CLOCK_PLLP_DISABLED
     default 2
     range 2 128
     help

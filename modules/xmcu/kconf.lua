@@ -34,15 +34,15 @@ function parse(config_path)
 
     -- 缓存解析结果
     import("core.cache.memcache")
-    local cache_key = path.absolute(config_path)
-    memcache.set("kconfig", cache_key, kconfig)
+    local cache_key = "kconf_"..path.absolute(config_path)
+    memcache.set("xmcu", cache_key, kconfig)
     return kconfig
 end
 
 function parse_cached(config_path)
     import("core.cache.memcache")
-    local cache_key = path.absolute(config_path)
-    local cached_config = memcache.get("kconfig", cache_key)
+    local cache_key = "kconf_"..path.absolute(config_path)
+    local cached_config = memcache.get("xmcu", cache_key)
     if cached_config then
         -- print("Using cached kconfig for: " .. config_path)
         return cached_config
@@ -114,4 +114,21 @@ function genconfig(project_dir)
     end
 
     -- print("Generated config header at: " .. header_path)
+end
+
+-- get configs for current project, build/Kconfig as entry generated if needed and .config as config file name
+function load_configs()
+    local script_dir  = os.scriptdir()
+    local project_dir = vformat("$(projectdir)")
+    local build_dir   = vformat(path.join(project_dir, "build"))
+    local sdk_dir     = path.directory(path.directory(script_dir))
+    local config_path = path.join(project_dir, ".config")
+
+    build(project_dir, sdk_dir, build_dir)
+    if not os.isfile(config_path) then
+        print(".config file not found at: " .. config_path)
+        raise("Please run 'xmake menuconfig' to config your project.")
+        return {}
+    end
+    return parse_cached(config_path)
 end

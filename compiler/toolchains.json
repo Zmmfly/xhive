@@ -1,0 +1,58 @@
+{
+    "linux": {
+        "x86_64": {
+            "arm-none-eabi-gcc": [
+                {
+                    "url": "https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz",
+                    "sha256": "8f6903f8ceb084d9227b9ef991490413014d991874a1e34074443c2a72b14dbd"
+                }
+            ],
+            "ATfE": [
+                {
+                    "url": "https://github.com/arm/arm-toolchain/releases/download/release-21.1.1-ATfE/ATfE-21.1.1-Linux-x86_64.tar.xz",
+                    "sha256": "fd7fcc2eb4c88c53b71c45f9c6aa83317d45da5c1b51b0720c66f1ac70151e6e"
+                },
+                {
+                    "url": "https://github.com/arm/arm-toolchain/releases/download/release-21.1.1-ATfE/ATfE-llvmlibc-overlay-21.1.1.tar.xz",
+                    "sha256": "f45df5aad8758907faa0690c8d1df19d31dc77dfb04995c3b4b411ece5224401"
+                },
+                {
+                    "url": "https://github.com/arm/arm-toolchain/releases/download/release-21.1.1-ATfE/ATfE-newlib-nano-overlay-21.1.1.tar.xz",
+                    "sha256": "7b70739b5f5ec0172b379de458daa97f063aa90f7eb1c5f543e2923a72dfce42"
+                },
+                {
+                    "url": "https://github.com/arm/arm-toolchain/releases/download/release-21.1.1-ATfE/ATfE-newlib-overlay-21.1.1.tar.xz",
+                    "sha256": "d9750863c5561c05a57f6df6019efea87e9206c0eef34c4e6441f339824cc908"
+                }
+            ]
+        }
+    },
+    "windows": {
+        "x86_64": {
+            "arm-none-eabi-gcc": [
+                {
+                    "url": "https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-mingw-w64-x86_64-arm-none-eabi.zip",
+                    "sha256": "864c0c8815857d68a1bbba2e5e2782255bb922845c71c97636004a3d74f60986"
+                }
+            ],
+            "ATfE": [
+                {
+                    "url": "https://github.com/arm/arm-toolchain/releases/download/release-21.1.1-ATfE/ATfE-21.1.1-Windows-x86_64.zip",
+                    "sha256": "12e21352acd6ce514df77b6c9ff77e20978cbb44d4c7f922bd44c60594869460"
+                },
+                {
+                    "url": "https://github.com/arm/arm-toolchain/releases/download/release-21.1.1-ATfE/ATfE-llvmlibc-overlay-21.1.1.zip",
+                    "sha256": "95c61d2af663f9253663920b8897a282ea04a886cf8bded94337bffc28ce16a7"
+                },
+                {
+                    "url": "https://github.com/arm/arm-toolchain/releases/download/release-21.1.1-ATfE/ATfE-newlib-nano-overlay-21.1.1.zip",
+                    "sha256": "fe2eacf89cbd752be9397687cd8f12e67f0b9a431953271ce2af9c13578af6ef"
+                },
+                {
+                    "url": "https://github.com/arm/arm-toolchain/releases/download/release-21.1.1-ATfE/ATfE-newlib-overlay-21.1.1.zip",
+                    "sha256": "f2b524bc8428e51025c17a4e551db8f6d523df0f3828138e69a1fe9d2b9488ff"
+                }
+            ]
+        }
+    }
+}

@@ -1,0 +1,32 @@
+menu "Compiler Options"
+
+choice
+    prompt "Select the default compiler toolchain:"
+    default COMPILER_ARM_GCC
+
+config COMPILER_ARM_GCC
+    bool "GNU GCC Toolchain for ARM"
+    depends on CPU_ARM
+    help
+        The GCC toolchain for ARM
+
+config COMPILER_RISCV_GCC
+    bool "GNU GCC Toolchain for RISC-V"
+    depends on CPU_RISCV
+    help
+        The GCC toolchain for RISC-V
+
+config COMPILER_CLANG
+    bool "LLVM/Clang Toolchain"
+    help
+        The LLVM/Clang toolchain
+
+config COMPILER_ATFE
+    bool "ARM Toolchain for Embedded (ATfE)"
+    depends on CPU_ARM
+    help
+        ARM Toolchain for Embedded (ATfE) is a clang based toolchain provided by ARM for embedded development.
+
+endchoice
+
+endmenu

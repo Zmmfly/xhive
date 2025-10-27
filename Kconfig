@@ -6,8 +6,14 @@
 # Include CPU architecture configuration
 rsource "kconfigs/arch.Kconfig"
 
-# Include common Kconfig configuration
+# Include compiler configuration
+rsource "kconfigs/compiler.Kconfig"
+
+# Include clock Kconfig configuration
 rsource "kconfigs/clock.Kconfig"
+
+# Include common configuration
+rsource "kconfigs/common.Kconfig"
 
 # Include vendor-specific configuration
 rsource "vendor/Kconfig"

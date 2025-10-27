@@ -1,0 +1,10 @@
+menu "Common Configuration"
+
+config COMMON_INCLUDES
+    string "Common Include Directories"
+    default ""
+    help
+      Specify additional include directories for the project.
+      Separate multiple directories with commas. use relative paths from the project root.
+      Example: "./path/to/dir1,./path/to/dir2"
+endmenu
