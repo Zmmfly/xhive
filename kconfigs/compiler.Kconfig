@@ -86,4 +86,39 @@ config STACK_LENGTH
     help
         Define the stack length for the application (in bytes).
 
+choice
+    prompt "Select the optimization level:"
+    default OPTIMIZE_SMALLEST
+
+    config OPTIMIZE_NONE
+        bool "No Optimization (-O0)"
+        help
+            No optimization. Suitable for debugging.
+    
+    config OPTIMIZE_FAST
+        bool "Optimize for Generic (-O1)"
+        help
+            Optimize for generic performance. Suitable for most applications.
+    
+    config OPTIMIZE_FASTER
+        bool "Optimize for Speed (-O2)"
+        help
+            Optimize for speed. Suitable for performance-critical applications.
+    
+    config OPTIMIZE_FASTEST
+        bool "Optimize for Maximum Speed (-O3)"
+        help
+            Optimize for maximum speed. May increase code size.
+    
+    config OPTIMIZE_SMALLEST
+        bool "Optimize for Size (-Os)"
+        help
+            Optimize for smallest code size. Suitable for memory-constrained applications.
+
+    config OPTIMIZE_AGGRESSIVE
+        bool "Aggressive Optimization (-Ofast)"
+        help
+            Enable aggressive optimizations that may violate strict standards compliance.
+endchoice
+
 endmenu

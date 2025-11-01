@@ -143,10 +143,10 @@ target("n32h47x_48x")
         local isr_list = json.loadfile(list_path)
         
         -- Build the startup file with the peripheral ISR list
-        import("xmcu.preproc")
-        local template_path = preproc.load_startup_template_path()
+        import("xmcu.proc")
+        local template_path = proc.load_startup_template_path()
         local output_path = path.join(projectdir, "build", prefix .. "_startup.c")
-        preproc.build_arm_startup(template_path, isr_list, output_path)
+        proc.build_arm_startup(template_path, isr_list, output_path)
         target:add("files", output_path)
     end)
 target_end()

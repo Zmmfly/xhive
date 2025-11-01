@@ -1,7 +1,7 @@
 rule("xmcu.common")
     before_build(function(target)
         import("xmcu.kconf")
-        import("xmcu.preproc")
+        import("xmcu.proc")
         import("core.cache.memcache")
 
         -- Get basic dirs
@@ -23,21 +23,36 @@ rule("xmcu.common")
         if target:kind() == "binary" then
             local ld_template = path.join(sdkdir, "templates", "link.ld")
             local ld_output   = path.join(buildir, "link.ld")
-            preproc.build_link_script(ld_template, target:tool("cc"), ld_output)
+            proc.build_link_script(ld_template, target:tool("cc"), ld_output)
             target:add("ldflags", "-T" .. ld_output)
             printf("Using link script: %s, for target: %s\n", ld_output, target:name())
+        end
+    end)
+
+    after_link(function(target) 
+        local conf = target:data("kconfig")
+        if target:kind() == "binary" then
+            import("xmcu.toolset")
+            local elf_path = target:targetfile()
+            local cc_path  = target:tool("cc")
+            local bin_path = path.join(path.directory(elf_path), path.basename(elf_path) .. ".bin")
+
+            -- Convert ELF to BIN
+            toolset.elf_to_bin(cc_path, elf_path, bin_path)
+            print("Generated binary file: " .. bin_path)
+            
+            -- Display binary size in KB with 2 decimal places
+            local bin_size = os.filesize(bin_path) or 0
+            print(string.format("Binary size: %d bytes ~= %.2f KB / %d, used %5.2f%%", bin_size, bin_size / 1024, conf.ROM_LENGTH, bin_size / conf.ROM_LENGTH * 100))
+
+            local ram_used = toolset.elf_ram_usage(cc_path, elf_path)
+            print(string.format("RAM used: %d bytes / %d, used %5.2f%%", ram_used, conf.RAM_LENGTH, ram_used / conf.RAM_LENGTH * 100))
         end
     end)
 
     on_load(function(target)
         import("xmcu.kconf")
         import("core.cache.memcache")
-
-        print("Applying xmcu rule to: " .. target:name())
-
-        target:set("plat", "cross")
-        target:add("toolchains", "xmcu_toolchain")
-        target:add("languages", "c99")
 
         --[[
             This section is to ensure that a Kconfig file exists in the build directory. 
@@ -95,5 +110,33 @@ rule("xmcu.common")
                 target:add("includedirs", dir)
             end
         end
+
+        --[[ 
+            This section is to set basic target properties
+         ]]
+        target:set("plat", "cross")
+        target:add("toolchains", "xmcu_toolchain")
+        target:add("languages", "c99")
+
+        if target:kind() == "binary" then
+            target:set("extension", ".elf")
+        end
+
+        if conf.OPTIMIZE_NONE then
+            target:set("optimize", "none")
+        elseif conf.OPTIMIZE_FAST then 
+            target:set("optimize", "fast")
+        elseif conf.OPTIMIZE_FASTER then 
+            target:set("optimize", "faster")
+        elseif conf.OPTIMIZE_FASTEST then 
+            target:set("optimize", "fastest")
+        elseif conf.OPTIMIZE_SMALLEST then
+            target:set("optimize", "smallest")
+        elseif conf.OPTIMIZE_AGGRESSIVE then
+            target:set("optimize", "aggressive")
+        else
+            raise("No optimization level selected in kconfig for target: " .. target:name())
+        end
+        target:set("symbols", "debug")
     end)
 rule_end()

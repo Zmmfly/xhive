@@ -11,7 +11,7 @@ function build_link_script(template_path, cc_path, output_path)
         return output_path
     else
         local result, err = os.iorunv(cc_path, args)
-        assert(result, err or "failed to preprocess template")
+        assert(result, err or "failed to process template")
         return result
     end
 end

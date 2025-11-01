@@ -409,3 +409,117 @@ function download_tool(tool_infos)
     -- mark tool as ready by writing ready_list.json
     mark_tool_as_ready(tool_infos)
 end
+
+function elf_to_bin(cc_path, elf_path, bin_output)
+    local cc_name = path.filename(cc_path)
+    -- If gcc in in cc_name, use objcopy to convert elf to bin
+    if cc_name:find("gcc", 1, true) then
+        local objcopy, _   = cc_path:gsub("gcc", "objcopy")
+        local args    = {"-O", "binary", elf_path, bin_output}
+        local result,  err = os.iorunv(objcopy, args)
+    -- If clang in cc_name, use llvm-objcopy to convert elf to bin
+    elseif cc_name:find("clang", 1, true) then
+        local objcopy, _   = cc_path:gsub("clang", "llvm-objcopy")
+        local args    = {"-O", "binary", elf_path, bin_output}
+        local result,  err = os.iorunv(objcopy, args)
+    else
+        raise("Unsupported compiler for elf to bin conversion: " .. cc_name)
+    end
+end
+
+function elf_ram_usage(cc_path, elf_path)
+    local function parse_size_output(output)
+        for line in output:gmatch("[^\r\n]+") do
+            local _, data, bss = line:match("^%s*(%d+)%s+(%d+)%s+(%d+)%s+(%d+)%s+[0-9a-fA-F]+%s+.+$")
+            if data and bss then
+                local data_val = tonumber(data)
+                local bss_val = tonumber(bss)
+                if data_val and bss_val then
+                    -- size outputs text/data/bss/dec/hex/filename; static RAM equals data + bss
+                    return data_val + bss_val
+                end
+            end
+        end
+    end
+
+    local function try_size_tools(candidates, err_hint)
+        local last_err
+        for _, tool in ipairs(candidates) do
+            local output, err = os.iorunv(tool, {elf_path})
+            if output then
+                local usage = parse_size_output(output)
+                if usage then
+                    return usage
+                end
+                raise("Failed to parse RAM usage from size output")
+            end
+            last_err = err
+        end
+        if last_err then
+            raise(last_err)
+        end
+        raise(err_hint)
+    end
+
+    local function build_candidates(tool_names)
+        local candidates = {}
+        local seen = {}
+        local cc_dir = path.directory(cc_path)
+
+        local function push(value)
+            if value and value ~= "" and not seen[value] then
+                table.insert(candidates, value)
+                seen[value] = true
+            end
+        end
+
+        for _, name in ipairs(tool_names) do
+            if cc_dir and cc_dir ~= "" and cc_dir ~= "." then
+                push(path.join(cc_dir, name))
+            end
+            push(name)
+        end
+        return candidates
+    end
+
+    local cc_name = path.filename(cc_path)
+    if cc_name:find("gcc", 1, true) then
+        local tool_names = {}
+        local prefix, suffix = cc_name:match("^(.*)gcc(.*)$")
+        if prefix then
+            if suffix and #suffix > 0 then
+                table.insert(tool_names, prefix .. "size" .. suffix)
+            end
+            table.insert(tool_names, prefix .. "size")
+        end
+        local name
+        name, _ = cc_name:gsub("gcc$", "size")
+        table.insert(tool_names, name)
+        name, _ = cc_name:gsub("gcc", "size")
+        table.insert(tool_names, name)
+        table.insert(tool_names, "size")
+        return try_size_tools(build_candidates(tool_names), "Failed to execute size tool")
+    elseif cc_name:find("clang", 1, true) then
+        local tool_names = {}
+        local prefix, suffix = cc_name:match("^(.*)clang(.*)$")
+        if prefix then
+            if suffix == "++" then
+                table.insert(tool_names, prefix .. "llvm-size")
+            else
+                if suffix and #suffix > 0 then
+                    table.insert(tool_names, prefix .. "llvm-size" .. suffix)
+                end
+                table.insert(tool_names, prefix .. "llvm-size")
+            end
+        end
+        local name
+        name, _ = cc_name:gsub("clang$", "llvm-size")
+        table.insert(tool_names, name)
+        name, _ = cc_name:gsub("clang", "llvm-size")
+        table.insert(tool_names, name)
+        table.insert(tool_names, "llvm-size")
+        return try_size_tools(build_candidates(tool_names), "Failed to execute llvm-size tool")
+    else
+        raise("Unsupported compiler for elf ram usage: " .. cc_name)
+    end
+end
