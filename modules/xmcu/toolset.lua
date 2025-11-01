@@ -1,4 +1,4 @@
-function get_tools_dir()
+function load_tools_dir()
     import("xmcu.base")
     import("xmcu.kconf")
     import("core.cache.memcache")
@@ -19,22 +19,22 @@ function get_tools_dir()
     return toolchains_dir
 end
 
-function get_tool_name_by_conf(conf)
+function load_tool_name_by_conf(conf)
+    -- This function must return the full name, not based tool name
+    import("xmcu.kconf")
     if conf.COMPILER_ARM_GCC then
         return "arm-none-eabi-gcc"
-    elseif conf.COMPILER_CLANG then
-        return "clang"
     elseif conf.COMPILER_ATFE then
         return "ATfE"
     else
-        raise("No valid compiler selected in .config")
+        raise("No valid compiler selected in " .. kconf.config_name())
     end
 end
 
 function load_tool_infos()
     import("xmcu.kconf")
     import("core.base.json")
-    local tools_dir       = get_tools_dir()
+    local tools_dir       = load_tools_dir()
     local script_dir      = os.scriptdir()
     local sdk_dir         = path.directory(path.directory(script_dir))
     local project_dir     = vformat("$(projectdir)")
@@ -61,7 +61,7 @@ function load_tool_infos()
     local tools = tools_info[os_name][arch]
 
     -- get tool name
-    local tool_name      = get_tool_name_by_conf(conf)
+    local tool_name      = load_tool_name_by_conf(conf)
     local tool_full_name = vformat("%s-%s-%s", tool_name, os_name, arch)
 
     -- get tool info
@@ -96,6 +96,177 @@ function load_tool_infos()
         ready     = ready
     }
     return result
+end
+
+function build_arm_flags(conf)
+    local cxflags = {}
+    local asflags = {}
+    local ldflags = {}
+
+    -- Common flags for all ARM toolchains
+    table.insert(cxflags, "-mthumb")
+    table.insert(asflags, "-mthumb")
+    table.insert(ldflags, "-mthumb")
+
+    -- Determine CPU core and set corresponding flags
+    local cpu_flags = {}
+    if conf.CPU_CORTEX_M0 then
+        cpu_flags = {"-mcpu=cortex-m0"}
+    elseif conf.CPU_CORTEX_M0PLUS then
+        cpu_flags = {"-mcpu=cortex-m0plus"}
+    elseif conf.CPU_CORTEX_M1 then
+        cpu_flags = {"-mcpu=cortex-m1"}
+    elseif conf.CPU_CORTEX_M3 then
+        cpu_flags = {"-mcpu=cortex-m3"}
+    elseif conf.CPU_CORTEX_M4 then
+        cpu_flags = {"-mcpu=cortex-m4"}
+    elseif conf.CPU_CORTEX_M7 then
+        cpu_flags = {"-mcpu=cortex-m7"}
+    elseif conf.CPU_CORTEX_M23 then
+        cpu_flags = {"-mcpu=cortex-m23"}
+    elseif conf.CPU_CORTEX_M33 then
+        cpu_flags = {"-mcpu=cortex-m33"}
+    elseif conf.CPU_CORTEX_M35P then
+        cpu_flags = {"-mcpu=cortex-m35p"}
+    elseif conf.CPU_CORTEX_M55 then
+        cpu_flags = {"-mcpu=cortex-m55"}
+    elseif conf.CPU_CORTEX_M85 then
+        cpu_flags = {"-mcpu=cortex-m85"}
+    else
+        raise("No valid ARM Cortex-M core selected")
+    end
+
+    -- Apply CPU flags to all stages
+    for _, flag in ipairs(cpu_flags) do
+        table.insert(cxflags, flag)
+        table.insert(asflags, flag)
+        table.insert(ldflags, flag)
+    end
+
+    -- FPU configuration
+    local fpu_flags = {}
+    if conf.CPU_FPU_SP or conf.CPU_HAS_FPU_SP then
+        if conf.CPU_CORTEX_M4 then
+            fpu_flags = {"-mfloat-abi=hard", "-mfpu=fpv4-sp-d16"}
+        elseif conf.CPU_CORTEX_M7 or conf.CPU_CORTEX_M33 or conf.CPU_CORTEX_M35P then
+            fpu_flags = {"-mfloat-abi=hard", "-mfpu=fpv5-sp-d16"}
+        elseif conf.CPU_CORTEX_M55 then
+            fpu_flags = {"-mfloat-abi=hard", "-mfpu=fpv5-sp-d16"}
+        elseif conf.CPU_CORTEX_M85 then
+            fpu_flags = {"-mfloat-abi=hard", "-mfpu=fpv5-sp-d16"}
+        end
+    elseif conf.CPU_FPU_DP or conf.CPU_HAS_FPU_DP then
+        if conf.CPU_CORTEX_M7 then
+            fpu_flags = {"-mfloat-abi=hard", "-mfpu=fpv5-d16"}
+        elseif conf.CPU_CORTEX_M85 then
+            fpu_flags = {"-mfloat-abi=hard", "-mfpu=fpv5-d16"}
+        end
+    else
+        -- No FPU or software floating point
+        fpu_flags = {"-mfloat-abi=soft"}
+    end
+
+    -- Apply FPU flags to all stages
+    for _, flag in ipairs(fpu_flags) do
+        table.insert(cxflags, flag)
+        table.insert(asflags, flag)
+        table.insert(ldflags, flag)
+    end
+
+    if conf.NO_STD_STARTFILE then
+        table.insert(ldflags, "-nostartfiles")
+    end
+
+    if conf.COMPILER_ARM_GCC then
+        -- GCC specific flags
+        -- if conf.CPU_HAS_DSP then
+        --     table.insert(cxflags, "-DARM_MATH_CM4")
+        --     table.insert(cxflags, "-D__FPU_PRESENT=1")
+        -- end
+
+        -- LTO support
+        if conf.COMPILER_ENABLE_LTO then
+            table.insert(cxflags, "-flto")
+            table.insert(ldflags, "-flto")
+            table.insert(ldflags, "-fuse-linker-plugin")
+        end
+
+        -- GCC specs for embedded systems (only for GCC)
+        table.insert(ldflags, "--specs=nano.specs")
+        table.insert(ldflags, "--specs=nosys.specs")
+
+    elseif conf.COMPILER_CLANG then
+        -- Clang/ATfE common flags
+        table.insert(cxflags, "--target=arm-none-eabi")
+        table.insert(asflags, "--target=arm-none-eabi")
+        table.insert(ldflags, "--target=arm-none-eabi")
+
+        -- if conf.CPU_HAS_DSP then
+        --     table.insert(cxflags, "-DARM_MATH_CM4")
+        --     table.insert(cxflags, "-D__FPU_PRESENT=1")
+        -- end
+
+        -- LTO support
+        if conf.COMPILER_ENABLE_LTO then
+            if conf.LTO_MODE_THIN then
+                table.insert(cxflags, "-flto=thin")
+                table.insert(ldflags, "-flto=thin")
+            else  -- LTO_MODE_FULL is default
+                table.insert(cxflags, "-flto=full")
+                table.insert(ldflags, "-flto=full")
+            end
+        end
+
+        -- Helium MVE support for newer cores
+        if conf.CPU_HAS_HELIUM then
+            if conf.CPU_HELIUM_VERSION == 1 then
+                table.insert(cxflags, "-march=armv8.1-m.main+mve")
+                table.insert(asflags, "-march=armv8.1-m.main+mve")
+            elseif conf.CPU_HELIUM_VERSION == 2 then
+                table.insert(cxflags, "-march=armv8.5-m.main+mve")
+                table.insert(asflags, "-march=armv8.5-m.main+mve")
+            end
+        end
+
+        -- TrustZone support
+        if conf.CPU_HAS_TRUSTZONE then
+            table.insert(cxflags, "-mthumb-interwork")
+            table.insert(asflags, "-mthumb-interwork")
+        end
+
+        -- Add printf support with semihosting for ATfE
+        if conf.COMPILER_ATFE then
+            table.insert(ldflags, "-lcrt0-semihost")
+            table.insert(ldflags, "-lsemihost")
+        end
+    end
+
+    return {cxflags = cxflags, asflags = asflags, ldflags = ldflags}
+end
+
+function build_riscv_flags(conf)
+    local cxflags = {}
+    local asflags = {}
+    local ldflags = {}
+
+    if conf.COMPILER_RISCV_GCC then
+        -- TODO add riscv gcc common flags by CPU arch configs, change TODO to wait test after complete
+    elseif conf.COMPILER_CLANG then
+        -- TODO add clang common flags by CPU arch configs, change TODO to wait test after complete
+    end
+    raise("RISC-V toolchain flags generation not yet implemented")
+
+    return {cxflags = cxflags, asflags = asflags, ldflags = ldflags}
+end
+
+function build_toolchain_flags(conf)
+    if conf.CPU_ARM then
+        return build_arm_flags(conf)
+    elseif conf.CPU_RISCV then
+        return build_riscv_flags(conf)
+    else
+        raise("Unsupported CPU architecture in configuration")
+    end
 end
 
 function mark_tool_as_ready(tool_infos)

@@ -51,12 +51,22 @@ function parse_cached(config_path)
     end
 end
 
+function config_name()
+    -- Get env variable KCONFIG_CONFIG if set
+    local env_name = os.getenv("KCONFIG_CONFIG")
+    if env_name and env_name ~= "" then
+        return env_name
+    else
+        return ".config"
+    end
+end
+
 -- 提供一个更标准的API来获取当前项目的配置
 function get_project_config(project_dir)
     if not project_dir then
         project_dir = vformat("$(projectdir)")
     end
-    return parse_cached(path.join(project_dir, ".config"))
+    return parse_cached(path.join(project_dir, config_name()))
 end
 
 function build(project_dir, sdk_path, entry_dir)
@@ -85,6 +95,14 @@ function build(project_dir, sdk_path, entry_dir)
     end
 end
 
+function load_header_path()
+    -- Return path to generated xmcu_config.h
+    local project_dir = vformat("$(projectdir)")
+    local buildir     = vformat(path.join(project_dir, "build"))
+    local header_path = path.join(buildir, "xmcu_config.h")
+    return header_path
+end
+
 function genconfig(project_dir)
     -- Generate xmcu_config.h from .config file
     local buildir     = vformat(path.join(project_dir, "build"))
@@ -92,7 +110,9 @@ function genconfig(project_dir)
     local header_path = path.join(buildir, "xmcu_config.h")
 
     -- call genconfig command
+    os.cd(project_dir)
     os.execv("genconfig", {"--header-path", header_path, entry})
+    os.cd("-")
 
     -- Check if generation succeeded
     if not os.isfile(header_path) then
@@ -122,11 +142,11 @@ function load_configs()
     local project_dir = vformat("$(projectdir)")
     local build_dir   = vformat(path.join(project_dir, "build"))
     local sdk_dir     = path.directory(path.directory(script_dir))
-    local config_path = path.join(project_dir, ".config")
+    local config_path = path.join(project_dir, config_name())
 
     build(project_dir, sdk_dir, build_dir)
     if not os.isfile(config_path) then
-        print(".config file not found at: " .. config_path)
+        print(config_name() .. " file not found at: " .. config_path)
         raise("Please run 'xmake menuconfig' to config your project.")
         return {}
     end

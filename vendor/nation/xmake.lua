@@ -1,0 +1,7 @@
+includes("n32h47x_48x")
+target("vendor_nation")
+    set_kind("phony")
+    set_default(false)
+    on_config(function(target)
+        local kconf = target:data("kconfig")
+    end)

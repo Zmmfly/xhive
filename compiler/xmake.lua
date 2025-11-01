@@ -41,10 +41,26 @@ toolchain("xmcu_toolchain")
 
         -- load configs
         local conf = kconf.load_configs()
-        if conf.COMPILER_ATFE then
+        if conf.COMPILER_CLANG then
             toolchain:set("toolset", "cc", "clang")
             toolchain:set("toolset", "cxx", "clang++")
             toolchain:set("toolset", "ld", "clang++")
+            toolchain:set("toolset", "as", "clang")
+            toolchain:set("toolset", "ar", "llvm-ar")
+            toolchain:set("toolset", "strip", "llvm-strip")
+        end
+
+        local flags = toolset.build_toolchain_flags(conf)
+        if flags.cxflags then
+            toolchain:add("cxflags", flags.cxflags)
+        end
+
+        if flags.asflags then
+            toolchain:add("asflags", flags.asflags)
+        end
+
+        if flags.ldflags then
+            toolchain:add("ldflags", flags.ldflags)
         end
 
         -- force recheck for switching toolchain

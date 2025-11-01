@@ -3,7 +3,7 @@
 # Copyright (c) 2024, XMCU
 # SPDX-License-Identifier: MIT
 
-menu "CPU Architecture Configuration"
+# menu "CPU Architecture Configuration"
 
 config CPU_ARM
 	# bool "ARM Cortex-M/R Series"
@@ -19,8 +19,8 @@ config CPU_RISCV
 	help
 	  Select RISC-V processors
 
-# ARM Cortex-M/R Configuration
-if CPU_ARM
+# # ARM Cortex-M/R Configuration
+# if CPU_ARM
 
 config CPU_CORTEX_M0
 	# bool "Cortex-M0"
@@ -113,7 +113,7 @@ if CPU_CORTEX_M4 || CPU_CORTEX_M7 || CPU_CORTEX_M33 || CPU_CORTEX_M35P || CPU_CO
 config CPU_FPU_NONE
 	# bool "No FPU"
 	bool
-	default y
+	default n
 	depends on !CPU_CORTEX_M55 && !CPU_CORTEX_M85
 	help
 	  No floating point unit
@@ -156,7 +156,7 @@ endif
 if CPU_CORTEX_M23 || CPU_CORTEX_M33 || CPU_CORTEX_M35P || CPU_CORTEX_M55 || CPU_CORTEX_M85
 
 config CPU_HAS_TRUSTZONE
-	bool "TrustZone Support"
+	bool
 	default n
 	help
 	  Enable ARM TrustZone for Cortex-M Security Extensions
@@ -192,12 +192,12 @@ config CPU_ARM_ARCH
 	help
 	  ARM architecture version
 
-endif # CPU_ARM
+# endif # CPU_ARM
 
-# RISC-V Configuration
-if CPU_RISCV
+# # RISC-V Configuration
+# if CPU_RISCV
 
-menu "RISC-V ISA Extensions"
+# menu "RISC-V ISA Extensions"
 
 config RISCV_ISA_I
 	# bool "Integer Base (I)"
@@ -392,7 +392,7 @@ config RISCV_ISA_ZCMT
 	help
       Compressed table jump instructions
 
-endmenu
+# endmenu
 
 # RISC-V XLEN Configuration
 config RISCV_XLEN_32
@@ -409,22 +409,24 @@ config RISCV_XLEN_64
 	help
 	  64-bit RISC-V architecture
 
-# RISC-V Architecture Version
-config RISCV_VERSION
-	string
-	default "2.1"
-	help
-	  RISC-V Unprivileged Architecture version
-
-endif # CPU_RISCV
+# endif # CPU_RISCV
 
 # Common CPU Configuration
-config CPU_ENDIAN
+config CPU_LITTLE_ENDIAN
+	# bool "Little Endian"
 	bool
 	default y if CPU_ARM
 	default y if CPU_RISCV
 	help
 	  CPU is little-endian
+
+config CPU_BIG_ENDIAN
+	# bool "Big Endian"
+	bool
+	default n if CPU_ARM
+	default n if CPU_RISCV
+	help
+	  CPU is big-endian
 
 config CPU_ALIGNMENT
 	int
@@ -434,4 +436,4 @@ config CPU_ALIGNMENT
 	help
 	  CPU alignment requirement in bytes
 
-endmenu
+# endmenu

@@ -1,0 +1,20 @@
+choice
+    prompt "Select Nation MCU Series"
+    default NATION_USE_N32H47X_48X
+    help
+      Select the Nation microcontroller series to use.
+
+config NATION_USE_N32H47X_48X
+    bool "Use Nation N32H47x/48x Series"
+    select CPU_ARM
+    select CPU_CORTEX_M4
+    select CPU_HAS_DSP
+    select CPU_FPU_SP
+    help
+      Select this option to include configurations for the Nation N32H47x/48x series microcontrollers.
+
+endchoice
+
+if NATION_USE_N32H47X_48X
+    rsource "n32h47x_48x/Kconfig"
+endif

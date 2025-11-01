@@ -16,6 +16,6 @@ rsource "kconfigs/clock.Kconfig"
 rsource "kconfigs/common.Kconfig"
 
 # Include vendor-specific configuration
-rsource "vendor/Kconfig"
+orsource "vendor/Kconfig"
 
 # endmenu

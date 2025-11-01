@@ -1,0 +1,37 @@
+menu "MCU Vendor Selection"
+
+choice
+    prompt "Select MCU Vendor"
+    default VENDOR_USE_NATION
+    help
+      Select the microcontroller vendor to use.
+
+config VENDOR_USE_NATION
+    bool "Use Nation MCU"
+    select CLOCK_PLLM_DISABLED
+    select CLOCK_PLLN_DISABLED
+    select CLOCK_PLLP_DISABLED
+    help
+      Select this option to include Nation vendor-specific configurations.
+
+config VENDOR_USE_STMICRO
+    bool "Use STMicroelectronics MCU"
+    help
+      Select this option to include STMicroelectronics vendor-specific configurations.
+
+config VENDOR_USE_NONE
+    bool "No Specific Vendor"
+    help
+      Select this option if you do not want to include any vendor-specific configurations.
+
+endchoice
+
+if VENDOR_USE_NATION
+    orsource "nation/Kconfig"
+endif
+
+if VENDOR_USE_STMICRO
+    orsource "stmicro/Kconfig"
+endif
+
+endmenu

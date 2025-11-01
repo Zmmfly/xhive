@@ -1,5 +1,17 @@
 menu "Compiler Options"
 
+config COMPILER_GCC
+    bool
+    default n
+    help
+        The GNU GCC toolchain, as a hidden option to be selected by other toolchain options.
+
+config COMPILER_CLANG
+    bool
+    default n
+    help
+        The LLVM/Clang toolchain, as a hidden option to be selected by other toolchain options.
+
 choice
     prompt "Select the default compiler toolchain:"
     default COMPILER_ARM_GCC
@@ -7,26 +19,71 @@ choice
 config COMPILER_ARM_GCC
     bool "GNU GCC Toolchain for ARM"
     depends on CPU_ARM
+    select COMPILER_GCC
     help
         The GCC toolchain for ARM
 
 config COMPILER_RISCV_GCC
     bool "GNU GCC Toolchain for RISC-V"
     depends on CPU_RISCV
+    select COMPILER_GCC
     help
         The GCC toolchain for RISC-V
-
-config COMPILER_CLANG
-    bool "LLVM/Clang Toolchain"
-    help
-        The LLVM/Clang toolchain
 
 config COMPILER_ATFE
     bool "ARM Toolchain for Embedded (ATfE)"
     depends on CPU_ARM
+    select COMPILER_CLANG
     help
         ARM Toolchain for Embedded (ATfE) is a clang based toolchain provided by ARM for embedded development.
 
 endchoice
+
+config COMPILER_ENABLE_LTO
+    bool "Enable Link Time Optimization (LTO)"
+    default n
+    help
+        Enable Link Time Optimization (LTO) to improve performance and reduce code size.
+
+choice
+    prompt "Select the LTO mode:"
+    default LTO_MODE_FULL
+    depends on COMPILER_CLANG && COMPILER_ENABLE_LTO
+
+    config LTO_MODE_FULL
+        bool "Full LTO"
+        help
+            Full Link Time Optimization (LTO) mode.
+    
+    config LTO_MODE_THIN
+        bool "Thin LTO"
+        help
+            Thin Link Time Optimization (LTO) mode.
+
+endchoice
+
+config NO_STD_STARTFILE
+    bool "Do not use standard startup files"
+    default y
+    help
+        Do not link the standard startup files (e.g., crt0.o). Useful for custom startup code.
+
+config USE_DEFAULT_LD_SCRIPT
+    bool "Use default linker script"
+    default y
+    help
+        Use the default linker script provided by xmcu.
+
+config USE_CUSTOM_STARTUP_FILE
+    bool "Use custom startup file"
+    default n
+    help
+        Use a custom startup file instead of the default one provided by xmcu.
+
+config STACK_LENGTH
+    hex "Stack Length"
+    default 0x400
+    help
+        Define the stack length for the application (in bytes).
 
 endmenu

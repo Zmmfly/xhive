@@ -1,0 +1,75 @@
+choice
+    prompt "Select Nation N32H47x/48x Series"
+    default NATION_N32H474
+    help
+      Select the specific Nation N32H47x/48x series microcontroller to use.
+      You can only select one option.
+
+    config NATION_N32H473
+        bool "Nation N32H473 Series"
+
+    config NATION_N32H474
+        bool "Nation N32H474 Series"
+
+    config NATION_N32H475
+        bool "Nation N32H475 Series"
+    
+    config NATION_N32H481
+        bool "Nation N32H481 Series"
+        
+    config NATION_N32H482
+        bool "Nation N32H482 Series"
+    
+    config NATION_N32H487
+        bool "Nation N32H487 Series"
+    
+    config NATION_N32H488
+        bool "Nation N32H488 Series"
+
+endchoice
+
+config NATION_USE_DEFAULT_STARTUP
+    bool "Use Default Startup File"
+    default y
+    help
+      Use the default startup file provided for the Nation N32H47x/48x series microcontrollers.
+      If you need a custom startup file, disable this option.
+
+config NATION_N32H47X_48X_USE_USBFS
+    bool "Enable USBFS Driver"
+    default y
+    help
+      Enable the USBFS driver for the Nation N32H47x/48x series microcontrollers.
+      This option is useful if your application requires USB functionality.
+
+config NATION_N32H47X_48X_USE_USBHS
+    bool "Enable USBHS Driver"
+    default n
+    help
+      Enable the USBHS driver for the Nation N32H47x/48x series microcontrollers.
+      This option is useful if your application requires high-speed USB functionality.
+
+config ROM_START
+    hex "ROM Start Address"
+    default 0x08000000
+    help
+      Define the start address of the ROM for the Nation N32H47x/48x series microcontrollers.
+
+config ROM_LENGTH
+    hex "ROM Length"
+    default 0x00040000 if (NATION_N32H473 || NATION_N32H474)
+    default 0x00080000 if (NATION_N32H481 || NATION_N32H482 || NATION_N32H487 || NATION_N32H488)
+    help
+      Define the length of the ROM for the Nation N32H47x/48x series microcontrollers.
+
+config RAM_START
+    hex "RAM Start Address"
+    default 0x20000000
+    help
+      Define the start address of the RAM for the Nation N32H47x/48x series microcontrollers.
+
+config RAM_LENGTH
+    hex "RAM Length"
+    default 0x00030000
+    help
+        Define the length of the RAM for the Nation N32H47x/48x series microcontrollers.
