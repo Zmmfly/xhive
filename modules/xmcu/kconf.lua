@@ -110,9 +110,7 @@ function genconfig(project_dir)
     local header_path = path.join(buildir, "xmcu_config.h")
 
     -- call genconfig command
-    os.cd(project_dir)
-    os.execv("genconfig", {"--header-path", header_path, entry})
-    os.cd("-")
+    os.execv("genconfig", {"--header-path", header_path, entry}, {envs = {curdir = project_dir}})
 
     -- Check if generation succeeded
     if not os.isfile(header_path) then

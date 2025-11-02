@@ -1,0 +1,5 @@
+target("stmicro")
+    set_kind("object")
+    on_load(function(target) 
+        local conf = target:data("kconfig")
+    end)

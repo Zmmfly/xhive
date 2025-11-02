@@ -13,9 +13,11 @@ rule("xmcu.common")
         -- Generate xmcu_config.h by genconfig command
         local header_generated = memcache.get("xmcu", "header_before_build_" .. path.absolute(projdir))
         if not header_generated then
-            -- print("Generating xmcu_config.h for target: " .. target:name())
+            -- print("Generating xmcu_config.h for target: " .. target:name() .. " before build")
             kconf.genconfig(projdir)
             memcache.set("xmcu", "header_before_build_" .. path.absolute(projdir), true)
+        else
+            -- print("xmcu_config.h already generated for target: " .. target:name() .. " before build")
         end
         target:add("includedirs", buildir)
 
@@ -25,7 +27,7 @@ rule("xmcu.common")
             local ld_output   = path.join(buildir, "link.ld")
             proc.build_link_script(ld_template, target:tool("cc"), ld_output)
             target:add("ldflags", "-T" .. ld_output)
-            printf("Using link script: %s, for target: %s\n", ld_output, target:name())
+            -- printf("Using link script: %s, for target: %s\n", ld_output, target:name())
         end
     end)
 
@@ -94,9 +96,11 @@ rule("xmcu.common")
                 -- Generate xmcu_config.h by genconfig command
         local header_generated = memcache.get("xmcu", "header_on_load_" .. path.absolute(projdir))
         if not header_generated then
-            -- print("Generating xmcu_config.h for target: " .. target:name())
+            -- print("Generating xmcu_config.h for target: " .. target:name() .. " on load")
             kconf.genconfig(projdir)
             memcache.set("xmcu", "header_on_load_" .. path.absolute(projdir), true)
+        else
+            -- print("xmcu_config.h already generated for target: " .. target:name() .. " on load")
         end
 
         --[[ 

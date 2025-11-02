@@ -173,8 +173,16 @@ function build_arm_flags(conf)
         table.insert(ldflags, flag)
     end
 
+    -- not use standard start files if specified
     if conf.NO_STD_STARTFILE then
         table.insert(ldflags, "-nostartfiles")
+    end
+
+    -- add data-section and function-section flags if gcc or clang
+    if conf.COMPILER_GCC or conf.COMPILER_CLANG then
+        table.insert(cxflags, "-ffunction-sections")
+        table.insert(cxflags, "-fdata-sections")
+        table.insert(ldflags, "-Wl,--gc-sections")
     end
 
     if conf.COMPILER_ARM_GCC then
@@ -236,7 +244,7 @@ function build_arm_flags(conf)
 
         -- Add printf support with semihosting for ATfE
         if conf.COMPILER_ATFE then
-            table.insert(ldflags, "-lcrt0-semihost")
+            -- table.insert(ldflags, "-lcrt0-semihost")
             table.insert(ldflags, "-lsemihost")
         end
     end

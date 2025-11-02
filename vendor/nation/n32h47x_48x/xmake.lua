@@ -114,7 +114,7 @@ target("n32h47x_48x")
             target:add("includedirs", "$(scriptdir)/firmware/n32h47x_48x_usbhs_driver/host/class/MSC/inc", {public=true})
         end
     end)
-    on_config(function(target) 
+    on_config(function(target)
         -- Load the peripheral ISR list based on the selected series
         local prefix = ""
         local scriptdir = path.absolute(os.scriptdir())
@@ -145,7 +145,7 @@ target("n32h47x_48x")
         -- Build the startup file with the peripheral ISR list
         import("xmcu.proc")
         local template_path = proc.load_startup_template_path()
-        local output_path = path.join(projectdir, "build", prefix .. "_startup.c")
+        local output_path   = path.join(projectdir, "build", prefix .. "_startup.c")
         proc.build_arm_startup(template_path, isr_list, output_path)
         target:add("files", output_path)
     end)
