@@ -1,0 +1,153 @@
+﻿Nations.N32H47x_48x_Library.1.1.0版本：
+1.优化TIMTrigger_AutoInjection的DEMO例程
+2.在n32h47x_48x_dac.c文件中，修改DAC_SetSawtoothResetValue以及DAC_SetSawtoothStepValue函数
+3.DMA模块中内存到内存模式相关的demo，添加DMA_RequestRemap()函数，映射到空余请求位
+4.FPU demo优化，减少计算数据量，避免Timer计数溢出
+5.ROW编程函数优化，ROW编程结束后失能ROW编程
+6.对Flash或选项字节编程后，调用FLASH_WaitForLastOpt函数，传参由宏定义改为变量形式传参
+7.SHRTIM_Basic_Single_PWM删除多余的SHRTIM配置
+8.SHRTIM_EXEV1SRC_xxx宏名修改
+9.SHRTIM_EXEV_Config添加prescaler参数
+10.SHRTIM添加判断是否调试暂停的驱动参数
+11.修改USBFSD DEMO，HSE晶体为16MHz时的时钟配置，修改描述符结构体长度根据实际重新设置
+12.修改USBHS DEMO，修改USBHS时钟配置，修改SOF输出通过宏定义配置
+13.修改USBHS HID_Keyboard DEMO，增加远程唤醒功能
+14.修改RTC DEMO，RTC时钟选择HSE_128DIV时的分频参数
+15.修改时钟初始化及RCC_DeInit函数：LPFC2\LPFR\LPFC1参数匹配PLLMULFCT配置，并等待对应标志位
+16.更新HSE_VALUE默认值，47x系列为8M，48x为16M，并匹配RCC\PWR\ETH\LPTIM\RTC例程代码
+17.修改TIM_BREAK2_SOURCE_POLARITY_INVERT宏定义
+18.更新SAC算法库
+19.修改AFIO的TOL5V_CFG寄存器命名为ANAEN_CFG，并修改相关函数命名及释义
+20.修改I2C PMBUS demo代码格式化，并删除注释代码
+21.修改USB_CTRL_SOFM和USB_CTRL_ESOFM宏定义命名
+22.修改USBFSD 无晶体 DEMO
+23.优化XSPI_QUAD及XSPI_QUAD_DMA例程
+
+Nations.N32H47x_48x_Library.1.0.0版本：
+1.更新ADC_TEMP的DEMO例程：修改GET_NVR函数的使用
+2.增加TIM_ConfigUpdateEvt函数
+3.修改ADC 使用到DMA的demo中，调整ADC DMA模式配置函数的位置
+4.I2C demo增加了PMBUS的例程。包括PMBUS_Master和PMBUS_Slave
+5.ETH HTTP LED例程初始化阶段添加GPIO_ConfigPinRemap()函数，规避全功能板上PB4不受控问题
+6.FEMC，USBFSD和USBHS DEMO适配V1.1版本全功能板
+7.FEMC_LCD DEMO适配V1.1版本全功能板
+8.DVP DEMO适配V1.1版本全功能板
+9.ADC驱动中，函数ADC_EnableCH2PositiveEndConnetPGA_P()重命名为ADC_EnableCH2PositiveEndConnetPGA_N()
+10.修改FMAC FIR中断DEMO和IIR DEMO
+11. SHRTIM各Demo修改FAULT引脚的GPIO模式为输入模式
+12. SHRTIM_EXEV3CTRL_EXEVxFLT与SHRTIM_EXEV4CTRL_EXEVxFLT的名字改为SHRTIM_EXEV3CTRL_EXEVxF与SHRTIM_EXEV4CTRL_EXEVxF
+13. ADC驱动中，新增ADC_GetCalibrationStatus()的传参；
+14. NVIC NVIC_VectorTable_Relocation demo添加487按键引脚PA15
+15. FLASH编程等待函数添加4个NOP，确保编程写完字后有足够的延时让FLASH开始执行编程
+16. SPI驱动修改SPI_RX_FIFO_NUM宏定义，之前RX和TX宏定义反了
+17. SHRTIM修改突发模式的时钟源的宏定义
+18. 修改dbg获取ID函数
+19. 485 demo优化
+20. OCToggle demo中断函数修改
+21. Quardrature_Output demo优化，增加结构体初始化
+22. 修复spi_Module结构体定义缺少0x2c word定义的问题
+23. PMBUS demo优化，增加是否成功的判断及打印
+
+Nations.N32H47x_48x_Library.0.9.0版本：
+1. shrtim驱动中增加SHRTIM_EXEV_SOURCE_1～SHRTIM_EXEV_SOURCE_5宏定义
+2. shrtim的PFC demo中修改FAULT的恢复操作，因为FAUTL与定时器单元的绑定问题已进行了ECO
+3. shrtim添加半桥LLC的demo
+4.新增USBHS Auido DEMO
+5.新增USBHS专用专用相关配置，可通过USB_DEDICATED_EP_ENABLED宏定义开启专用端点
+6.修改USBHS DMEO时钟源为PLL
+7.新增USBHS DualRole DEMO
+8.新增USBFSD Auido，HID_Customer，虚拟串口，HID_MSC，HID_CDC和MSC_CDC 组合设备DEMO
+9.新增以太网MQTT DEMO
+10.在n32h47x_48x_adc.c文件中，在ADC复位之后，增加20us的延时
+11.新增USBHS组合设备DEMO
+12.新增USBHS Host HID_CDC，HID_MSC和CDC_MSC DEMO
+13.TIM缺少刹车2双向功能的相关函数，补充
+14.RTC增加选择LSE时钟时版本判断
+15.PWR模块驱动添加PVD_IN引脚选择函数；修改唤醒引脚极性宏定义
+16.RCC模块驱动LPTIM时钟源选择根据芯片版本区分
+17.更新优化n32h47x_48x_eth.c和n32h47x_48x_eth.h文件，并升级为v1.0.1版本
+18.优化LPTIM模块所有DEMO的main函数
+19.FLASH_PrefetchBufSet函数失能有误修改
+20.修改USBHS宏定义命名笔误
+21.更新优化DMA模块的BURST和FLASH_RAM DEMO
+22.算法demo更新为超时算法库
+
+
+Nations.N32H47x_48x_Library.0.8.0版本：
+1.初版发布
+----------------------------------------------------------------------------------------------------------------------------------------------------
+Nations.N32H47x_48x_Library.1.1.0 version:
+1. Optimize TIMTrigger_AutoInjection demo
+2. In n32h47x_48x_dac.c file, modify DAC_SetSawtoothResetValue and DAC_SetSawtoothStepValue functions .
+3. Memory-to-memory mode related demo in DMA module, add DMA_RequestRemap() function to map to spare request bits.
+4. FPU demo optimization to reduce computational data volume and avoid Timer count overflow
+5. Optimization of ROW programming functions, disabling ROW programming after completion
+6. After programming Flash or option bytes, call the FLASH_WaitForLastOpt function, and change the parameter transfer from macro definition to variable form
+7. Remove redundant SHRTIM configurations from SHRTIM_Basic_Single_PWM
+8. Modify the macro name SHRTIM_EXEV1SRC_xxx
+9. Add prescaler parameter to SHRTIM_EXEV_Config
+10. Add a driver parameter to SHRTIM to determine whether to pause during debugging
+11. SHRTIM demos modify the GPIO mode of the FAULT pin to input mode.
+12. SHRTIM_EXEV3CTRL_EXEVxFLT and SHRTIM_EXEV4CTRL_EXEVxFLT name changed to SHRTIM_EXEV3CTRL_EXEVxF and SHRTIM_EXEV4CTRL_EXEVxF.
+13. ADC_GetCalibrationStatus() pass parameter is added in ADC driver;
+14. NVIC NVIC_VectorTable_Relocation demo add 487 key pin PA15
+15. Modify the clock initialization and RCC_DeInit function: LPFC2\LPFR\LPFC1 parameters to match PLLMULFCT configuration, and wait for the corresponding flag bit
+16. Update the default value of HSE_VALUE to 8M for 47x series and 16M for 48x, and match the RCC\PWR\ETH\LPTIM\RTC demo code
+17.Modify the define of TIM_BREAK2_SOURCE_POLARITY_INVERT
+18. Update SAC algorithm library
+19. Modify the name of TOL5V_CFG register of AFIO to ANAEN_CFG, and modify the name and definition of related functions.
+20. Modify the I2C PMBUS demo code formatting and remove the comment code
+21.Modify macro USB_CTRL_SOFM and USB_CTRL_ESOFM name.
+22.Modify USBFSD Xtal Less DEMO
+23.Modify XSPI_QUAD and XSPI_QUAD_DMA DEMO
+
+Nations.N32H47x_48x_Library.1.0.0 version:
+1. Update the DEMO routine of ADC_TEMP: modify the use of GET_NVR function.
+2. Add TIM_ConfigUpdateEvt function.
+3. Modify the ADC to DMA demo to adjust the position of ADC DMA mode configuration function.
+4. I2C demo added PMBUS routines. Including PMBUS_Master and PMBUS_Slave.
+5. ETH HTTP LED routine initialization stage to add GPIO_ConfigPinRemap() function, to avoid the problem of uncontrolled PB4 on the full-featured board.
+6. FEMC, USBFSD and USBHS DEMO are adapted to V1.1 version of full-featured boards.
+7.FEMC_LCD DEMO for V1.1 full-featured boards.
+8.DVP DEMO for V1.1 full-featured boards.
+9.ADC driver, function ADC_EnableCH2PositiveEndConnetPGA_P() renamed to ADC_EnableCH2PositiveEndConnetPGA_N().
+10. Modify FMAC FIR interrupt DEMO and IIR DEMO
+11. SHRTIM each Demo modify the GPIO mode of FAULT pin to input mode
+12. SHRTIM_EXEV3CTRL_EXEVxFLT and SHRTIM_EXEV4CTRL_EXEVxFLT name changed to SHRTIM_EXEV3CTRL_EXEVxF and SHRTIM_EXEV4CTRL_EXEVxF.
+13. ADC_GetCalibrationStatus() pass parameter is added in ADC driver;
+14. NVIC NVIC_VectorTable_Relocation demo add 487 key pin PA15
+15. FLASH programming wait function to add 4 NOP, to ensure that after programming and writing words there is enough delay for FLASH to start executing programming.
+16. SPI driver modify SPI_RX_FIFO_NUM macro definition, before the RX and TX macro definition is reversed.
+17. SHRTIM modify the macro definition of clock source in burst mode.
+18. Modify dbg get ID function.
+19. 485 demo optimization
+20. Modify OCToggle demo interrupt function.
+21. Quardrature_Output demo optimization, add structure initialization.
+22. Fix the problem of missing 0x2c word definition in spi_Module structure definition.
+23. PMBUS demo optimization, add judgment of whether success and print.
+
+Nations.N32H47x_48x_Library.0.9.0 version:
+1. shrtim driver add SHRTIM_EXEV_SOURCE_1~SHRTIM_EXEV_SOURCE_5 macro definition.
+2. shrtim PFC demo modify FAULT recovery operation, because the binding problem of FAUTL and timer unit has been ECO.
+3. shrtim add demo of half-bridge LLC.
+4. shrtim added USBHS Auido DEMO.
+5. add USBHS dedicated configuration, can be defined by USB_DEDICATED_EP_ENABLED macro to open the dedicated endpoints.
+6. Modify USBHS DMEO clock source to PLL.
+7. Added USBHS DualRole DEMO.
+8. Add USBFSD Auido, HID_Customer, Virtual Serial Port, HID_MSC, HID_CDC and MSC_CDC combo device DEMO.
+9. Add Ethernet MQTT DEMO.
+10. In n32h47x_48x_adc.c file, add 20us delay after ADC reset.
+11. Add USBHS combination device DEMO.
+12. Add USBHS Host HID_CDC, HID_MSC and CDC_MSC DEMO.
+13.TIM lacks brake 2 bidirectional function.
+14. RTC to increase the version judgment when selecting LSE clock.
+15. PWR module driver to add PVD_IN pin selection function; modify the wake-up pin polarity macro definition
+16.RCC module driver LPTIM clock source selection according to the chip version distinction.
+17. Update and optimize n32h47x_48x_eth.c and n32h47x_48x_eth.h files, and upgrade to v1.0.1.
+18. Optimize the main function of all DEMOs of the LPTIM module.
+19. FLASH_PrefetchBufSet function disablement is incorrectly modified.
+20. Modify the USBHS macro definition naming errors
+21. Update and optimize BURST and FLASH_RAM DEMO of DMA module.
+
+Nations.N32H47x_48x_Library.0.8.0 version:
+1.Initial Release
