@@ -144,9 +144,12 @@ target("n32h47x_48x")
         
         -- Build the startup file with the peripheral ISR list
         import("xmcu.proc")
-        local template_path = proc.load_startup_template_path()
-        local output_path   = path.join(projectdir, "build", prefix .. "_startup.c")
-        proc.build_arm_startup(template_path, isr_list, output_path)
-        target:add("files", output_path)
+
+        if conf.USE_DEFAULT_STARTUP then
+            local template_path = proc.load_startup_template_path()
+            local output_path   = path.join(projectdir, "build", prefix .. "_startup.c")
+            proc.build_arm_startup(template_path, isr_list, output_path)
+            target:add("files", output_path)
+        end
     end)
 target_end()

@@ -68,6 +68,13 @@ config NO_STD_STARTFILE
     help
         Do not link the standard startup files (e.g., crt0.o). Useful for custom startup code.
 
+config USE_DEFAULT_STARTUP
+    bool "Use Default Startup File"
+    default y
+    help
+      Use the default startup file in vendor provided by xmcu.
+      If you need a custom startup file, disable this option.
+
 config USE_DEFAULT_LD_SCRIPT
     bool "Use default linker script"
     default y

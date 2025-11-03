@@ -267,11 +267,20 @@ config CLOCK_PLLP
       Typical range: 2-128, depends on MCU family.
       Check your MCU reference manual for valid range.
 
+config CLOCK_SYSFREQ_DISABLED
+    bool
+    default n
+    help
+      Disable system clock frequency configuration if your MCU does not support or not need it.
+      Set to 'y' only if SYSCLK frequency configuration is not applicable for your specific MCU.
+      Default is 'n' (enabled), disabled by MCU-specific Kconfig if needed.
+
 # Clock Validation
-config CLOCK_MAX_SYSCLK_FREQ
+config CLOCK_SYSCLK_FREQ
     int "Maximum System Clock Frequency (Hz)"
     default 72000000
     range 1000000 1000000000
+    depends on !CLOCK_SYSFREQ_DISABLED
     help
       Maximum allowed system clock frequency for your MCU.
       Check your MCU datasheet for the maximum frequency.

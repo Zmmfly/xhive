@@ -28,13 +28,6 @@ choice
 
 endchoice
 
-config NATION_USE_DEFAULT_STARTUP
-    bool "Use Default Startup File"
-    default y
-    help
-      Use the default startup file provided for the Nation N32H47x/48x series microcontrollers.
-      If you need a custom startup file, disable this option.
-
 config NATION_N32H47X_48X_USE_USBFS
     bool "Enable USBFS Driver"
     default y

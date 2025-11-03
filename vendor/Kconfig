@@ -11,6 +11,7 @@ config VENDOR_USE_NATION
     select CLOCK_PLLM_DISABLED
     select CLOCK_PLLN_DISABLED
     select CLOCK_PLLP_DISABLED
+    select CLOCK_SYSFREQ_DISABLED
     help
       Select this option to include Nation vendor-specific configurations.
 

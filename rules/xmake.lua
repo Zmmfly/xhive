@@ -21,8 +21,11 @@ rule("xmcu.common")
         end
         target:add("includedirs", buildir)
 
+        -- Get kconfig
+        local conf = target:data("kconfig")
+
         -- Add link scripts
-        if target:kind() == "binary" then
+        if target:kind() == "binary" and conf.USE_DEFAULT_LD_SCRIPT then
             local ld_template = path.join(sdkdir, "templates", "link.ld")
             local ld_output   = path.join(buildir, "link.ld")
             proc.build_link_script(ld_template, target:tool("cc"), ld_output)
@@ -122,8 +125,15 @@ rule("xmcu.common")
         target:add("toolchains", "xmcu_toolchain")
         target:add("languages", "c99")
 
+        -- Set target extension, add deps for binary targets
         if target:kind() == "binary" then
             target:set("extension", ".elf")
+        end
+
+        -- Add xmcu_embed::deps if target scriptdir not under sdkdir
+        local target_scriptdir = path.normalize(target:scriptdir())
+        if not target_scriptdir:startswith(sdkdir) then
+            target:add("deps", "xmcu_embed::deps")
         end
 
         if conf.OPTIMIZE_NONE then
