@@ -1,55 +1,68 @@
-function load_tools_dir()
-    import("xmcu.base")
-    import("xmcu.kconf")
-    import("core.cache.memcache")
+--[[
+Copyright (c) 2025 Zmmfly. All rights reserved.
 
-    -- get all dirs
-    local script_dir  = os.scriptdir()
-    local project_dir = vformat("$(projectdir)")
-    local build_dir   = vformat(path.join(project_dir, "build"))
-    local sdk_dir     = path.directory(path.directory(script_dir))
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
 
-    -- get toolchains dir directory
-    local env_path        = os.getenv("XMCU_TOOL_PATH")
-    local env_toolchains  = env_path and path.join(env_path, "toolchains") or nil
-    local home_dir        = base.get_home_dir()
-    local home_toolchains = home_dir and path.join(home_dir, ".xmcu", "toolchains") or nil
-    local toolchains_dir  = env_toolchains or home_toolchains
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 
-    return toolchains_dir
-end
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-function load_tool_name_by_conf(conf)
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+]]
+
+function tool_name_by_conf(conf)
     -- This function must return the full name, not based tool name
-    import("xmcu.kconf")
+    import("xhive.kconf")
     if conf.COMPILER_ARM_GCC then
         return "arm-none-eabi-gcc"
     elseif conf.COMPILER_ATFE then
         return "ATfE"
     else
-        raise("No valid compiler selected in " .. kconf.config_name())
+        raise("No valid compiler selected in " .. kconf.load_name())
     end
 end
 
 function load_tool_infos()
-    import("xmcu.kconf")
+    import("xhive.kconf")
+    import("xhive.base")
     import("core.base.json")
-    local tools_dir       = load_tools_dir()
+    import("core.cache.memcache")
+    local result          = memcache.get("xhive", "tool_infos")
+    if result then
+        return result
+    end
+
     local script_dir      = os.scriptdir()
-    local sdk_dir         = path.directory(path.directory(script_dir))
-    local project_dir     = vformat("$(projectdir)")
+    local dirs            = base.load_paths()
     local conf            = kconf.load_configs()
-    local tools_info_path = path.join(sdk_dir, "compiler", "toolchains.json")
+    local tools_dir       = dirs.toolsdir
+    local tool_infos_path = path.join(dirs.sdkdir, "compiler", "toolchains.json")
 
     -- check toolchains info file exists
-    if not os.isfile(tools_info_path) then
-        raise("Toolchains info file not found at: " .. tools_info_path)
+    if not os.isfile(tool_infos_path) then
+        raise("Toolchains info file not found at: " .. tool_infos_path)
     end
 
     -- load toolchains info file
-    local tools_info = json.loadfile(tools_info_path)
+    local tools_info = json.loadfile(tool_infos_path)
     if not tools_info then
-        raise("Invalid toolchains info file: " .. tools_info_path)
+        raise("Invalid toolchains info file: " .. tool_infos_path)
     end
 
     -- check os and arch related tool info exists
@@ -60,41 +73,32 @@ function load_tool_infos()
     end
     local tools = tools_info[os_name][arch]
 
-    -- get tool name
-    local tool_name      = load_tool_name_by_conf(conf)
-    local tool_full_name = vformat("%s-%s-%s", tool_name, os_name, arch)
+    -- Get tool name
+    local tool_name = tool_name_by_conf(conf)
+    local full_name = vformat("%s-%s-%s", tool_name, os_name, arch)
+    local dl_list   = tools[tool_name]
+    local tool_dir  = path.join(tools_dir, full_name)
 
-    -- get tool info
-    if not tools[tool_name] then
+    -- Get tool info
+    if not dl_list then
         raise("No toolchain info for tool: " .. tool_name)
     end
-    local tool_info = tools[tool_name]
 
     -- check tool info include url and sha256
-    for _, item in ipairs(tool_info) do
+    for _, item in ipairs(dl_list) do
         if not item.url or not item.sha256 then
             raise("Invalid toolchain info for tool: " .. tool_name)
         end
     end
 
-    local ready = false
-    local ready_list_json_path = path.join(tools_dir, "ready_list.json")
-    if os.isfile(ready_list_json_path) then
-        local ready_list = json.loadfile(ready_list_json_path)
-        if ready_list and ready_list[tool_full_name] then
-            ready = true
-        end
-    end
-
-    local result = {
+    result = {
         name      = tool_name,
-        full_name = tool_full_name,
-        tools_dir = tools_dir,
-        tools_dl  = path.join(tools_dir, "downloads"),
-        tool_dir  = path.join(tools_dir, tool_full_name),
-        tool_info = tool_info,
-        ready     = ready
+        full_name = full_name,
+        tool_dir  = tool_dir,
+        dl_list   = dl_list,
+        ready     = os.exists(path.join(tool_dir, "ok.json"))
     }
+    memcache.set("xhive", "tool_infos", result)
     return result
 end
 
@@ -278,26 +282,23 @@ function build_toolchain_flags(conf)
 end
 
 function mark_tool_as_ready(tool_infos)
+    import("xhive.base")
     import("core.base.json")
-    if not tool_infos.tools_dir then
-        raise("Tool directory not specified")
-    end
 
     if not tool_infos.full_name then
         raise("Tool full name not specified")
     end
 
-    local ready_list_json_path = path.join(tool_infos.tools_dir, "ready_list.json")
-    local ready_list = {}
-    if os.isfile(ready_list_json_path) then
-        ready_list = json.loadfile(ready_list_json_path) or {}
-    end
-    ready_list[tool_infos.full_name] = true
-    json.savefile(ready_list_json_path, ready_list)
+    local ok_path = path.join(tool_infos.tool_dir, "ok.json")
+    io.writefile(ok_path, json.encode({
+        name      = tool_infos.name,
+        full_name = tool_infos.full_name,
+        timestamp = os.date("%Y-%m-%d %H:%M:%S"),
+    }))
 end
 
 function merge_toolset_to(tool_target_dir, merge_list)
-    import("xmcu.base")
+    import("xhive.base")
     for _, src_dir in ipairs(merge_list) do
         print("Merging tool from " .. src_dir .. " to " .. tool_target_dir)
         -- os.mv(src_dir .. "/*", tool_target_dir)
@@ -306,23 +307,28 @@ function merge_toolset_to(tool_target_dir, merge_list)
 end
 
 function download_tool(tool_infos)
-    import("xmcu.base")
+    import("xhive.base")
+
+    if tool_infos.ready then
+        print("Tool " .. tool_infos.full_name .. " is already marked as ready.")
+        return
+    end
+
+    local dirs = base.load_paths()
+
     if not tool_infos.tool_dir then
         raise("Tool directory not specified")
     end
 
     -- check tool dir empty, skip download if not empty
     if os.isdir(tool_infos.tool_dir) and #os.filedirs(path.join(tool_infos.tool_dir, "**")) > 0 then
-        print("Tool directory already exists and not empty: " .. tool_infos.tool_dir)
-        return
+        print("Tool directory already exists and not empty, removing: " .. tool_infos.tool_dir)
+        -- return
+        os.rm(tool_infos.tool_dir)
     end
 
-    if not tool_infos.tool_info then
+    if not tool_infos.dl_list then
         raise("Tool info not specified")
-    end
-
-    if not tool_infos.tools_dl then
-        raise("Tools download directory not specified")
     end
 
     if not tool_infos.full_name then
@@ -330,14 +336,15 @@ function download_tool(tool_infos)
     end
 
     -- create download directory
-    local tool_dl = path.join(tool_infos.tools_dl, tool_infos.full_name)
+    local tool_dl = path.join(dirs.dldir, tool_infos.full_name)
     os.mkdir(tool_dl)
 
+    -- prepare lists for merging and cleanup
     local merge_list = {}
     local extra_list = {}
 
     -- download and extract each tool archive
-    for _, item in ipairs(tool_infos.tool_info) do
+    for _, item in ipairs(tool_infos.dl_list) do
         local url    = item.url
         local sha256 = item.sha256
         local filename = path.filename(url)
@@ -400,7 +407,7 @@ function download_tool(tool_infos)
         os.mkdir(extract_dir)
         import("utils.archive")
         archive.extract(filepath, extract_dir)
-        local real_dir = base.find_dir_root(extract_dir)
+        local real_dir = base.find_deep_root(extract_dir)
         print("Real tool dir: " .. real_dir)
         table.insert(merge_list, real_dir)
     end

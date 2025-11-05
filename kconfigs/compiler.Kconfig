@@ -72,20 +72,20 @@ config USE_DEFAULT_STARTUP
     bool "Use Default Startup File"
     default y
     help
-      Use the default startup file in vendor provided by xmcu.
+      Use the default startup file in vendor provided by xhive.
       If you need a custom startup file, disable this option.
 
 config USE_DEFAULT_LD_SCRIPT
     bool "Use default linker script"
     default y
     help
-        Use the default linker script provided by xmcu.
+        Use the default linker script provided by xhive.
 
 config USE_CUSTOM_STARTUP_FILE
     bool "Use custom startup file"
     default n
     help
-        Use a custom startup file instead of the default one provided by xmcu.
+        Use a custom startup file instead of the default one provided by xhive.
 
 config STACK_LENGTH
     hex "Stack Length"

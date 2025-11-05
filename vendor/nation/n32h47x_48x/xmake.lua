@@ -1,3 +1,31 @@
+--[[
+Copyright (c) 2025 Zmmfly. All rights reserved.
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+]]
+
 target("n32h47x_48x")
     set_kind("object")
     -- CMSIS
@@ -22,13 +50,13 @@ target("n32h47x_48x")
     -- )
 
     on_load(function(target)
-        -- Import the xmcu.base module for utility functions
-        import("xmcu.base")
+        -- Import the xhive.base module for utility functions
+        import("xhive.base")
 
         -- Get the kconfig parsed data for the target
         local kconfig = target:data("kconfig")
         if not kconfig then
-            raise("kconfig not found for target: " .. target:name() .. ". Please make sure to include the xmcu.common rule in your project.")
+            raise("kconfig not found for target: " .. target:name() .. ". Please make sure to include the xhive.common rule in your project.")
         end
 
         -- Add HSE_VALUE define if HSE is enabled
@@ -115,10 +143,13 @@ target("n32h47x_48x")
         end
     end)
     on_config(function(target)
+        import("core.base.json")
+        import("xhive.proc")
+        import("xhive.base")
         -- Load the peripheral ISR list based on the selected series
-        local prefix = ""
+        local prefix    = ""
         local scriptdir = path.absolute(os.scriptdir())
-        local projectdir = path.absolute(vformat("$(projectdir)"))
+        local dirs      = base.load_paths()
 
         local conf = target:data("kconfig")
         if conf.NATION_N32H473 then 
@@ -139,15 +170,13 @@ target("n32h47x_48x")
             raise("No valid N32H47X series selected in kconfig for target: " .. target:name())
         end
         local list_path = path.join(scriptdir, "periph_isr", prefix .. "_periph_isr.json")
-        import("core.base.json")
         local isr_list = json.loadfile(list_path)
         
         -- Build the startup file with the peripheral ISR list
-        import("xmcu.proc")
 
         if conf.USE_DEFAULT_STARTUP then
             local template_path = proc.load_startup_template_path()
-            local output_path   = path.join(projectdir, "build", prefix .. "_startup.c")
+            local output_path   = path.join(dirs.builddir, prefix .. "_startup.c")
             proc.build_arm_startup(template_path, isr_list, output_path)
             target:add("files", output_path)
         end

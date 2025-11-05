@@ -1,9 +1,37 @@
-function build_link_script(template_path, cc_path, output_path)
-    import("xmcu.kconf")
-    local conf             = kconf.load_configs()
-    local xmcu_config_path = kconf.load_header_path()
+--[[
+Copyright (c) 2025 Zmmfly. All rights reserved.
 
-    local args = {"-E", "-x", "c", "-P", "-include", xmcu_config_path, template_path}
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+]]
+
+function build_link_script(template_path, cc_path, output_path)
+    import("xhive.kconf")
+    local conf        = kconf.load_configs()
+    local config_path = kconf.load_header_path()
+
+    local args = {"-E", "-x", "c", "-P", "-include", config_path, template_path}
     if output_path then
         table.insert(args, "-o")
         table.insert(args, output_path)
@@ -17,7 +45,7 @@ function build_link_script(template_path, cc_path, output_path)
 end
 
 function load_startup_template_path()
-    import("xmcu.kconf")
+    import("xhive.kconf")
     local conf = kconf.load_configs()
     local startup_dir = path.join(path.directory(path.directory(os.scriptdir())), "templates")
     if conf.CPU_ARM then
@@ -65,15 +93,14 @@ function build_arm_startup(template_path, periph_isr_list, output_path)
             /* Peripheral Interrupts end */
      ]]
 
-    import("xmcu.kconf")
+    import("xhive.kconf")
     local conf      = kconf.load_configs()
     local dec_lines = ""
     local vec_lines = ""
 
     local startup = io.readfile(template_path)
 
-    
-
+    -- Build declare lines and vector lines
     for _, isr in ipairs(periph_isr_list) do
         if (isr == 0) or (isr == "0") or (isr == "") or (isr == nil) then
             vec_lines = vec_lines .. "    0,\n"
@@ -83,14 +110,21 @@ function build_arm_startup(template_path, periph_isr_list, output_path)
         end
     end
 
+    -- Inject lines into template
     startup = inject_lines(startup, "/* Peripheral Interrupt Handlers begin */", "/* Peripheral Interrupt Handlers end */", dec_lines)
     startup = inject_lines(startup, "/* Peripheral Interrupts begin */", "/* Peripheral Interrupts end */", vec_lines)
 
+    -- Write to output file if specified
     if (output_path ~= nil) and (output_path ~= "") then
         if os.isdir(output_path) then
             raise("output_path cannot be a directory")
         end
-        io.writefile(output_path, startup)
+
+        local old_content = os.exists(output_path) and io.readfile(output_path) or ""
+        if old_content ~= startup then
+            print("Generating ARM startup file: " .. output_path)
+            io.writefile(output_path, startup)
+        end
     end
     return startup
 end

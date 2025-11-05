@@ -1,35 +1,61 @@
-rule("xmcu.common")
+--[[
+Copyright (c) 2025 Zmmfly. All rights reserved.
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+]]
+
+rule("xhive.common")
     before_build(function(target)
-        import("xmcu.kconf")
-        import("xmcu.proc")
+        import("xhive.kconf")
+        import("xhive.proc")
+        import("xhive.base")
         import("core.cache.memcache")
 
-        -- Get basic dirs
-        local scriptdir = os.scriptdir()
-        local projdir   = vformat("$(projectdir)")
-        local buildir   = vformat(path.join(projdir, "build"))
-        local sdkdir    = vformat(path.directory(scriptdir))
+        -- Get dirs
+        local dirs = base.load_paths()
 
-        -- Generate xmcu_config.h by genconfig command
-        local header_generated = memcache.get("xmcu", "header_before_build_" .. path.absolute(projdir))
+        -- Generate xhive_config.h by genconfig command
+        local header_generated = memcache.get("xhive", "header_before_build_" .. dirs.prjdir)
         if not header_generated then
-            -- print("Generating xmcu_config.h for target: " .. target:name() .. " before build")
-            kconf.genconfig(projdir)
-            memcache.set("xmcu", "header_before_build_" .. path.absolute(projdir), true)
+            -- print("Generating xhive_config.h for target: " .. target:name() .. " before build")
+            kconf.build_header(dirs.prjdir)
+            memcache.set("xhive", "header_before_build_" .. path.absolute(dirs.prjdir), true)
         else
-            -- print("xmcu_config.h already generated for target: " .. target:name() .. " before build")
+            -- print("xhive_config.h already generated for target: " .. target:name() .. " before build")
         end
-        target:add("includedirs", buildir)
+        target:add("includedirs", dirs.builddir)
 
         -- Get kconfig
         local conf = target:data("kconfig")
 
         -- Add link scripts
         if target:kind() == "binary" and conf.USE_DEFAULT_LD_SCRIPT then
-            local ld_template = path.join(sdkdir, "templates", "link.ld")
-            local ld_output   = path.join(buildir, "link.ld")
+            local ld_template = path.join(dirs.sdkdir, "templates", "link.ld")
+            local ld_output   = path.join(dirs.builddir, "link.ld")
             proc.build_link_script(ld_template, target:tool("cc"), ld_output)
-            target:add("ldflags", "-T" .. ld_output)
+            target:add("ldflags", "-T" .. ld_output, {force = true})
             -- printf("Using link script: %s, for target: %s\n", ld_output, target:name())
         end
     end)
@@ -37,7 +63,7 @@ rule("xmcu.common")
     after_link(function(target) 
         local conf = target:data("kconfig")
         if target:kind() == "binary" then
-            import("xmcu.toolset")
+            import("xhive.toolset")
             local elf_path = target:targetfile()
             local cc_path  = target:tool("cc")
             local bin_path = path.join(path.directory(elf_path), path.basename(elf_path) .. ".bin")
@@ -56,7 +82,8 @@ rule("xmcu.common")
     end)
 
     on_load(function(target)
-        import("xmcu.kconf")
+        import("xhive.kconf")
+        import("xhive.base")
         import("core.cache.memcache")
 
         --[[
@@ -65,18 +92,16 @@ rule("xmcu.common")
          ]]
 
         -- Get buildir
+        local dirs      = base.load_paths()
         local scriptdir = os.scriptdir()
-        local projdir   = vformat("$(projectdir)")
-        local buildir   = vformat(path.join(projdir, "build"))
-        local sdkdir    = path.directory(vformat(scriptdir))
 
-        kconf.build(projdir, sdkdir, buildir)
+        kconf.build_entry()
 
         --[[
             This section is to parse .config file
          ]]
-        local conf = memcache.get("xmcu", "kconfig")
-        local dot_config_path = path.join(projdir, kconf.config_name())
+        local conf = memcache.get("xhive", "kconfig")
+        local dot_config_path = path.join(dirs.prjdir, kconf.load_name())
         if os.isfile(dot_config_path) then
             -- use cached kconfig if available
             if conf then
@@ -85,10 +110,10 @@ rule("xmcu.common")
                 -- parse .config, add to target data and cache it
                 conf = kconf.parse_cached(dot_config_path)
                 target:data_add("kconfig", conf)
-                memcache.set("xmcu", "kconfig", conf)
+                memcache.set("xhive", "kconfig", conf)
             end
         else
-            print("Warning: " .. kconf.config_name() .. " file not found at: " .. dot_config_path)
+            print("Warning: " .. kconf.load_name() .. " file not found at: " .. dot_config_path)
             print("Please run 'xmake menuconfig' to config your project.")
             return
         end
@@ -96,14 +121,14 @@ rule("xmcu.common")
         --[[ 
             This section to build header
          ]]
-                -- Generate xmcu_config.h by genconfig command
-        local header_generated = memcache.get("xmcu", "header_on_load_" .. path.absolute(projdir))
+                -- Generate xhive_config.h by genconfig command
+        local header_generated = memcache.get("xhive", "header_on_load_" .. dirs.prjdir)
         if not header_generated then
-            -- print("Generating xmcu_config.h for target: " .. target:name() .. " on load")
-            kconf.genconfig(projdir)
-            memcache.set("xmcu", "header_on_load_" .. path.absolute(projdir), true)
+            -- print("Generating xhive_config.h for target: " .. target:name() .. " on load")
+            kconf.build_header(dirs.prjdir)
+            memcache.set("xhive", "header_on_load_" .. dirs.prjdir, true)
         else
-            -- print("xmcu_config.h already generated for target: " .. target:name() .. " on load")
+            -- print("xhive_config.h already generated for target: " .. target:name() .. " on load")
         end
 
         --[[ 
@@ -112,7 +137,7 @@ rule("xmcu.common")
 
         -- Add common include directories
         if conf.COMMON_INCLUDES and conf.COMMON_INCLUDES ~= "" then
-            local include_dirs = base.get_commas_paths(conf.COMMON_INCLUDES)
+            local include_dirs = base.split_commas_paths(conf.COMMON_INCLUDES)
             for _, dir in ipairs(include_dirs) do
                 target:add("includedirs", dir)
             end
@@ -122,18 +147,17 @@ rule("xmcu.common")
             This section is to set basic target properties
          ]]
         target:set("plat", "cross")
-        target:add("toolchains", "xmcu_toolchain")
-        target:add("languages", "c99")
+        target:add("toolchains", "xhive_toolchain")
 
         -- Set target extension, add deps for binary targets
         if target:kind() == "binary" then
             target:set("extension", ".elf")
         end
 
-        -- Add xmcu_embed::deps if target scriptdir not under sdkdir
+        -- Add xhive_embed::deps if target scriptdir not under sdkdir
         local target_scriptdir = path.normalize(target:scriptdir())
-        if not target_scriptdir:startswith(sdkdir) then
-            target:add("deps", "xmcu_embed::deps")
+        if not target_scriptdir:startswith(dirs.sdkdir) then
+            target:add("deps", "xhive_embed::deps")
         end
 
         if conf.OPTIMIZE_NONE then

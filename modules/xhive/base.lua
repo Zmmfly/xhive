@@ -1,4 +1,32 @@
-function get_commas_paths(path_list_by_commas)
+--[[
+Copyright (c) 2025 Zmmfly. All rights reserved.
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+]]
+
+function split_commas_paths(path_list_by_commas)
     local paths = {}
     for dir in path_list_by_commas:gmatch("[^,]+") do
         table.insert(paths, dir)
@@ -6,17 +34,39 @@ function get_commas_paths(path_list_by_commas)
     return paths
 end
 
-function get_home_dir()
-    local host = os.host()
-    if host == "windows" then
-        return os.getenv("USERPROFILE")
-    else
-        return os.getenv("HOME")
+function load_paths()
+    import("core.cache.memcache")
+
+    local paths = memcache.get("xhive", "common_paths")
+    if paths then
+        return paths
     end
+
+    local prjdir      = path.normalize( os.projectdir())
+    local builddir    = path.normalize( path.join(prjdir, "build") )
+    local homedir     = path.normalize( os.getenv("HOME") or os.getenv("USERPROFILE") )
+    local sdkdir      = path.normalize( path.directory(path.directory(os.scriptdir())) )
+    local sdkhome     = path.normalize( os.getenv("XHIVE_HOME") or path.join(homedir, ".xhive") )
+    local kconf_entry = path.normalize( path.join(builddir, "Kconfig") )
+    local toolsdir    = path.normalize( os.getenv("XHIVE_TOOLS_PATH") or path.join(sdkhome, "tools") )
+    local dldir       = path.normalize( path.join(sdkhome, "downloads") )
+
+    paths = {
+        sdkdir      = sdkdir,
+        sdkhome     = sdkhome,
+        prjdir      = prjdir,
+        builddir    = builddir,
+        homedir     = homedir,
+        dldir       = dldir,
+        kconf_entry = kconf_entry,
+        toolsdir    = toolsdir,
+    }
+    memcache.set("xhive", "common_paths", paths)
+    return paths
 end
 
 -- Find the specific path where multiple folders or any files first appear in a directory
-function find_dir_root(dir_path)
+function find_deep_root(dir_path)
     if not os.isdir(dir_path) then
         return nil
     end
