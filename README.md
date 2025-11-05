@@ -1,50 +1,32 @@
-# xHive SDK
+# xHive
 
-A cross-platform SDK for various microcontroller units (MCUs) with a focus on ease of use and modularity.
+🚀 Modern embedded SDK for ARM/RISC-V MCUs with intelligent build system, xmake-based. 
 
-## 特性
+## Features
 
-- 支持多种MCU构架: ARM Cortex-M, RISC-V等
-- 基于xmake的构建系统集成
-- 基于xmake命名空间支持同时在PC上进行纯逻辑代码的单元测试同时编译输出MCU固件
-- 自动化启动代码生成
-- 自动化链接脚本生成
+- **Multi-architecture MCU support**: ARM Cortex-M, RISC-V, and more
+- **XMake-based build system integration**: Streamlined cross-platform compilation
+- **Dual-namespace development**: Simultaneous PC-based unit testing for pure logic code and MCU firmware compilation using XMake namespaces
+- **Automatic startup code generation**: Simplified project initialization
+- **Automatic linker script generation**: Optimized memory management
 
 ## License
 
-- GPLv3
-- CLA
-- Commercial License
+This project is available under multiple licensing options:
 
-### 许可证说明
+- **GPLv3**: For open source projects
+- **CLA**: Contributor License Agreement for contributions
+- **Commercial License**: For proprietary commercial use
 
-1. 本项目采用 GPLv3 许可证。任何对本项目的修改，无论是在内部使用还是随产品分发，都必须遵循 GPLv3 协议开源。如果您希望在不开源修改的情况下在商业产品中使用或集成本项目，请联系我们获取商业许可证。
-2. 许可不涉及引用的第三方库或厂商提供的驱动代码
-3. GPLv3 许可证的完整文本可以在 [GNU 官网](https://www.gnu.org/licenses/gpl-3.0.html) 找到。
-4. 本项目接受 CLA 贡献。所有贡献者必须签署 CLA，以确保代码的版权和许可符合项目的要求。
+### License Terms
 
-## 示例
+1. **GPLv3 License**: This project is licensed under GPLv3. Any modifications to this project, whether for internal use or distribution with products, must be open-sourced under the GPLv3 terms. If you wish to use or integrate this project in commercial products without open-sourcing your modifications, please contact us for a commercial license.
 
-运行`xmake menuconfig`配置MCU厂商与参数后, 直接运行`xmake`编译示例工程.
+2. **Scope**: This license does not cover referenced third-party libraries or vendor-provided driver code.
 
-```
-hello_world
-├── main.c
-└── xmake.lua
-```
+3. **Full License Text**: The complete GPLv3 license text can be found on the [GNU official website](https://www.gnu.org/licenses/gpl-3.0.html).
 
-xmake.lua:
-```lua
---[[ 
-    SDK与工程分离管理, 设置XHIVE_SDK_PATH环境变量指向SDK路径
- ]]
-includes(os.getenv("XHIVE_SDK_PATH"))
-
-target("firmware")
-    set_kind("binary")
-    add_rules("xhive::rules") -- 这条是关键
-    add_files("*.c")
-```
+4. **Contributions**: This project accepts contributions under a CLA. All contributors must sign the CLA to ensure that code copyright and licensing comply with project requirements.
 
 ## Toolchain
 
