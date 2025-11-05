@@ -85,9 +85,16 @@ function build_entry()
     local sdk_entry  = path.join(dirs.sdkdir, "Kconfig")
     local root_entry = path.join(dirs.builddir, "Kconfig")
 
-    local content = string.format("source \"%s\"\n", path.absolute(sdk_entry))
+    -- workaround for windows path issue
+    if os.host() == "windows" then
+        sdk_entry  = sdk_entry:gsub("\\", "/")
+        prj_entry  = prj_entry:gsub("\\", "/")
+        root_entry = root_entry:gsub("\\", "/")
+    end
+
+    local content = string.format("source \"%s\"\n", sdk_entry)
     if os.isfile(prj_entry) then
-        content = content .. string.format("source \"%s\"\n", path.absolute(prj_entry))
+        content = content .. string.format("source \"%s\"\n", prj_entry)
     end
 
     -- Check and update kconfig entry file

@@ -68,6 +68,12 @@ function load_tool_infos()
     -- check os and arch related tool info exists
     local os_name = os.host()
     local arch    = os.arch()
+
+    -- workaround for x64 naming
+    if arch == "x64" then
+        arch = "x86_64"
+    end
+
     if not tools_info[os_name] or not tools_info[os_name][arch] then
         raise("No toolchain info for os: " .. os_name .. ", arch: " .. arch)
     end
@@ -379,19 +385,21 @@ function download_tool(tool_infos)
         end
 
         -- until no dot in base name or reached two levels
-        local base_name = filename
-        local level = 0
-        while true do
-            base_name = path.basename(base_name)
-            local dot_pos = base_name:find("%.")
-            if not dot_pos then
-                break
-            end
-            level = level + 1
-            if level >= 2 then
-                break
-            end
-        end
+        local base_name = path.basename(filename)
+
+        -- local base_name = filename
+        -- local level = 0
+        -- while true do
+        --     base_name = path.basename(base_name)
+        --     local dot_pos = base_name:find("%.")
+        --     if not dot_pos then
+        --         break
+        --     end
+        --     level = level + 1
+        --     if level >= 2 then
+        --         break
+        --     end
+        -- end
 
         -- extract tool archive
         local extract_dir = path.join(tool_dl, base_name)
