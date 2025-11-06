@@ -133,16 +133,22 @@ void SystemInit(void)
 
 extern int main(void);
 
-#if 1
 __attribute__((noreturn))
 void Reset_Handler(void)
 {
+    #ifdef CONFIG_ENABLE_FAST_STARTUP
     /* Call SystemInit first to speed up initialization */
     SystemInit();
+    #endif
 
     /* Initialize data and bss */
     init_datas();
     fill_zeros();
+
+    #ifndef CONFIG_ENABLE_FAST_STARTUP
+    /* Call SystemInit */
+    SystemInit();
+    #endif
 
     /* Call C library initialization */
     __libc_init_array();
@@ -156,56 +162,3 @@ void Reset_Handler(void)
     /* Infinite loop */
     while (1);
 }
-#else
-__attribute__((noreturn, naked))
-void Reset_Handler(void)
-{
-    __asm volatile(
-    "   ldr r0, =_estack                \n"  /* Load stack pointer address */
-    "   mov sp, r0                      \n"  /* Set stack pointer */
-
-    /* Copy the data segment initializers from flash to SRAM */
-    "   ldr r0, =_sdata                 \n"  /* Destination address (SRAM) */
-    "   ldr r1, =_edata                 \n"  /* End address */
-    "   ldr r2, =_sidata                \n"  /* Source address (flash) */
-    "   movs r3, #0                     \n"  /* Clear r3 for offset */
-    "   b LoopCopyDataInit              \n"  /* Branch to loop */
-    "CopyDataInit:                      \n"
-    "   ldr r4, [r2, r3]                \n"  /* Load from source */
-    "   str r4, [r0, r3]                \n"  /* Store to destination */
-    "   adds r3, r3, #4                 \n"  /* Increment offset */
-    "LoopCopyDataInit:                  \n"
-    "   adds r4, r0, r3                 \n"  /* Current dest address */
-    "   cmp r4, r1                      \n"  /* Compare with end */
-    "   bcc CopyDataInit                \n"  /* Branch if not done */
-
-    /* Zero fill the bss segment */
-    "   ldr r2, =_sbss                  \n"  /* Start address of bss */
-    "   ldr r4, =_ebss                  \n"  /* End address of bss */
-    "   movs r3, #0                     \n"  /* Clear r3 for offset */
-    "   b LoopZeroBSS                   \n"  /* Branch to loop */
-    "FillZeroBSS:                       \n"
-    "   str r3, [r2]                    \n"  /* Store zero */
-    "   adds r2, r2, #4                 \n"  /* Increment address */
-    "LoopZeroBSS:                       \n"
-    "   cmp r2, r4                      \n"  /* Compare with end */
-    "   bcc FillZeroBSS                 \n"  /* Branch if not done */
-
-    /* Call the clock system initialization function */
-    "   bl SystemInit                   \n"
-
-    /* Call C library initialization */
-    "   bl __libc_init_array            \n"  /* Initialize C library */
-
-    /* Call main function */
-    "   bl main                         \n"  /* Branch with link to main */
-
-    /* Call C library cleanup */
-    "   bl __libc_fini_array            \n"  /* Cleanup C library */
-
-    /* Infinite loop */
-    "LoopForever:                       \n"
-    "   b LoopForever                   \n"  /* Branch to self */
-    );
-}
-#endif

@@ -73,11 +73,17 @@ rule("xhive.common")
             print("Generated binary file: " .. bin_path)
             
             -- Display binary size in KB with 2 decimal places
-            local bin_size = os.filesize(bin_path) or 0
-            print(string.format("Binary size: %d bytes ~= %.2f KB / %d, used %5.2f%%", bin_size, bin_size / 1024, conf.ROM_LENGTH, bin_size / conf.ROM_LENGTH * 100))
+            local bin_size    = os.filesize(bin_path) or 0
+            local rom_len     = conf.ROM_LENGTH * 1024
+            local rom_used_kb = bin_size / 1024
+            local rom_usage   = bin_size / rom_len * 100
+            print(string.format("ROM used: %7d / %7d, ~ %5.2f%%, ~ %6.2f KB", bin_size, rom_len, rom_used_kb, rom_usage))
 
             local ram_used = toolset.elf_ram_usage(cc_path, elf_path)
-            print(string.format("RAM used: %d bytes / %d, used %5.2f%%", ram_used, conf.RAM_LENGTH, ram_used / conf.RAM_LENGTH * 100))
+            local ram_len = conf.RAM_LENGTH * 1024
+            local ram_used_kb = ram_used / 1024
+            local ram_usage = ram_used / ram_len * 100
+            print(string.format("RAM used: %7d / %7d, ~ %5.2f%%, ~ %6.2f KB", ram_used, ram_len, ram_usage, ram_used_kb))
         end
     end)
 

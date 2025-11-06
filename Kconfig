@@ -12,6 +12,9 @@ rsource "kconfigs/compiler.Kconfig"
 # Include clock Kconfig configuration
 rsource "kconfigs/clock.Kconfig"
 
+# Include memory configuration
+rsource "kconfigs/memory.Kconfig"
+
 # Include common configuration
 rsource "kconfigs/common.Kconfig"
 

@@ -54,6 +54,8 @@
 #ifndef __N32H47X_48X_H__
 #define __N32H47X_48X_H__
 
+#include <xhive_config.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif

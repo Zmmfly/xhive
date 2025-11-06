@@ -173,6 +173,10 @@
 #error wrong value for SYSCLK_SRC
 #endif
 
+#ifdef CONFIG_VTABLE_OFFSET
+#define VECT_TAB_OFFSET     CONFIG_VTABLE_OFFSET
+#endif
+
 /* #define VECT_TAB_SRAM */
 #ifndef VECT_TAB_OFFSET
 #define VECT_TAB_OFFSET 0x0U /*!< Vector Table base offset field. This value must be a multiple of 0x400. */
@@ -280,9 +284,17 @@ void SystemInit(void)
     SetSysClock();
 
 #ifdef VECT_TAB_SRAM
+    #ifdef CONFIG_ROM_START
+    SCB->VTOR = CONFIG_ROM_START | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal SRAM. */
+    #else
     SCB->VTOR = SRAM_BASE | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal SRAM. */
+    #endif
 #else
+    #ifdef CONFIG_ROM_START
+    SCB->VTOR = CONFIG_ROM_START | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal FLASH. */
+    #else
     SCB->VTOR = FLASH_BASE | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal FLASH. */
+    #endif
 #endif
     SetStartupVolt(STARTUP_VOLT_1V78);
     

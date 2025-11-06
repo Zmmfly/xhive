@@ -41,28 +41,3 @@ config NATION_N32H47X_48X_USE_USBHS
     help
       Enable the USBHS driver for the Nation N32H47x/48x series microcontrollers.
       This option is useful if your application requires high-speed USB functionality.
-
-config ROM_START
-    hex "ROM Start Address"
-    default 0x08000000
-    help
-      Define the start address of the ROM for the Nation N32H47x/48x series microcontrollers.
-
-config ROM_LENGTH
-    hex "ROM Length"
-    default 0x00040000 if (NATION_N32H473 || NATION_N32H474)
-    default 0x00080000 if (NATION_N32H481 || NATION_N32H482 || NATION_N32H487 || NATION_N32H488)
-    help
-      Define the length of the ROM for the Nation N32H47x/48x series microcontrollers.
-
-config RAM_START
-    hex "RAM Start Address"
-    default 0x20000000
-    help
-      Define the start address of the RAM for the Nation N32H47x/48x series microcontrollers.
-
-config RAM_LENGTH
-    hex "RAM Length"
-    default 0x00030000
-    help
-        Define the length of the RAM for the Nation N32H47x/48x series microcontrollers.

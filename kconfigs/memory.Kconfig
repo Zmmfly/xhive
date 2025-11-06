@@ -1,0 +1,38 @@
+menu "Memory Configuration"
+
+config ROM_START
+    hex "ROM Start Address"
+    default 0x08000000
+    help
+      Define the start address of the ROM for the microcontrollers.
+      Default to 0x08000000, please adjust according to your microcontroller's specifications.
+
+config ROM_LENGTH
+    int "ROM Length in Kbytes"
+    default 64
+    help
+      Define the length of the ROM for the microcontrollers.
+      Default to 64KB, please adjust according to your microcontroller's specifications.
+
+config RAM_START
+    hex "RAM Start Address"
+    default 0x20000000
+    help
+      Define the start address of the RAM for the microcontrollers.
+      Default to 0x20000000, please adjust according to your microcontroller's specifications.
+
+config RAM_LENGTH
+    int "RAM Length in Kbytes"
+    default 16
+    help
+        Define the length of the RAM for the microcontrollers.
+        Default to 16KB, please adjust according to your microcontroller's specifications.
+
+config VTABLE_OFFSET
+    hex "VTABLE Offset"
+    default 0x00000000
+    help
+      Define the offset for the VTABLE in the ROM.
+      This is typically set to 0x00000000, but can be adjusted based on your microcontroller's memory layout.
+
+endmenu
