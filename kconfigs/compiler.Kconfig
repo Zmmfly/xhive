@@ -87,6 +87,15 @@ config USE_DEFAULT_LD_SCRIPT
     help
         Use the default linker script provided by xhive.
 
+config CUSTOM_LD_SCRIPT_PATH
+    string "Custom linker script path"
+    default ""
+    depends on !USE_DEFAULT_LD_SCRIPT
+    help
+        Specify the path to a custom linker script if not using the default.
+        This can be useful for projects that require a specific memory layout.
+        The path should be relative to the project root.
+
 config STACK_LENGTH
     hex "Stack length"
     default 0x400

@@ -51,8 +51,18 @@ rule("xhive.common")
         local conf = target:data("kconfig")
 
         -- Add link scripts
-        if target:kind() == "binary" and conf.USE_DEFAULT_LD_SCRIPT then
-            local ld_template = path.join(dirs.sdkdir, "templates", "link.ld")
+        if target:kind() == "binary" then
+            local ld_template = ""
+            if conf.USE_DEFAULT_LD_SCRIPT then
+                ld_template = path.join(dirs.sdkdir, "templates", "link.ld")
+            else
+                ld_template = path.normalize(path.join(dirs.prjdir, conf.CUSTOM_LD_SCRIPT_PATH))
+            end
+
+            if not os.isfile(ld_template) then
+                raise("Linker script not found: " .. ld_template .. " for target: " .. target:name())
+            end
+
             local ld_output   = path.join(dirs.builddir, "link.ld")
             proc.build_link_script(ld_template, target:tool("cc"), ld_output)
             target:add("ldflags", "-T" .. ld_output, {force = true})
