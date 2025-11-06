@@ -31,28 +31,25 @@ modification, are permitted provided that the following conditions are met:
 #include <xhive_config.h>
 
 /* Highest address of stack */
-extern uint32_t _estack[];
+extern uint32_t _estack;
 
 /* Start address for the initialization values of .data section */
-extern uint32_t _sidata[];
+extern uint32_t _sidata;
 
 /* Start address for the .data section */
-extern uint32_t _sdata[];
+extern uint32_t _sdata;
 
 /* End address for the .data section */
-extern uint32_t _edata[];
+extern uint32_t _edata;
 
 /* Start address for the .bss section */
-extern uint32_t _sbss[];
+extern uint32_t _sbss;
 
 /* End address for the .bss section */
-extern uint32_t _ebss[];
+extern uint32_t _ebss;
 
 extern void __libc_init_array(void);
 extern void __libc_fini_array(void);
-
-/* Vector table type */
-typedef void (*pfunc_t)(void);
 
 void Default_Handler(void);
 void Reset_Handler(void);
@@ -77,8 +74,8 @@ WEAK_ALIAS void SysTick_Handler(void);
 
 /* Vector table */
 __attribute__((section(".isr_vector")))
-const pfunc_t g_pfnVectors[] = {
-    (pfunc_t)(void *)(&_estack),   /* Initial stack pointer */
+const void* g_pfnVectors[] = {
+    &_estack,   /* Initial stack pointer */
     Reset_Handler,                 /* Reset handler */
     NMI_Handler,                   /* NMI handler */
     HardFault_Handler,             /* Hard Fault handler */
@@ -115,17 +112,17 @@ void Default_Handler(void)
 
 static void init_datas(void)
 {
-    uint32_t *src = _sidata;
-    uint32_t *dest = _sdata;
     /* Copy the data segment initializers from flash to SRAM */
-    while (dest < _edata) *dest++ = *src++;
+    uint32_t *src = &_sidata;
+    uint32_t *dst = &_sdata;
+    while(dst < &_edata) *dst++ = *src++;
 }
 
 static void fill_zeros(void)
 {
-    uint32_t *src = _sbss;
     /* Zero fill the bss segment. */
-    while (src < _ebss) *src++ = 0;
+    uint32_t *dst = &_sbss;
+    while(dst < &_ebss) *dst++ = 0;
 }
 
 __attribute__((weak))
@@ -136,14 +133,79 @@ void SystemInit(void)
 
 extern int main(void);
 
+#if 1
 __attribute__((noreturn))
 void Reset_Handler(void)
 {
+    /* Call SystemInit first to speed up initialization */
     SystemInit();
+
+    /* Initialize data and bss */
     init_datas();
     fill_zeros();
+
+    /* Call C library initialization */
     __libc_init_array();
+
+    /* Call main function */
     main();
+
+    /* Call C library cleanup */
     __libc_fini_array();
+
+    /* Infinite loop */
     while (1);
 }
+#else
+__attribute__((noreturn, naked))
+void Reset_Handler(void)
+{
+    __asm volatile(
+    "   ldr r0, =_estack                \n"  /* Load stack pointer address */
+    "   mov sp, r0                      \n"  /* Set stack pointer */
+
+    /* Copy the data segment initializers from flash to SRAM */
+    "   ldr r0, =_sdata                 \n"  /* Destination address (SRAM) */
+    "   ldr r1, =_edata                 \n"  /* End address */
+    "   ldr r2, =_sidata                \n"  /* Source address (flash) */
+    "   movs r3, #0                     \n"  /* Clear r3 for offset */
+    "   b LoopCopyDataInit              \n"  /* Branch to loop */
+    "CopyDataInit:                      \n"
+    "   ldr r4, [r2, r3]                \n"  /* Load from source */
+    "   str r4, [r0, r3]                \n"  /* Store to destination */
+    "   adds r3, r3, #4                 \n"  /* Increment offset */
+    "LoopCopyDataInit:                  \n"
+    "   adds r4, r0, r3                 \n"  /* Current dest address */
+    "   cmp r4, r1                      \n"  /* Compare with end */
+    "   bcc CopyDataInit                \n"  /* Branch if not done */
+
+    /* Zero fill the bss segment */
+    "   ldr r2, =_sbss                  \n"  /* Start address of bss */
+    "   ldr r4, =_ebss                  \n"  /* End address of bss */
+    "   movs r3, #0                     \n"  /* Clear r3 for offset */
+    "   b LoopZeroBSS                   \n"  /* Branch to loop */
+    "FillZeroBSS:                       \n"
+    "   str r3, [r2]                    \n"  /* Store zero */
+    "   adds r2, r2, #4                 \n"  /* Increment address */
+    "LoopZeroBSS:                       \n"
+    "   cmp r2, r4                      \n"  /* Compare with end */
+    "   bcc FillZeroBSS                 \n"  /* Branch if not done */
+
+    /* Call the clock system initialization function */
+    "   bl SystemInit                   \n"
+
+    /* Call C library initialization */
+    "   bl __libc_init_array            \n"  /* Initialize C library */
+
+    /* Call main function */
+    "   bl main                         \n"  /* Branch with link to main */
+
+    /* Call C library cleanup */
+    "   bl __libc_fini_array            \n"  /* Cleanup C library */
+
+    /* Infinite loop */
+    "LoopForever:                       \n"
+    "   b LoopForever                   \n"  /* Branch to self */
+    );
+}
+#endif

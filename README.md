@@ -10,6 +10,11 @@
 - **Automatic startup code generation**: Simplified project initialization
 - **Automatic linker script generation**: Optimized memory management
 
+## Requires
+- xmake >= 3.0.0
+- kconfiglib, pip package
+- windows-curses, pip package (for Windows platform)
+
 ## License
 
 This project is available under multiple licensing options:
