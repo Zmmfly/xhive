@@ -1,6 +1,11 @@
-# xHive
+# <center>xHive</center>
+<center>
+
+![GitHub stars](https://img.shields.io/github/stars/Zmmfly/xhive?style=social&logo=github) ![GitHub forks](https://img.shields.io/github/forks/Zmmfly/xhive?style=social&logo=github)
 
 🚀 Modern embedded SDK for ARM/RISC-V MCUs with intelligent build system, xmake-based. 
+
+</center>
 
 ## Features
 
