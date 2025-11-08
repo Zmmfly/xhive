@@ -26,4 +26,10 @@ menuconfig LIBS_ENABLE_MICRO_ECC
         rsource "micro-ecc/Kconfig"
     endif
 
+menuconfig LIBS_ENABLE_XXHASH
+    bool "Enable xxHash Library"
+    default n
+    help
+        Enable the xxHash library for fast hashing functions.
+
 endmenu # Libraries Configuration

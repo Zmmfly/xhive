@@ -1,7 +1,7 @@
 #ifndef __HEATSHRINK_KCONFIG_H__
 #define __HEATSHRINK_KCONFIG_H__
-
 #ifdef HEATSHRINK_CONFIG_H
+
 #include <xhive_config.h>
 
 #ifdef CONFIG_HEATSHRINK_DYNAMIC_ALLOC

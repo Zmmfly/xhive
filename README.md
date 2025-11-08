@@ -15,9 +15,16 @@
 - **Automatic linker script generation**: Optimized memory management
 
 ## Requires
+- python >= 3.10
 - xmake >= 3.0.0
-- kconfiglib, pip package
-- windows-curses, pip package (for Windows platform)
+- kconfiglib, Python pip package
+- windows-curses, Python pip package (for Windows platform)
+
+## Toolchain support
+
+- [x] `arm-none-eabi-gcc`
+- [x] `ATfE`, [repository](https://github.com/arm/arm-toolchain)
+- [ ] `riscv32-unknown-elf-gcc` (RISC-V support is under development)
 
 ## License
 
@@ -36,10 +43,3 @@ This project is available under multiple licensing options:
 3. **Full License Text**: The complete GPLv3 license text can be found on the [GNU official website](https://www.gnu.org/licenses/gpl-3.0.html).
 
 4. **Contributions**: This project accepts contributions under a CLA. All contributors must sign the CLA to ensure that code copyright and licensing comply with project requirements.
-
-## Toolchain
-
-### Arm Toolchain for Embedded(ATfE)
-
-参考: https://developer.arm.com/documentation/107976/20-1-0/C-and-C---libraries/Automatically-selecting-libraries-with-multilib
-

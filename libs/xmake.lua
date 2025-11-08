@@ -29,32 +29,24 @@ modification, are permitted provided that the following conditions are met:
 includes("cjson")
 includes("heatshrink")
 includes("micro-ecc")
+includes("xxhash")
 
 target("libs")
     set_kind("object")
     on_load(function(target)
-        local libs_map = {
+        local conf = target:data("kconfig") or {}
+        local maps = {
+            -- Edit this map to add new library dependencies or remove existing ones
             ["LIBS_ENABLE_CJSON"]      = "cjson",
             ["LIBS_ENABLE_HEATSHRINK"] = "heatshrink",
             ["LIBS_ENABLE_MICRO_ECC"]  = "micro-ecc",
+            ["LIBS_ENABLE_XXHASH"]     = "xxhash",
         }
-        local conf = target:data("kconfig")
 
-        for key, dep in pairs(libs_map) do
+        -- Add dependencies based on configuration
+        for key, dep in pairs(maps) do
             if conf[key] then
                 target:add("deps", dep)
             end
         end
-
-        -- if conf.LIBS_ENABLE_CJSON then
-        --     target:add("deps", "cjson")
-        -- end
-
-        -- if conf.LIBS_ENABLE_HEATSHRINK then
-        --     target:add("deps", "heatshrink")
-        -- end
-
-        -- if conf.LIBS_ENABLE_MICRO_ECC then
-        --     target:add("deps", "micro-ecc")
-        -- end
     end)

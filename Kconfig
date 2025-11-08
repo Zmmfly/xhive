@@ -24,4 +24,7 @@ rsource "vendor/Kconfig"
 # Include library configuration
 rsource "libs/Kconfig"
 
+# Include third-party library configuration
+rsource "third-party/Kconfig"
+
 # endmenu

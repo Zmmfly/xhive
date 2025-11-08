@@ -1,0 +1,159 @@
+
+config CPU_CORTEX_M0
+	bool
+	default n
+	select ARCH_ARM_V6M
+	help
+	  ARM Cortex-M0 processor
+
+config CPU_CORTEX_M0PLUS
+	bool
+	default n
+	select ARCH_ARM_V6M
+	help
+	  ARM Cortex-M0+ processor
+
+config CPU_CORTEX_M1
+	bool
+	default n
+	select ARCH_ARM_V6M
+	help
+	  ARM Cortex-M1 processor, optimized for FPGAs
+
+config CPU_CORTEX_M3
+	bool
+	default n
+	select ARCH_ARM_V7M
+	help
+	  ARM Cortex-M3 processor
+
+config CPU_CORTEX_M4
+	bool
+	default n
+	select ARCH_ARM_V7M
+	help
+	  ARM Cortex-M4 processor with DSP instructions
+
+config CPU_CORTEX_M7
+	bool
+	default n
+	select ARCH_ARM_V7M
+	help
+	  ARM Cortex-M7 processor with DSP instructions
+
+config CPU_CORTEX_M23
+	bool
+	default n
+	select ARCH_ARM_V8M_BASE
+	help
+	  ARM Cortex-M23 processor
+
+config CPU_CORTEX_M33
+	bool
+	default n
+	select ARCH_ARM_V8M_MAIN
+	help
+	  ARM Cortex-M33 processor with DSP instructions
+
+config CPU_CORTEX_M35P
+	bool
+	default n
+	select ARCH_ARM_V8M_MAIN
+	help
+	  ARM Cortex-M35P processor with DSP instructions
+
+config CPU_CORTEX_M55
+	bool
+	default n
+	select ARCH_ARM_V8M_MAIN
+	help
+	  ARM Cortex-M55 processor with DSP instructions and Helium MVE
+
+config CPU_CORTEX_M85
+	bool
+	default n
+	select ARCH_ARM_V8_1M_MAIN
+	help
+	  ARM Cortex-M85 processor with DSP instructions and Helium MVE v2
+
+# DSP Instructions Configuration
+config CPU_ARM_HAS_DSP_INST
+	bool
+	default y if CPU_CORTEX_M4 || CPU_CORTEX_M7 || CPU_CORTEX_M33 || CPU_CORTEX_M35P || CPU_CORTEX_M55 || CPU_CORTEX_M85
+	default n
+	help
+	  CPU supports DSP instructions (SIMD)
+
+# FPU Configuration
+if CPU_CORTEX_M4 || CPU_CORTEX_M7 || CPU_CORTEX_M33 || CPU_CORTEX_M35P || CPU_CORTEX_M55 || CPU_CORTEX_M85
+
+config CPU_ARM_FPU_NONE
+	# bool "No FPU"
+	bool
+	default n
+	depends on !CPU_CORTEX_M55 && !CPU_CORTEX_M85
+	help
+	  No floating point unit
+
+config CPU_ARM_FPU_SP
+	# bool "Single Precision FPU"
+	bool
+	default n
+	depends on !CPU_CORTEX_M23
+	help
+	  Single precision floating point unit (FPv4-SP or FPv5-SP)
+
+config CPU_ARM_FPU_DP
+	# bool "Double Precision FPU"
+	bool
+	default n
+	depends on CPU_CORTEX_M7 || CPU_CORTEX_M85
+	help
+	  Double precision floating point unit (FPv5-DP)
+
+# Force FPU configuration for certain cores
+config CPU_ARM_HAS_FPU
+	bool
+	default y if CPU_CORTEX_M55 || CPU_CORTEX_M85
+	default n
+
+config CPU_ARM_HAS_FPU_SP
+	bool
+	default y if CPU_ARM_FPU_SP || CPU_CORTEX_M55 || CPU_CORTEX_M85
+	default n
+
+config CPU_ARM_HAS_FPU_DP
+	bool
+	default y if CPU_ARM_FPU_DP || CPU_CORTEX_M85
+	default n
+
+endif
+
+# TrustZone Configuration
+if CPU_CORTEX_M23 || CPU_CORTEX_M33 || CPU_CORTEX_M35P || CPU_CORTEX_M55 || CPU_CORTEX_M85
+
+config CPU_ARM_HAS_TRUSTZONE
+	bool
+	default n
+	help
+	  Enable ARM TrustZone for Cortex-M Security Extensions
+
+endif
+
+# Helium MVE Configuration
+if CPU_CORTEX_M55 || CPU_CORTEX_M85
+
+config CPU_ARM_HAS_HELIUM
+	bool
+	default y
+	help
+	  CPU supports Arm Helium technology
+
+config CPU_ARM_HELIUM_VERSION
+	int
+	default 1 if CPU_CORTEX_M55
+	default 2 if CPU_CORTEX_M85
+	help
+	  Helium MVE version (1 = MVE, 2 = MVE v2)
+
+endif

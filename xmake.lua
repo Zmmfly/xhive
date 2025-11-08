@@ -53,6 +53,7 @@ namespace("xhive_embed", function()
         set_kind("object")
         add_deps("libs", {public=true})
         add_deps("vendor", {public=true})
+        add_deps("third-party", {public=true})
     target_end()
 end) -- xhive_embed
 

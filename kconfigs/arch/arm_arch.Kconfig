@@ -1,0 +1,53 @@
+config ARCH_ARM_V6M
+	bool
+	default n
+	help
+	  ARMv6-M architecture (Cortex-M0/M0+/M1)
+
+config ARCH_ARM_V7M
+	bool
+	default n
+	help
+	  ARMv7-M architecture (Cortex-M3/M4/M7)
+
+config ARCH_ARM_V8M_BASE
+	bool
+	default n
+	help
+	  ARMv8-M architecture (Cortex-M23)
+
+config ARCH_ARM_V8M_MAIN
+	bool
+	default n
+	help
+	  ARMv8-M Mainline architecture (Cortex-M33/M35P/M55)
+
+config ARCH_ARM_V8_1M_MAIN
+	bool
+	default n
+	help
+	  ARMv8.1-M Mainline architecture (Cortex-M85)
+
+config ARCH_ARM_V7A
+	bool
+	default n
+	help
+	  ARMv7-A architecture
+
+config ARCH_ARM_V7R
+	bool
+	default n
+	help
+	  ARMv7-R architecture
+
+config ARCH_ARM_V8A
+	bool
+	default n
+	help
+	  ARMv8-A architecture
+
+config ARCH_ARM_V8R
+	bool
+	default n
+	help
+	  ARMv8-R architecture

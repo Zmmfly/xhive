@@ -1,0 +1,41 @@
+menu "Third-party configurations"
+
+choice
+    prompt "Choice RTOS"
+    default THIRD_RTOS_NONE
+
+config THIRD_RTOS_NONE
+    bool "No RTOS"
+    help
+      Select this option if you do not want to use any RTOS.
+
+config THIRD_RTOS_FREERTOS
+    bool "FreeRTOS"
+    help
+      Select this option to use FreeRTOS as the RTOS for your embedded application.
+
+config THIRD_RTOS_RTTHREAD
+    bool "RT-Thread"
+    help
+      Select this option to use RT-Thread as the RTOS for your embedded application.
+endchoice
+
+if THIRD_RTOS_FREERTOS
+orsource "freertos/Kconfig"
+endif
+
+if THIRD_RTOS_RTTHREAD
+orsource "rtthread/Kconfig"
+endif
+
+menuconfig THIRD_SEGGER_RTT
+    bool "Enable SEGGER RTT"
+    default y
+    help
+        Enable this option to include SEGGER RTT (Real-Time Transfer) support in your embedded application for debugging and logging purposes.
+
+    if THIRD_SEGGER_RTT
+        orsource "SEGGER_RTT/Kconfig"
+    endif
+
+endmenu

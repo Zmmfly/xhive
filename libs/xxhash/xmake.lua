@@ -26,25 +26,9 @@ modification, are permitted provided that the following conditions are met:
    without specific prior written permission.
 ]]
 
-includes("freertos")
-includes("rt-thread")
-includes("SEGGER_RTT")
-
-target("third-party")
-    set_kind("object")
-    on_load(function(target)
-        local conf = target:data("kconfig") or {}
-        local maps = {
-            -- Edit this map to add new third-party dependencies or remove existing ones
-            ["THIRD_RTOS_FREERTOS"] = "freertos",
-            ["THIRD_RTOS_RTTHREAD"] = "rtthread",
-            ["THIRD_SEGGER_RTT"]    = "SEGGER_RTT",
-        }
-
-        -- Add dependencies based on configuration
-        for key, dep in pairs(maps) do
-            if conf[key] then
-                target:add("deps", dep)
-            end
-        end
-    end)
+target("xxhash")
+   set_kind("object")
+   set_default(false)
+   add_files("src/*.c")
+   add_includedirs("src")
+   add_includedirs("inc", {public = true})

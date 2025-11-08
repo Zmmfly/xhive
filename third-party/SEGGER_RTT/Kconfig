@@ -1,0 +1,51 @@
+config SEGGER_RTT_MAX_NUM_UP_BUFFERS
+    int "SEGGER RTT Max Number of Up Buffers"
+    default 3
+    help
+        Max. number of up-buffers (T->H) available on this target (Default: 3)
+
+config SEGGER_RTT_MAX_NUM_DOWN_BUFFERS
+    int "SEGGER RTT Max Number of Down Buffers"
+    default 3
+    help
+        Max. number of down-buffers (H->T) available on this target (Default: 3)
+
+config SEGGER_RTT_BUFFER_SIZE_UP
+    int "SEGGER RTT Size of Up Buffer"
+    default 1024
+    help
+        Size of the buffer for terminal output of target, up to host (Default: 1k)
+
+config SEGGER_RTT_BUFFER_SIZE_DOWN
+    int "SEGGER RTT Size of Down Buffer"
+    default 16
+    help
+        Size of the buffer for terminal input to target from host (Usually keyboard input) (Default: 16)
+
+config SEGGER_RTT_PRINTF_BUFFER_SIZE
+    int "SEGGER RTT Size of Printf Buffer"
+    default 64
+    help
+        Size of buffer for RTT printf to bulk-send chars via RTT (Default: 64)
+
+choice
+    prompt "SEGGER RTT Mode"
+    default SEGGER_RTT_MODE_NO_BLOCK_SKIP
+
+    config SEGGER_RTT_MODE_NO_BLOCK_SKIP
+        bool "No-Block Skip Mode"
+        help
+            In this mode, RTT will never block the target. If a buffer is full, the data will be skipped.
+
+    config SEGGER_RTT_MODE_NO_BLOCK_TRIM
+        bool "No-Block Trim Mode"
+        help
+            In this mode, RTT will never block the target. If a buffer is full, the oldest data in the buffer will be overwritten with new data.
+
+    config SEGGER_RTT_MODE_BLOCK_IF_FIFO_FULL
+        bool "Block If FIFO Full Mode"
+        help
+            In this mode, RTT will block the target if the buffer is full. This mode should only be used if it is guaranteed that the host is always reading the data.
+endchoice
+
+
