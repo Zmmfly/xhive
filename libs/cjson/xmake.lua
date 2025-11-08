@@ -26,9 +26,8 @@ modification, are permitted provided that the following conditions are met:
    without specific prior written permission.
 ]]
 
-target("micro-ecc")
-   set_kind("object")
-   set_default(false)
-   add_files("src/*.c")
-   add_includedirs("src")
-   add_includedirs("inc", {public = true})
+target("cjson")
+    set_kind("object")
+    set_default(false)
+    add_files("src/*.c")
+    add_includedirs("inc", {public = true})

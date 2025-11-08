@@ -26,8 +26,35 @@ modification, are permitted provided that the following conditions are met:
    without specific prior written permission.
 ]]
 
--- for _, dir in ipairs(os.dirs("libs/*")) do
---     local libname = path.basename(dir)
---     includes(libname)
--- end
-includes("*")
+includes("cjson")
+includes("heatshrink")
+includes("micro-ecc")
+
+target("libs")
+    set_kind("object")
+    on_load(function(target)
+        local libs_map = {
+            ["LIBS_ENABLE_CJSON"]      = "cjson",
+            ["LIBS_ENABLE_HEATSHRINK"] = "heatshrink",
+            ["LIBS_ENABLE_MICRO_ECC"]  = "micro-ecc",
+        }
+        local conf = target:data("kconfig")
+
+        for key, dep in pairs(libs_map) do
+            if conf[key] then
+                target:add("deps", dep)
+            end
+        end
+
+        -- if conf.LIBS_ENABLE_CJSON then
+        --     target:add("deps", "cjson")
+        -- end
+
+        -- if conf.LIBS_ENABLE_HEATSHRINK then
+        --     target:add("deps", "heatshrink")
+        -- end
+
+        -- if conf.LIBS_ENABLE_MICRO_ECC then
+        --     target:add("deps", "micro-ecc")
+        -- end
+    end)

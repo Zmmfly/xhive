@@ -1,0 +1,29 @@
+menu "Libraries Configuration"
+
+menuconfig LIBS_ENABLE_CJSON
+    bool "Enable cJSON Library"
+    default n
+    help
+        Enable the cJSON library for JSON parsing and serialization.
+
+menuconfig LIBS_ENABLE_HEATSHRINK
+    bool "Enable HeatsShrink Library"
+    default n
+    help
+        Enable the HeatsShrink library for data compression.  
+
+    if LIBS_ENABLE_HEATSHRINK
+        rsource "heatshrink/Kconfig"
+    endif
+
+menuconfig LIBS_ENABLE_MICRO_ECC
+    bool "Enable micro-ecc Library"
+    default n
+    help
+        Enable the micro-ecc library for ECC (Elliptic Curve Cryptography) operations.
+
+    if LIBS_ENABLE_MICRO_ECC
+        rsource "micro-ecc/Kconfig"
+    endif
+
+endmenu # Libraries Configuration

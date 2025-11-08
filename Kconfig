@@ -19,6 +19,9 @@ rsource "kconfigs/memory.Kconfig"
 rsource "kconfigs/common.Kconfig"
 
 # Include vendor-specific configuration
-orsource "vendor/Kconfig"
+rsource "vendor/Kconfig"
+
+# Include library configuration
+rsource "libs/Kconfig"
 
 # endmenu

@@ -34,18 +34,25 @@ includes("plugins")
 
 -- Define xhive_host namespace to include libraries for host builds to provide test isolation
 namespace("xhive_host", function()
+    add_rules("xhive.conf")
     includes("libs")
-end)
+    target("deps")
+        set_kind("object")
+        add_deps("libs", {public=true})
+    target_end()
+end) -- xhive_host
 
 -- Define xhive_embed namespace to include libraries for embedded builds
 namespace("xhive_embed", function()
-    add_rules("xhive.common")
+    add_rules("xhive.embed")
     includes("libs")
     includes("vendor")
     includes("third-party")
 
     target("deps")
         set_kind("object")
+        add_deps("libs", {public=true})
         add_deps("vendor", {public=true})
     target_end()
-end)
+end) -- xhive_embed
+

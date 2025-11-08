@@ -1,0 +1,35 @@
+config MICRO_ECC_ENABLE_SECP160R1
+    bool "Enable secp160r1 Curve Support"
+    default y
+    help
+        Enable support for the secp160r1 elliptic curve in the micro-ecc library.
+
+config MICRO_ECC_ENABLE_SECP192R1
+    bool "Enable secp192r1 Curve Support"
+    default y
+    help
+        Enable support for the secp192r1 elliptic curve in the micro-ecc library.
+
+config MICRO_ECC_ENABLE_SECP224R1
+    bool "Enable secp224r1 Curve Support"
+    default y
+    help
+        Enable support for the secp224r1 elliptic curve in the micro-ecc library.
+
+config MICRO_ECC_ENABLE_SECP256R1
+    bool "Enable secp256r1 Curve Support"
+    default y
+    help
+        Enable support for the secp256r1 elliptic curve in the micro-ecc library.
+
+config MICRO_ECC_ENABLE_SECP256K1
+    bool "Enable secp256k1 Curve Support"
+    default y
+    help
+        Enable support for the secp256k1 elliptic curve in the micro-ecc library.
+
+config MICRO_ECC_ENABLE_COMPRESSED_POINT
+    bool "Enable Compressed Point Support"
+    default y
+    help
+        Enable support for compressed points in the micro-ecc library, which reduces the size of public keys.

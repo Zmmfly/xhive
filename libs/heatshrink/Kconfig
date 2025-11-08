@@ -1,0 +1,36 @@
+
+choice
+    prompt "HeatsShrink Memory Allocation Method"
+    default HEATSHRINK_DYNAMIC_ALLOC
+
+    config HEATSHRINK_DYNAMIC_ALLOC
+        bool "Dynamic Memory Allocation"
+        help
+          Use dynamic memory allocation (malloc/free) for HeatsShrink buffers.
+
+    config HEATSHRINK_STATIC_ALLOC
+        bool "Static Memory Allocation"
+        help
+          Use static memory allocation for HeatsShrink buffers.
+endchoice
+
+config HEATSHRINK_STATIC_INPUT_BUFFER_SIZE
+    int "HeatsShrink Static Input Buffer Size"
+    depends on HEATSHRINK_STATIC_ALLOC
+    default 32
+    help
+      Specify the size of the static input buffer to be used by HeatsShrink when static memory allocation is selected.
+
+config HEATSHRINK_STATIC_WINDOWS_BITS
+    int "HeatsShrink Static Window Size (in bits)"
+    depends on HEATSHRINK_STATIC_ALLOC
+    default 8
+    help
+      Specify the window size (in bits) to be used by HeatsShrink when static memory allocation is selected.
+
+config HEATSHRINK_STATIC_LOOKAHEAD_BITS
+    int "HeatsShrink Static Lookahead Size (in bits)"
+    depends on HEATSHRINK_STATIC_ALLOC
+    default 4
+    help
+      Specify the lookahead size (in bits) to be used by HeatsShrink when static memory allocation is selected.

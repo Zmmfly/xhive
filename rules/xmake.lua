@@ -26,7 +26,128 @@ modification, are permitted provided that the following conditions are met:
    without specific prior written permission.
 ]]
 
-rule("xhive.common")
+rule("xhive.conf")
+    on_load(function(target)
+        import("xhive.kconf")
+        import("xhive.base")
+        import("core.cache.memcache")
+
+        --[[
+            This section is to ensure that a Kconfig file exists in the build directory. 
+            If it doesn't exist or content not same, it generates one that sources the local Kconfig file. 
+         ]]
+
+        -- Get buildir
+        local dirs      = base.load_paths()
+        local scriptdir = os.scriptdir()
+
+        kconf.build_entry()
+
+        --[[
+            This section is to parse .config file
+         ]]
+        local conf = memcache.get("xhive", "kconfig")
+        local dot_config_path = path.join(dirs.prjdir, kconf.load_name())
+        if os.isfile(dot_config_path) then
+            -- use cached kconfig if available
+            if conf then
+                target:data_add("kconfig", conf)
+            else
+                -- parse .config, add to target data and cache it
+                conf = kconf.parse_cached(dot_config_path)
+                target:data_add("kconfig", conf)
+                memcache.set("xhive", "kconfig", conf)
+            end
+        else
+            print("Warning: " .. kconf.load_name() .. " file not found at: " .. dot_config_path)
+            print("Please run 'xmake menuconfig' to config your project.")
+            return
+        end
+
+        --[[ 
+            This section to build header
+         ]]
+                -- Generate xhive_config.h by genconfig command
+        local header_generated = memcache.get("xhive", "header_on_load_" .. dirs.prjdir)
+        if not header_generated then
+            -- print("Generating xhive_config.h for target: " .. target:name() .. " on load")
+            kconf.build_header(dirs.prjdir)
+            memcache.set("xhive", "header_on_load_" .. dirs.prjdir, true)
+        else
+            -- print("xhive_config.h already generated for target: " .. target:name() .. " on load")
+        end
+        target:add("includedirs", dirs.builddir)
+
+        --[[ 
+            This section is to add common include directories and compiler related
+         ]]
+
+        -- Add common include directories
+        if conf.COMMON_INCLUDES and conf.COMMON_INCLUDES ~= "" then
+            local include_dirs = base.split_commas_paths(conf.COMMON_INCLUDES)
+            for _, dir in ipairs(include_dirs) do
+                target:add("includedirs", dir)
+            end
+        end
+
+        if conf.OPTIMIZE_NONE then
+            target:set("optimize", "none")
+        elseif conf.OPTIMIZE_FAST then 
+            target:set("optimize", "fast")
+        elseif conf.OPTIMIZE_FASTER then 
+            target:set("optimize", "faster")
+        elseif conf.OPTIMIZE_FASTEST then 
+            target:set("optimize", "fastest")
+        elseif conf.OPTIMIZE_SMALLEST then
+            target:set("optimize", "smallest")
+        elseif conf.OPTIMIZE_AGGRESSIVE then
+            target:set("optimize", "aggressive")
+        else
+            raise("No optimization level selected in kconfig for target: " .. target:name())
+        end
+        target:set("symbols", "debug")
+    end)
+rule_end()
+
+rule("xhive.embed")
+    add_deps("xhive.conf")
+    on_load(function(target)
+        import("xhive.kconf")
+        import("xhive.base")
+        import("core.cache.memcache")
+
+        local dirs      = base.load_paths()
+        local scriptdir = os.scriptdir()
+
+        --[[ 
+            This section is to set basic target properties
+         ]]
+        target:set("plat", "cross")
+        target:add("toolchains", "xhive_toolchain")
+
+        -- Set target extension, add deps for binary targets
+        if target:kind() == "binary" then
+            target:set("extension", ".elf")
+        end
+
+        -- Add xhive_embed::deps if target scriptdir not under sdkdir
+        local target_scriptdir = path.normalize(target:scriptdir())
+        if not target_scriptdir:startswith(dirs.sdkdir) then
+            target:add("deps", "xhive_embed::deps")
+        end
+
+        -- Generate xhive_config.h by genconfig command
+        local header_generated = memcache.get("xhive", "header_before_build_" .. dirs.prjdir)
+        if not header_generated then
+            -- print("Generating xhive_config.h for target: " .. target:name() .. " before build")
+            kconf.build_header(dirs.prjdir)
+            memcache.set("xhive", "header_before_build_" .. path.absolute(dirs.prjdir), true)
+        else
+            -- print("xhive_config.h already generated for target: " .. target:name() .. " before build")
+        end
+        target:add("includedirs", dirs.builddir)
+    end)
+
     before_build(function(target)
         import("xhive.kconf")
         import("xhive.proc")
@@ -97,100 +218,4 @@ rule("xhive.common")
         end
     end)
 
-    on_load(function(target)
-        import("xhive.kconf")
-        import("xhive.base")
-        import("core.cache.memcache")
-
-        --[[
-            This section is to ensure that a Kconfig file exists in the build directory. 
-            If it doesn't exist or content not same, it generates one that sources the local Kconfig file. 
-         ]]
-
-        -- Get buildir
-        local dirs      = base.load_paths()
-        local scriptdir = os.scriptdir()
-
-        kconf.build_entry()
-
-        --[[
-            This section is to parse .config file
-         ]]
-        local conf = memcache.get("xhive", "kconfig")
-        local dot_config_path = path.join(dirs.prjdir, kconf.load_name())
-        if os.isfile(dot_config_path) then
-            -- use cached kconfig if available
-            if conf then
-                target:data_add("kconfig", conf)
-            else
-                -- parse .config, add to target data and cache it
-                conf = kconf.parse_cached(dot_config_path)
-                target:data_add("kconfig", conf)
-                memcache.set("xhive", "kconfig", conf)
-            end
-        else
-            print("Warning: " .. kconf.load_name() .. " file not found at: " .. dot_config_path)
-            print("Please run 'xmake menuconfig' to config your project.")
-            return
-        end
-
-        --[[ 
-            This section to build header
-         ]]
-                -- Generate xhive_config.h by genconfig command
-        local header_generated = memcache.get("xhive", "header_on_load_" .. dirs.prjdir)
-        if not header_generated then
-            -- print("Generating xhive_config.h for target: " .. target:name() .. " on load")
-            kconf.build_header(dirs.prjdir)
-            memcache.set("xhive", "header_on_load_" .. dirs.prjdir, true)
-        else
-            -- print("xhive_config.h already generated for target: " .. target:name() .. " on load")
-        end
-
-        --[[ 
-            This section is to add common include directories and compiler related
-         ]]
-
-        -- Add common include directories
-        if conf.COMMON_INCLUDES and conf.COMMON_INCLUDES ~= "" then
-            local include_dirs = base.split_commas_paths(conf.COMMON_INCLUDES)
-            for _, dir in ipairs(include_dirs) do
-                target:add("includedirs", dir)
-            end
-        end
-
-        --[[ 
-            This section is to set basic target properties
-         ]]
-        target:set("plat", "cross")
-        target:add("toolchains", "xhive_toolchain")
-
-        -- Set target extension, add deps for binary targets
-        if target:kind() == "binary" then
-            target:set("extension", ".elf")
-        end
-
-        -- Add xhive_embed::deps if target scriptdir not under sdkdir
-        local target_scriptdir = path.normalize(target:scriptdir())
-        if not target_scriptdir:startswith(dirs.sdkdir) then
-            target:add("deps", "xhive_embed::deps")
-        end
-
-        if conf.OPTIMIZE_NONE then
-            target:set("optimize", "none")
-        elseif conf.OPTIMIZE_FAST then 
-            target:set("optimize", "fast")
-        elseif conf.OPTIMIZE_FASTER then 
-            target:set("optimize", "faster")
-        elseif conf.OPTIMIZE_FASTEST then 
-            target:set("optimize", "fastest")
-        elseif conf.OPTIMIZE_SMALLEST then
-            target:set("optimize", "smallest")
-        elseif conf.OPTIMIZE_AGGRESSIVE then
-            target:set("optimize", "aggressive")
-        else
-            raise("No optimization level selected in kconfig for target: " .. target:name())
-        end
-        target:set("symbols", "debug")
-    end)
 rule_end()
