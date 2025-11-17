@@ -6,6 +6,12 @@
 🚀 Modern embedded SDK for ARM/RISC-V MCUs with intelligent build system, xmake-based. 
 </div>
 
+## Maintenance Notice
+
+- This project is maintained by an individual developer during personal time. While usage and issue reporting are welcome, please understand that timely responses to all requests cannot be guaranteed.
+- For commercial projects or applications requiring long-term support, commercial support options are recommended to ensure project stability and continuous maintenance.
+- Currently, considering the early-stage maintenance costs of the project, external code contributions are not being accepted. If you have feature requests or improvement suggestions, please submit them via issues, and I will evaluate them for future integration.
+
 ## Features
 
 - **Multi-architecture MCU support**: ARM Cortex-M, RISC-V, and more
@@ -31,7 +37,6 @@
 This project is available under multiple licensing options:
 
 - **GPLv3**: For open source projects
-- **CLA**: Contributor License Agreement for contributions
 - **Commercial License**: For proprietary commercial use
 
 ### License Terms
