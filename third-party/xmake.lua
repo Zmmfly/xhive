@@ -37,7 +37,7 @@ target("third-party")
         local maps = {
             -- Edit this map to add new third-party dependencies or remove existing ones
             ["THIRD_RTOS_FREERTOS"] = "freertos",
-            ["THIRD_RTOS_RTTHREAD"] = "rtthread",
+            ["THIRD_RTOS_RTTHREAD"] = "rt-thread::deps",
             ["THIRD_SEGGER_RTT"]    = "SEGGER_RTT",
         }
 

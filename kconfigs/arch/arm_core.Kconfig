@@ -1,159 +1,171 @@
+config CORE_ARM_CORTEX_M
+	bool
+	default n
+	help
+	  ARM Cortex-M processor family
 
-config CPU_CORTEX_M0
+config CORE_ARM_CORTEX_R
+	bool
+	default n
+	help
+	  ARM Cortex-R processor family
+
+config CORE_ARM_CORTEX_A
+	bool
+	default n
+	help
+	  ARM Cortex-A processor family
+
+config CORE_ARM_CORTEX_M0
 	bool
 	default n
 	select ARCH_ARM_V6M
+	select CORE_ARM_CORTEX_M
 	help
 	  ARM Cortex-M0 processor
 
-config CPU_CORTEX_M0PLUS
+config CORE_ARM_CORTEX_M0P
 	bool
 	default n
 	select ARCH_ARM_V6M
+	select CORE_ARM_CORTEX_M
 	help
 	  ARM Cortex-M0+ processor
 
-config CPU_CORTEX_M1
+config CORE_ARM_CORTEX_M1
 	bool
 	default n
 	select ARCH_ARM_V6M
+	select CORE_ARM_CORTEX_M
 	help
 	  ARM Cortex-M1 processor, optimized for FPGAs
 
-config CPU_CORTEX_M3
+config CORE_ARM_CORTEX_M3
 	bool
 	default n
 	select ARCH_ARM_V7M
+	select CORE_ARM_CORTEX_M
 	help
 	  ARM Cortex-M3 processor
 
-config CPU_CORTEX_M4
+config CORE_ARM_CORTEX_M4
 	bool
 	default n
 	select ARCH_ARM_V7M
+	select CORE_ARM_CORTEX_M
 	help
 	  ARM Cortex-M4 processor with DSP instructions
 
-config CPU_CORTEX_M7
+config CORE_ARM_CORTEX_M7
 	bool
 	default n
 	select ARCH_ARM_V7M
+	select CORE_ARM_CORTEX_M
 	help
 	  ARM Cortex-M7 processor with DSP instructions
 
-config CPU_CORTEX_M23
+config CORE_ARM_CORTEX_M23
 	bool
 	default n
 	select ARCH_ARM_V8M_BASE
+	select CORE_ARM_CORTEX_M
 	help
 	  ARM Cortex-M23 processor
 
-config CPU_CORTEX_M33
+config CORE_ARM_CORTEX_M33
 	bool
 	default n
 	select ARCH_ARM_V8M_MAIN
+	select CORE_ARM_CORTEX_M
 	help
 	  ARM Cortex-M33 processor with DSP instructions
 
-config CPU_CORTEX_M35P
+config CORE_ARM_CORTEX_M35P
 	bool
 	default n
 	select ARCH_ARM_V8M_MAIN
+	select CORE_ARM_CORTEX_M
 	help
 	  ARM Cortex-M35P processor with DSP instructions
 
-config CPU_CORTEX_M55
+config CORE_ARM_CORTEX_M55
 	bool
 	default n
 	select ARCH_ARM_V8M_MAIN
+	select CORE_ARM_CORTEX_M
 	help
 	  ARM Cortex-M55 processor with DSP instructions and Helium MVE
 
-config CPU_CORTEX_M85
+config CORE_ARM_CORTEX_M85
 	bool
 	default n
 	select ARCH_ARM_V8_1M_MAIN
+	select CORE_ARM_CORTEX_M
 	help
 	  ARM Cortex-M85 processor with DSP instructions and Helium MVE v2
 
-# DSP Instructions Configuration
-config CPU_ARM_HAS_DSP_INST
+config CORE_ARM_CORTEX_R4
 	bool
-	default y if CPU_CORTEX_M4 || CPU_CORTEX_M7 || CPU_CORTEX_M33 || CPU_CORTEX_M35P || CPU_CORTEX_M55 || CPU_CORTEX_M85
 	default n
+	select ARCH_ARM_V7R
+	select CORE_ARM_CORTEX_R
 	help
-	  CPU supports DSP instructions (SIMD)
+	  ARM Cortex-R4 processor
 
-# FPU Configuration
-if CPU_CORTEX_M4 || CPU_CORTEX_M7 || CPU_CORTEX_M33 || CPU_CORTEX_M35P || CPU_CORTEX_M55 || CPU_CORTEX_M85
-
-config CPU_ARM_FPU_NONE
-	# bool "No FPU"
+config CORE_ARM_CORTEX_R5
 	bool
 	default n
-	depends on !CPU_CORTEX_M55 && !CPU_CORTEX_M85
+	select ARCH_ARM_V7R
+	select CORE_ARM_CORTEX_R
 	help
-	  No floating point unit
+	  ARM Cortex-R5 processor
 
-config CPU_ARM_FPU_SP
-	# bool "Single Precision FPU"
+config CORE_ARM_CORTEX_R52
 	bool
 	default n
-	depends on !CPU_CORTEX_M23
+	select ARCH_ARM_V8R
+	select CORE_ARM_CORTEX_R
 	help
-	  Single precision floating point unit (FPv4-SP or FPv5-SP)
+	  ARM Cortex-R52 processor with TrustZone support
 
-config CPU_ARM_FPU_DP
-	# bool "Double Precision FPU"
+config CORE_ARM_CORTEX_A5
 	bool
 	default n
-	depends on CPU_CORTEX_M7 || CPU_CORTEX_M85
+	select ARCH_ARM_V7A
 	help
-	  Double precision floating point unit (FPv5-DP)
+	  ARM Cortex-A5 processor
 
-# Force FPU configuration for certain cores
-config CPU_ARM_HAS_FPU
-	bool
-	default y if CPU_CORTEX_M55 || CPU_CORTEX_M85
-	default n
-
-config CPU_ARM_HAS_FPU_SP
-	bool
-	default y if CPU_ARM_FPU_SP || CPU_CORTEX_M55 || CPU_CORTEX_M85
-	default n
-
-config CPU_ARM_HAS_FPU_DP
-	bool
-	default y if CPU_ARM_FPU_DP || CPU_CORTEX_M85
-	default n
-
-endif
-
-# TrustZone Configuration
-if CPU_CORTEX_M23 || CPU_CORTEX_M33 || CPU_CORTEX_M35P || CPU_CORTEX_M55 || CPU_CORTEX_M85
-
-config CPU_ARM_HAS_TRUSTZONE
+config CORE_ARM_CORTEX_A7
 	bool
 	default n
+	select ARCH_ARM_V7A
 	help
-	  Enable ARM TrustZone for Cortex-M Security Extensions
+	  ARM Cortex-A7 processor
 
-endif
-
-# Helium MVE Configuration
-if CPU_CORTEX_M55 || CPU_CORTEX_M85
-
-config CPU_ARM_HAS_HELIUM
+config CORE_ARM_CORTEX_A8
 	bool
-	default y
+	default n
+	select ARCH_ARM_V7A
 	help
-	  CPU supports Arm Helium technology
+	  ARM Cortex-A8 processor
 
-config CPU_ARM_HELIUM_VERSION
-	int
-	default 1 if CPU_CORTEX_M55
-	default 2 if CPU_CORTEX_M85
+config CORE_ARM_CORTEX_A9
+	bool
+	default n
+	select ARCH_ARM_V7A
 	help
-	  Helium MVE version (1 = MVE, 2 = MVE v2)
+	  ARM Cortex-A9 processor
 
-endif
+config CORE_ARM_CORTEX_A53
+	bool
+	default n
+	select ARCH_ARM_V8A
+	help
+	  ARM Cortex-A53 processor
+
+config CORE_ARM_CORTEX_A55
+	bool
+	default n
+	select ARCH_ARM_V8A
+	help
+	  ARM Cortex-A55 processor

@@ -195,6 +195,7 @@ rule("xhive.embed")
         local conf = target:data("kconfig")
         if target:kind() == "binary" then
             import("xhive.toolset")
+            import("xhive.proc")
             local elf_path = target:targetfile()
             local cc_path  = target:tool("cc")
             local bin_path = path.join(path.directory(elf_path), path.basename(elf_path) .. ".bin")
@@ -204,17 +205,15 @@ rule("xhive.embed")
             print("Generated binary file: " .. bin_path)
             
             -- Display binary size in KB with 2 decimal places
-            local bin_size    = os.filesize(bin_path) or 0
-            local rom_len     = conf.ROM_LENGTH * 1024
-            local rom_used_kb = bin_size / 1024
-            local rom_usage   = bin_size / rom_len * 100
-            print(string.format("ROM used: %7d / %7d, ~ %5.2f%%, ~ %6.2f KB", bin_size, rom_len, rom_used_kb, rom_usage))
+            local bin_size  = os.filesize(bin_path) or 0
+            local rom_len   = conf.ROM_LENGTH * 1024
+            local rom_usage = bin_size / rom_len * 100
+            print(string.format("ROM used: %7d / %7d, ~ %5.2f%%, ~ %s", bin_size, rom_len, rom_usage, proc.len2hum(bin_size, 2)))
 
-            local ram_used = toolset.elf_ram_usage(cc_path, elf_path)
-            local ram_len = conf.RAM_LENGTH * 1024
-            local ram_used_kb = ram_used / 1024
+            local ram_used  = toolset.elf_ram_usage(cc_path, elf_path)
+            local ram_len   = conf.RAM_LENGTH * 1024
             local ram_usage = ram_used / ram_len * 100
-            print(string.format("RAM used: %7d / %7d, ~ %5.2f%%, ~ %6.2f KB", ram_used, ram_len, ram_usage, ram_used_kb))
+            print(string.format("RAM used: %7d / %7d, ~ %5.2f%%, ~ %s", ram_used, ram_len, ram_usage, proc.len2hum(ram_used, 2)))
         end
     end)
 

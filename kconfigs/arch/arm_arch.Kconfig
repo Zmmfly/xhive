@@ -1,53 +1,136 @@
+config ARCH_ARM_AARCH32
+	bool
+	default n
+	select CPU_ARM
+	help
+	  	Enable ARM AArch32 architecture support
+
+config ARCH_ARM_AARCH64
+	bool
+	default n
+	select CPU_ARM
+	help
+	  	Enable ARM AArch64 architecture support
+
+config ARCH_ARM_LEGACY_ARM9
+	bool
+	default n
+	select ARCH_ARM_AARCH32
+	help
+	  	Legacy ARM9 architecture
+
+config ARCH_ARM_LEGACY_ARM11
+	bool
+	default n
+	select ARCH_ARM_AARCH32
+	help
+	  	Legacy ARM11 architecture
+
 config ARCH_ARM_V6M
 	bool
 	default n
+	select ARCH_ARM_AARCH32
 	help
-	  ARMv6-M architecture (Cortex-M0/M0+/M1)
+	  	ARMv6-M architecture (Cortex-M0/M0+/M1)
 
 config ARCH_ARM_V7M
 	bool
 	default n
+	select ARCH_ARM_AARCH32
 	help
-	  ARMv7-M architecture (Cortex-M3/M4/M7)
-
-config ARCH_ARM_V8M_BASE
-	bool
-	default n
-	help
-	  ARMv8-M architecture (Cortex-M23)
-
-config ARCH_ARM_V8M_MAIN
-	bool
-	default n
-	help
-	  ARMv8-M Mainline architecture (Cortex-M33/M35P/M55)
-
-config ARCH_ARM_V8_1M_MAIN
-	bool
-	default n
-	help
-	  ARMv8.1-M Mainline architecture (Cortex-M85)
+	  	ARMv7-M architecture (Cortex-M3/M4/M7)
 
 config ARCH_ARM_V7A
 	bool
 	default n
+	select ARCH_ARM_AARCH32
 	help
-	  ARMv7-A architecture
+	  	ARMv7-A architecture
 
 config ARCH_ARM_V7R
 	bool
 	default n
+	select ARCH_ARM_AARCH32
 	help
-	  ARMv7-R architecture
+	  	ARMv7-R architecture
+
+config ARCH_ARM_V8M_BASE
+	bool
+	default n
+	select ARCH_ARM_AARCH32
+	help
+	  	ARMv8-M architecture (Cortex-M23)
+
+config ARCH_ARM_V8M_MAIN
+	bool
+	default n
+	select ARCH_ARM_AARCH32
+	help
+	  	ARMv8-M Mainline architecture (Cortex-M33/M35P/M55)
+
+config ARCH_ARM_V8_1M_MAIN
+	bool
+	default n
+	select ARCH_ARM_AARCH32
+	help
+	  	ARMv8.1-M Mainline architecture (Cortex-M85)
 
 config ARCH_ARM_V8A
 	bool
 	default n
+	select ARCH_ARM_AARCH64
 	help
-	  ARMv8-A architecture
+	  	ARMv8-A architecture
 
 config ARCH_ARM_V8R
 	bool
 	default n
+	select ARCH_ARM_AARCH32
 	help
-	  ARMv8-R architecture
+	  	ARMv8-R architecture
+
+config ARCH_ARM_FPU
+	bool
+	default n
+	help
+	  	Enable floating point unit support
+
+config ARCH_ARM_FPU_SINGLE
+	bool
+	select ARCH_ARM_FPU
+	default n
+	help
+	  	Enable single-precision floating point unit support
+
+config ARCH_ARM_FPU_DOUBLE
+	bool
+	select ARCH_ARM_FPU
+	default n
+	help
+	  	Enable double-precision floating point unit support
+
+config ARCH_ARM_DSP_INST
+	bool
+	default n
+	help
+	  	CPU supports DSP instructions (SIMD)
+
+config ARCH_ARM_TRUSTZONE
+	bool
+	default n
+	help
+	  	Enable ARM TrustZone for Cortex-M Security Extensions
+
+config ARCH_ARM_HELIUM
+	bool
+	default n
+	help
+	  	Enable ARM Helium technology
+
+config ARCH_ARM_HELIUM_VERSION
+	int
+	depends on ARM_HELIUM
+	default 1 if CORE_ARM_CORTEX_M55
+	default 2 if CORE_ARM_CORTEX_M85
+	help
+	  Helium MVE version (1 = MVE, 2 = MVE v2)

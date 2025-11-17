@@ -69,6 +69,8 @@ WEAK_ALIAS void DebugMon_Handler(void);
 WEAK_ALIAS void PendSV_Handler(void);
 WEAK_ALIAS void SysTick_Handler(void);
 
+// DO NOT REMOVE THE COMMENTS BELOW, THEY ARE USED TO MARK THE PLACE TO INSERT PERIPHERAL INTERRUPT HANDLERS
+
 /* Peripheral Interrupt Handlers begin */
 /* Peripheral Interrupt Handlers end */
 
@@ -101,6 +103,9 @@ const void* g_pfnVectors[] = {
     0,                             /* Reserved */
     PendSV_Handler,                /* PendSV handler */
     SysTick_Handler,               /* SysTick handler */
+
+// DO NOT REMOVE THE COMMENTS BELOW, THEY ARE USED TO MARK THE PLACE TO INSERT PERIPHERAL INTERRUPT VECTORS
+
 /* Peripheral Interrupts begin */
 /* Peripheral Interrupts end */
 };
@@ -133,6 +138,13 @@ void SystemInit(void)
 
 extern int main(void);
 
+#if defined(CONFIG_THIRD_RTOS_RTTHREAD) && defined(CONFIG_RT_USING_USER_MAIN)
+
+extern int entry(void);
+#define USE_ENTRY
+
+#endif // CONFIG_THIRD_RTOS_RTTHREAD && CONFIG_RT_USING_USER_MAIN
+
 __attribute__((noreturn))
 void Reset_Handler(void)
 {
@@ -150,15 +162,23 @@ void Reset_Handler(void)
     SystemInit();
     #endif
 
+    #ifdef CONFIG_THIRD_RTOS_NONE
     /* Call C library initialization */
     __libc_init_array();
+    #endif
 
-    /* Call main function */
+    /* Call entry function */
+    #if defined(USE_ENTRY)
+    entry();
+    #else
     main();
+    #endif
 
+    #ifdef CONFIG_THIRD_RTOS_NONE
     /* Call C library cleanup */
     __libc_fini_array();
+    #endif
 
-    /* Infinite loop */
+    /* Infinite loop, usually cannot be reached */
     while (1);
 }

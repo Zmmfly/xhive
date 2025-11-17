@@ -1,0 +1,119 @@
+config CORE_RISCV_E902
+    bool
+    default n
+    help
+        T-Head E902 core processor
+
+config CORE_RISCV_E906
+    bool
+    default n
+    help
+        T-Head E906 core processor
+
+config CORE_RISCV_E907
+    bool
+    default n
+    help
+        T-Head E907 core processor
+
+config CORE_RISCV_C906
+    bool
+    default n
+    help
+        T-Head C906 core processor
+
+config CORE_RISCV_C910
+    bool
+    default n
+    help
+        T-Head C910 core processor
+
+config CORE_RISCV_BUMBLEBEE
+    bool
+    default n
+    help
+        Nuclei Bumblebee core processor
+
+config CORE_RISCV_QINGKE_V2A
+    bool
+    default n
+    help
+        WCH Qingke V2A core processor
+
+config CORE_RISCV_QINGKE_V2C
+    bool
+    default n
+    help
+        WCH Qingke V2C core processor
+
+config CORE_RISCV_QINGKE_V3A
+    bool
+    default n
+    help
+        WCH Qingke V3A core processor
+
+config CORE_RISCV_QINGKE_V3B
+    bool
+    default n
+    help
+        WCH Qingke V3B core processor
+
+config CORE_RISCV_QINGKE_V3C
+    bool
+    default n
+    help
+        WCH Qingke V3C core processor
+
+config CORE_RISCV_QINGKE_V3F
+    bool
+    default n
+    help
+        WCH Qingke V3F core processor
+
+config CORE_RISCV_QINGKE_V4A
+    bool
+    default n
+    help
+        WCH Qingke V4A core processor
+
+config CORE_RISCV_QINGKE_V4B
+    bool
+    default n
+    help
+        WCH Qingke V4B core processor
+
+config CORE_RISCV_QINGKE_V4C
+    bool
+    default n
+    help
+        WCH Qingke V4C core processor
+
+config CORE_RISCV_QINGKE_V4F
+    bool
+    default n
+    help
+        WCH Qingke V4F core processor
+
+config CORE_RISCV_QINGKE_V4J
+    bool
+    default n
+    help
+        WCH Qingke V4J core processor
+
+config CORE_RISCV_QINGKE_V5F
+    bool
+    default n
+    help
+        WCH Qingke V5F core processor
+
+config CORE_ANDES_D45
+    bool
+    default n
+    help
+        Andes D45 core processor
+
+config CORE_ANDES_D25F
+    bool
+    default n
+    help
+        Andes D25F core processor

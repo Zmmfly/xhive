@@ -19,9 +19,23 @@ config CPU_RISCV
 	help
 	  Select RISC-V processors
 
+config CPU_32BITS
+	bool
+	default n
+	help
+	  Select 32-bit CPU architecture
+
+config CPU_64BITS
+	bool
+	default n
+	help
+	  Select 64-bit CPU architecture
+
 rsource "arch/arm_arch.Kconfig"
 rsource "arch/arm_core.Kconfig"
+rsource "arch/riscv_arch.Kconfig"
 rsource "arch/riscv_inst.Kconfig"
+rsource "arch/riscv_core.Kconfig"
 
 # Common CPU Configuration
 config CPU_LITTLE_ENDIAN

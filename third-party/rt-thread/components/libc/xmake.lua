@@ -1,0 +1,12 @@
+includes("compilers")
+includes("cplusplus")
+includes("posix")
+
+target("libc")
+    set_kind("object")
+    add_deps("compilers", {public=true})
+    add_deps("cplusplus", {public=true})
+    add_deps("posix", {public=true})
+    on_load(function(target)
+        local conf = target:data("kconfig")
+    end)

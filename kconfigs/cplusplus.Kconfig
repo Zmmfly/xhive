@@ -1,0 +1,26 @@
+menu "C++ Support"
+
+config CPP_SUPPORT
+    bool "Enable C++ Support"
+    default y
+    help
+      Enable this option to add support for C++ in the project.
+      This includes necessary configurations and settings to compile and link C++ code.
+
+config CPP_EXCEPTIONS
+    bool "Enable C++ Exceptions"
+    depends on CPLUSPLUS_SUPPORT
+    default n
+    help
+      Enable this option to support C++ exception handling.
+      Note that enabling exceptions may increase code size and impact performance.
+
+config CPP_RTTI
+    bool "Enable C++ RTTI (Run-Time Type Information)"
+    depends on CPLUSPLUS_SUPPORT
+    default n
+    help
+      Enable this option to support Run-Time Type Information in C++.
+      RTTI allows the use of dynamic_cast and typeid operators.
+
+endmenu

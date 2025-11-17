@@ -119,56 +119,52 @@ function build_arm_flags(conf)
     table.insert(ldflags, "-mthumb")
 
     -- Determine CPU core and set corresponding flags
-    local cpu_flags = {}
-    if conf.CPU_CORTEX_M0 then
-        cpu_flags = {"-mcpu=cortex-m0"}
-    elseif conf.CPU_CORTEX_M0PLUS then
-        cpu_flags = {"-mcpu=cortex-m0plus"}
-    elseif conf.CPU_CORTEX_M1 then
-        cpu_flags = {"-mcpu=cortex-m1"}
-    elseif conf.CPU_CORTEX_M3 then
-        cpu_flags = {"-mcpu=cortex-m3"}
-    elseif conf.CPU_CORTEX_M4 then
-        cpu_flags = {"-mcpu=cortex-m4"}
-    elseif conf.CPU_CORTEX_M7 then
-        cpu_flags = {"-mcpu=cortex-m7"}
-    elseif conf.CPU_CORTEX_M23 then
-        cpu_flags = {"-mcpu=cortex-m23"}
-    elseif conf.CPU_CORTEX_M33 then
-        cpu_flags = {"-mcpu=cortex-m33"}
-    elseif conf.CPU_CORTEX_M35P then
-        cpu_flags = {"-mcpu=cortex-m35p"}
-    elseif conf.CPU_CORTEX_M55 then
-        cpu_flags = {"-mcpu=cortex-m55"}
-    elseif conf.CPU_CORTEX_M85 then
-        cpu_flags = {"-mcpu=cortex-m85"}
-    else
-        raise("No valid ARM Cortex-M core selected")
+    local cpu_flag = nil
+    local cpu_maps = {
+        CORE_ARM_CORTEX_M0   = "-mcpu=cortex-m0",
+        CORE_ARM_CORTEX_M0P  = "-mcpu=cortex-m0plus",
+        CORE_ARM_CORTEX_M1   = "-mcpu=cortex-m1",
+        CORE_ARM_CORTEX_M3   = "-mcpu=cortex-m3",
+        CORE_ARM_CORTEX_M4   = "-mcpu=cortex-m4",
+        CORE_ARM_CORTEX_M7   = "-mcpu=cortex-m7",
+        CORE_ARM_CORTEX_M23  = "-mcpu=cortex-m23",
+        CORE_ARM_CORTEX_M33  = "-mcpu=cortex-m33",
+        CORE_ARM_CORTEX_M35P = "-mcpu=cortex-m35plus",
+        CORE_ARM_CORTEX_M55  = "-mcpu=cortex-m55",
+        CORE_ARM_CORTEX_M85  = "-mcpu=cortex-m85",
+    }
+
+    for core_macro, flag in pairs(cpu_maps) do
+        if conf[core_macro] then
+            cpu_flag = flag
+            break
+        end
+    end
+    if not cpu_flag then
+        raise("No valid ARM CPU core specified in configuration")
     end
 
     -- Apply CPU flags to all stages
-    for _, flag in ipairs(cpu_flags) do
-        table.insert(cxflags, flag)
-        table.insert(asflags, flag)
-        table.insert(ldflags, flag)
-    end
+    table.insert(cxflags, cpu_flag)
+    table.insert(asflags, cpu_flag)
+    table.insert(ldflags, cpu_flag)
 
     -- FPU configuration
     local fpu_flags = {}
-    if conf.CPU_FPU_SP or conf.CPU_HAS_FPU_SP then
-        if conf.CPU_CORTEX_M4 then
+    if conf.ARCH_ARM_FPU and conf.ARCH_ARM_FPU_SINGLE then
+        if conf.CORE_ARM_CORTEX_M4 then
             fpu_flags = {"-mfloat-abi=hard", "-mfpu=fpv4-sp-d16"}
-        elseif conf.CPU_CORTEX_M7 or conf.CPU_CORTEX_M33 or conf.CPU_CORTEX_M35P then
+        elseif conf.CORE_ARM_CORTEX_M7 or conf.CORE_ARM_CORTEX_M33 or conf.CORE_ARM_CORTEX_M35P then
             fpu_flags = {"-mfloat-abi=hard", "-mfpu=fpv5-sp-d16"}
-        elseif conf.CPU_CORTEX_M55 then
+        elseif conf.CORE_ARM_CORTEX_M55 then
             fpu_flags = {"-mfloat-abi=hard", "-mfpu=fpv5-sp-d16"}
-        elseif conf.CPU_CORTEX_M85 then
+        elseif conf.CORE_ARM_CORTEX_M85 then
             fpu_flags = {"-mfloat-abi=hard", "-mfpu=fpv5-sp-d16"}
         end
-    elseif conf.CPU_FPU_DP or conf.CPU_HAS_FPU_DP then
-        if conf.CPU_CORTEX_M7 then
+    elseif conf.ARCH_ARM_FPU and conf.ARCH_ARM_FPU_DOUBLE then
+        if conf.CORE_ARM_CORTEX_M7 then
             fpu_flags = {"-mfloat-abi=hard", "-mfpu=fpv5-d16"}
-        elseif conf.CPU_CORTEX_M85 then
+        elseif conf.CORE_ARM_CORTEX_M85 then
             fpu_flags = {"-mfloat-abi=hard", "-mfpu=fpv5-d16"}
         end
     else
@@ -196,12 +192,6 @@ function build_arm_flags(conf)
     end
 
     if conf.COMPILER_ARM_GCC then
-        -- GCC specific flags
-        -- if conf.CPU_HAS_DSP then
-        --     table.insert(cxflags, "-DARM_MATH_CM4")
-        --     table.insert(cxflags, "-D__FPU_PRESENT=1")
-        -- end
-
         -- LTO support
         if conf.COMPILER_ENABLE_LTO then
             table.insert(cxflags, "-flto")
@@ -219,11 +209,6 @@ function build_arm_flags(conf)
         table.insert(asflags, "--target=arm-none-eabi")
         table.insert(ldflags, "--target=arm-none-eabi")
 
-        -- if conf.CPU_HAS_DSP then
-        --     table.insert(cxflags, "-DARM_MATH_CM4")
-        --     table.insert(cxflags, "-D__FPU_PRESENT=1")
-        -- end
-
         -- LTO support
         if conf.COMPILER_ENABLE_LTO then
             if conf.LTO_MODE_THIN then
@@ -236,18 +221,18 @@ function build_arm_flags(conf)
         end
 
         -- Helium MVE support for newer cores
-        if conf.CPU_HAS_HELIUM then
-            if conf.CPU_HELIUM_VERSION == 1 then
+        if conf.ARCH_ARM_HELIUM then
+            if conf.ARCH_ARM_HELIUM_VERSION == 1 then
                 table.insert(cxflags, "-march=armv8.1-m.main+mve")
                 table.insert(asflags, "-march=armv8.1-m.main+mve")
-            elseif conf.CPU_HELIUM_VERSION == 2 then
+            elseif conf.ARCH_ARM_HELIUM_VERSION == 2 then
                 table.insert(cxflags, "-march=armv8.5-m.main+mve")
                 table.insert(asflags, "-march=armv8.5-m.main+mve")
             end
         end
 
         -- TrustZone support
-        if conf.CPU_HAS_TRUSTZONE then
+        if conf.ARCH_ARM_TRUSTZONE then
             table.insert(cxflags, "-mthumb-interwork")
             table.insert(asflags, "-mthumb-interwork")
         end
@@ -255,7 +240,7 @@ function build_arm_flags(conf)
         -- Add printf support with semihosting for ATfE
         if conf.COMPILER_ATFE then
             -- table.insert(ldflags, "-lcrt0-semihost")
-            table.insert(ldflags, "-lsemihost")
+            -- table.insert(ldflags, "-lsemihost")
         end
     end
 

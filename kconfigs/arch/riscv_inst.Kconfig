@@ -59,6 +59,11 @@ config RISCV_ISA_G
 	# bool "General-Purpose ISA (G)"
 	bool
 	default n
+	select RISCV_ISA_I
+	select RISCV_ISA_M
+	select RISCV_ISA_A
+	select RISCV_ISA_F
+	select RISCV_ISA_D
 	help
 	  General-purpose ISA (IMAFD)
 
@@ -198,18 +203,3 @@ config RISCV_ISA_ZCMT
 	default n
 	help
       Compressed table jump instructions
-
-# RISC-V XLEN Configuration
-config RISCV_XLEN_32
-	# bool "32-bit (RV32)"
-	bool
-	default n
-	help
-	  32-bit RISC-V architecture
-
-config RISCV_XLEN_64
-	# bool "64-bit (RV64)"
-	bool
-	default n
-	help
-	  64-bit RISC-V architecture

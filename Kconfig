@@ -15,6 +15,9 @@ rsource "kconfigs/clock.Kconfig"
 # Include memory configuration
 rsource "kconfigs/memory.Kconfig"
 
+# Include cplusplus configuration
+rsource "kconfigs/cplusplus.Kconfig"
+
 # Include common configuration
 rsource "kconfigs/common.Kconfig"
 

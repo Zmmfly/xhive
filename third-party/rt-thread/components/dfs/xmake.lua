@@ -1,0 +1,6 @@
+includes("dfs_v1")
+includes("dfs_v2")
+includes("utest")
+target("dfs")
+    set_kind("object")
+    add_deps("dfs_v1", "dfs_v2", "dfs_utest", {public=true})

@@ -1,0 +1,35 @@
+config ARCH_RISCV_HW_FPU
+	bool
+	default n
+	help
+	    Enable hardware floating point unit support for RISC-V
+
+config ARCH_RISCV_FPU_SINGLE
+	bool
+	default n
+	select ARCH_RISCV_HW_FPU
+	help
+	    Enable single-precision floating point unit support for RISC-V
+
+config ARCH_RISCV_FPU_DOUBLE
+	bool
+	default n
+	select ARCH_RISCV_HW_FPU
+	help
+	    Enable double-precision floating point unit support for RISC-V
+
+config ARCH_RISCV_RV32
+	# bool "32-bit (RV32)"
+	bool
+	default n
+	select CPU_RISCV
+	help
+	    32-bit RISC-V architecture
+
+config ARCH_RISCV_RV64
+	# bool "64-bit (RV64)"
+	bool
+	default n
+	select CPU_RISCV
+	help
+	    64-bit RISC-V architecture

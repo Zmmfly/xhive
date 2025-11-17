@@ -120,6 +120,12 @@ function load_header_path()
     return path.join(dirs.builddir, header_name())
 end
 
+function build_header_with_entry(header_path, entry_path)
+    import("xhive.base")
+    local dirs = base.load_paths()
+    os.execv("genconfig", {"--header-path", header_path, entry_path}, {envs = {curdir = dirs.prjdir}})
+end
+
 -- Generate xhive_config.h from .config file
 function build_header(project_dir)
     import("core.cache.memcache")
@@ -166,4 +172,34 @@ function load_configs()
         raise("Please run 'xmake menuconfig' to config your project.")
     end
     return parse_cached(config_path)
+end
+
+function set_config(conf_path, key, value)
+    -- find CONFIG_key in conf_path and set to value
+    -- uncomment if needed
+    --[[ 
+        true value -> CONFIG_KEY=y
+        false value -> # CONFIG_KEY is not set
+        string value -> CONFIG_KEY="value"
+        number value -> CONFIG_KEY=123
+     ]]
+    local file_content = io.readfile(conf_path)
+    local pattern = "^(# )?CONFIG_" .. key .. "=.*$"
+    local replacement = ""
+    if value == true then
+        replacement = "CONFIG_" .. key .. "=y"
+    elseif value == false then
+        replacement = "# CONFIG_" .. key .. " is not set"
+    elseif type(value) == "string" then
+        replacement = "CONFIG_" .. key .. "=\"" .. value .. "\""
+    elseif type(value) == "number" then
+        replacement = "CONFIG_" .. key .. "=" .. value
+    end
+    if file_content:match(pattern) then
+        file_content = file_content:gsub(pattern, replacement)
+    else
+        -- append to end
+        file_content = file_content .. "\n" .. replacement .. "\n"
+    end
+    io.writefile(conf_path, file_content)
 end
