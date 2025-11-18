@@ -180,6 +180,7 @@ function set_config(conf_path, key, value)
     --[[ 
         true value -> CONFIG_KEY=y
         false value -> # CONFIG_KEY is not set
+        string hex value -> CONFIG_KEY=0x1234abcd
         string value -> CONFIG_KEY="value"
         number value -> CONFIG_KEY=123
      ]]
@@ -190,6 +191,8 @@ function set_config(conf_path, key, value)
         replacement = "CONFIG_" .. key .. "=y"
     elseif value == false then
         replacement = "# CONFIG_" .. key .. " is not set"
+    elseif type(value) == "string" and value:startswith("0x") then
+        replacement = "CONFIG_" .. key .. "=" .. value
     elseif type(value) == "string" then
         replacement = "CONFIG_" .. key .. "=\"" .. value .. "\""
     elseif type(value) == "number" then

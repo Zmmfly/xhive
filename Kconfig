@@ -4,7 +4,7 @@
 # menu "Platform Configuration"
 
 # Include CPU architecture configuration
-rsource "kconfigs/arch.Kconfig"
+rsource "kconfigs/cpu.Kconfig"
 
 # Include compiler configuration
 rsource "kconfigs/compiler.Kconfig"

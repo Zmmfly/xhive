@@ -1,6 +1,7 @@
 
 target("libcpu")
     set_kind("object")
+    set_default(false)
     add_deps("finsh", {public=true})
     on_load(function(target)
         import("xhive.proc")

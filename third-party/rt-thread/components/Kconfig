@@ -5,7 +5,7 @@ config RT_USING_COMPONENTS_INIT
     default n
 
 config RT_USING_USER_MAIN
-    bool
+    bool "Enable user main"
     default n
 
     if RT_USING_USER_MAIN

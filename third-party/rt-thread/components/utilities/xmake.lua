@@ -8,6 +8,7 @@ includes("ymodem")
 
 target("utilities")
     set_kind("object")
+    set_default(false)
     add_deps(
         "libadt", "resource", "rt-link", "ulog", "utest", "var_export", "ymodem", 
         {public=true}

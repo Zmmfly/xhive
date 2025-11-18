@@ -4,6 +4,7 @@ includes("posix")
 
 target("libc")
     set_kind("object")
+    set_default(false)
     add_deps("compilers", {public=true})
     add_deps("cplusplus", {public=true})
     add_deps("posix", {public=true})

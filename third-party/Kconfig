@@ -19,7 +19,7 @@ config THIRD_RTOS_RTTHREAD_STD
     help
       Select this option to use RT-Thread as the RTOS for your embedded application.
 
-config THIRD_RTOS_RTTHREAD_NANO
+config THIRD_RTOS_RTTNANO
     bool "RT-Thread Nano"
     help
       Select this option to use RT-Thread Nano as the RTOS for your embedded application.
@@ -38,7 +38,7 @@ menu "RT-Thread configurations"
 endmenu
 endif
 
-if THIRD_RTOS_RTTHREAD_NANO
+if THIRD_RTOS_RTTNANO
 menu "RT-Thread Nano configurations"
     orsource "rttnano/Kconfig"
 endmenu

@@ -41,6 +41,7 @@ includes("vbus")
 
 target("components")
     set_kind("object")
+    set_default(false)
     add_deps("dfs", {public=true})
     add_deps("drivers", {public=true})
     add_deps("fal", {public=true})

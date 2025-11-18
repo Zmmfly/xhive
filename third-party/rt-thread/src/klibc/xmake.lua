@@ -1,6 +1,7 @@
 includes("utest")
 target("klibc")
     set_kind("object")
+    set_default(false)
     add_deps("finsh", {public=true})
     add_deps("klibc_utest", {public=true})
     add_files("kerrno.c", "kstdio.c", "kstring.c")

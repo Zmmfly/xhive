@@ -1,0 +1,2 @@
+rsource "kconfigs/kernel.Kconfig"
+rsource "components/Kconfig"

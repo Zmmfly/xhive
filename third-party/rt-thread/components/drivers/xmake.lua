@@ -1,6 +1,7 @@
 includes("usb")
 target("drivers")
     set_kind("object")
+    set_default(false)
     add_deps("finsh", {public=true})
     add_deps("cherryusb", {public=true})
     add_includedirs("include", {public=true})

@@ -28,6 +28,7 @@ modification, are permitted provided that the following conditions are met:
 
 includes("freertos")
 includes("rt-thread")
+includes("rttnano")
 includes("SEGGER_RTT")
 
 target("third-party")
@@ -38,13 +39,14 @@ target("third-party")
             -- Edit this map to add new third-party dependencies or remove existing ones
             ["THIRD_RTOS_FREERTOS"] = "freertos",
             ["THIRD_RTOS_RTTHREAD"] = "rt-thread::deps",
+            ["THIRD_RTOS_RTTNANO"]  = "rttnano",
             ["THIRD_SEGGER_RTT"]    = "SEGGER_RTT",
         }
 
         -- Add dependencies based on configuration
         for key, dep in pairs(maps) do
             if conf[key] then
-                target:add("deps", dep)
+                target:add("deps", dep, {public = true})
             end
         end
     end)

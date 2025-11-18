@@ -1,5 +1,6 @@
 target("compilers")
     set_kind("object")
+    set_default(false)
     add_files("common/*.c")
     add_deps("finsh", {public=true})
     add_defines("RT_USING_LIBC", {public = true})
