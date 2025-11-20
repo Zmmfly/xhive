@@ -71,7 +71,7 @@ rule("xhive.conf")
         local header_generated = memcache.get("xhive", "header_on_load_" .. dirs.prjdir)
         if not header_generated then
             -- print("Generating xhive_config.h for target: " .. target:name() .. " on load")
-            kconf.build_header(dirs.prjdir)
+            kconf.build_header()
             memcache.set("xhive", "header_on_load_" .. dirs.prjdir, true)
         else
             -- print("xhive_config.h already generated for target: " .. target:name() .. " on load")
@@ -140,7 +140,7 @@ rule("xhive.embed")
         local header_generated = memcache.get("xhive", "header_before_build_" .. dirs.prjdir)
         if not header_generated then
             -- print("Generating xhive_config.h for target: " .. target:name() .. " before build")
-            kconf.build_header(dirs.prjdir)
+            kconf.build_header()
             memcache.set("xhive", "header_before_build_" .. path.absolute(dirs.prjdir), true)
         else
             -- print("xhive_config.h already generated for target: " .. target:name() .. " before build")
@@ -161,7 +161,7 @@ rule("xhive.embed")
         local header_generated = memcache.get("xhive", "header_before_build_" .. dirs.prjdir)
         if not header_generated then
             -- print("Generating xhive_config.h for target: " .. target:name() .. " before build")
-            kconf.build_header(dirs.prjdir)
+            kconf.build_header()
             memcache.set("xhive", "header_before_build_" .. path.absolute(dirs.prjdir), true)
         else
             -- print("xhive_config.h already generated for target: " .. target:name() .. " before build")

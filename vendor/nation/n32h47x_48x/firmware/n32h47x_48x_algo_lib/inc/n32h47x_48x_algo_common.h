@@ -59,15 +59,25 @@
 
 
 enum{
-    Cpy_OK=0,//copy success
-	SetZero_OK = 0,//set zero success
-	XOR_OK = 0,   //XOR success
-	Reverse_OK = 0, //Reverse success
-	Cmp_EQUAL = 0, //Two big number are equal
-	Cmp_UNEQUAL = 1, //Two big number are not equal
-	Time_Out = 2
+    Cpy_OK      = 0,   //copy success
+    SetZero_OK  = 0,   //set zero success
+    XOR_OK      = 0,   //XOR success
+    Reverse_OK  = 0,   //Reverse success
+    Cmp_EQUAL   = 0,   //Two big number are equal
+    Cmp_UNEQUAL = 1,   //Two big number are not equal
+    Time_Out    = 2
 };
 extern uint32_t Alg_TimeOut_Counter;
+
+/**
+ * @brief Clear ARAM completion check and acknowledge
+ * @return SetZero_OK: operation completed successfully; Time_Out: timeout occurred
+ * @note This function polls the cryptographic accelerator status register to wait
+ *       for ARAM (Access RAM) clear operations to complete, then acknowledges
+ *       the completion by setting the control register's clear done flag.
+ */
+uint32_t CLEAR_ARAM_DONE_CHECK(void);
+
 /**
  * @brief disturb the sequence order
  * @param[in] order pointer to the sequence to be disturbed

@@ -59,7 +59,7 @@ function load_paths()
         homedir     = homedir,
         dldir       = dldir,
         kconf_entry = kconf_entry,
-        toolsdir    = toolsdir,
+        toolsdir    = toolsdir
     }
     memcache.set("xhive", "common_paths", paths)
     return paths
@@ -287,4 +287,52 @@ function move_merge(dst, src, force)
     end
 
     return success
+end
+
+function load_env_paths()
+    local env  = os.getenv("PATH")
+    local paths = {}
+    if not env then
+        return paths
+    end
+
+    -- split by ; if find
+    if env:find(";") then
+        for p in env:gmatch("([^;]+)") do
+            table.insert(paths, p)
+        end
+    end
+    return paths
+end
+
+--[[ 
+    @brief Find a tool from given names with options
+    @param names The tool names to find, could be a string or a table of strings
+    @param opt The options for finding the tool
+ ]]
+function detect_tool(names, opt, dump_paths)
+    local tool       = nil
+    local dump_paths = dump_paths or false
+    if type(names) == "string" then
+        print("Searching for tool: " .. names)
+        import("lib.detect.find_tool")
+        tool = find_tool(names, opt)
+    else
+        import("lib.detect.find_tool")
+        for _, name in ipairs(names) do
+            _opt = {}
+            for k, v in pairs(opt or {}) do
+                _opt[k] = v
+            end
+            tool = find_tool(name, _opt)
+            if tool then
+                break
+            end
+        end
+    end
+    if not tool and dump_paths then
+        local paths = load_env_paths()
+        print("Tool not found! searched paths:\n" .. table.concat(paths, "\n"))
+    end
+    return tool
 end

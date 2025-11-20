@@ -68,59 +68,69 @@
 #define  ALG_SHA1           (uint16_t)(0x0004)
 #define  ALG_SHA224         (uint16_t)(0x000A)
 #define  ALG_SHA256         (uint16_t)(0x000B)
-#define  ALG_MD5            (u16)(0x000C)
-#define  ALG_SM3	    (uint16_t)(0x0012)
+#define  ALG_MD5            (uint16_t)(0x000C)
+#define  ALG_SM3	        (uint16_t)(0x0012)
 
 //extern bool g_sac_hashdone;
 
 enum
 {
-	HASH_SEQUENCE_TRUE = 0x0105A5A5,//save IV
-	HASH_SEQUENCE_FALSE = 0x010A5A5A, //not save IV 
-	HASH_Init_OK = 0,//hash init success
-	HASH_Start_OK = 0,//hash update success
-	HASH_Update_OK = 0,//hash update success
-	HASH_Complete_OK = 0,//hash complete success
-	HASH_Close_OK = 0,//hash close success
-	HASH_ByteLenPlus_OK = 0,//byte length plus success
-	HASH_PadMsg_OK = 0,//message padding success
-	HASH_ProcMsgBuf_OK = 0, //message processing success
-	SHA1_Hash_OK = 0,//sha1 operation success
-	SM3_Hash_OK = 0,//sm3 operation success
-	SHA224_Hash_OK = 0,//sha224 operation success
-	SHA256_Hash_OK = 0,//sha256 operation success
-	MD5_Hash_OK = 0,//MD5 operation success
+	HASH_SEQUENCE_TRUE  = 0x0105A5A5,   //save IV
+	HASH_SEQUENCE_FALSE = 0x010A5A5A,   //not save IV 
+	HASH_Init_OK        = 0,            //hash init success
+	HASH_Start_OK       = 0,            //hash update success
+	HASH_Update_OK      = 0,            //hash update success
+	HASH_Complete_OK    = 0,            //hash complete success
+	HASH_Close_OK       = 0,            //hash close success
+	HASH_ByteLenPlus_OK = 0,            //byte length plus success
+	HASH_PadMsg_OK      = 0,            //message padding success
+	HASH_ProcMsgBuf_OK  = 0,            //message processing success
+	SHA1_Hash_OK        = 0,            //sha1 operation success
+	SM3_Hash_OK         = 0,            //sm3 operation success
+	SHA224_Hash_OK      = 0,            //sha224 operation success
+	SHA256_Hash_OK      = 0,            //sha256 operation success
+	MD5_Hash_OK         = 0,            //MD5 operation success
+
+	SHA1_Hash_ERROR     = 0x01044409,   //SHA1 hash error
+	SM3_Hash_ERROR      = 0x0104440A,   //SM3 hash error
+	SHA224_Hash_ERROR   = 0x0104440B,   //SHA224 hash error
+	SHA256_Hash_ERROR   = 0x0104440C,   //SHA256 hash error
+	MD5_Hash_ERROR      = 0x0104440D,   //MD5 hash error
 	
-	HASH_Init_ERROR = 0x01044400,//hash init error
-	HASH_Start_ERROR, //hash start error
-	HASH_Update_ERROR, //hash update error
-	HASH_ByteLenPlus_ERROR,//hash byte plus error
-	HASH_TimeOut_ERROR
+	HASH_Init_ERROR        = 0x01044400,   //hash init error
+	HASH_Start_ERROR      ,                //hash start error
+	HASH_Update_ERROR     ,                //hash update error
+	HASH_ByteLenPlus_ERROR,                //hash byte plus error
+	HASH_TimeOut_ERROR    ,                //hash timeout error
+	HASH_Complete_ERROR   ,                //hash complete error
+	HASH_Close_ERROR      ,                //hash close error
+	HASH_PadMsg_ERROR     ,                //hash padding error
+	HASH_ProcMsgBuf_ERROR                   //hash message processing error
 };
 
 typedef struct _HASH_CTX_ HASH_CTX;
 
 typedef struct
 {
-	const uint16_t HashAlgID;//choice hash algorithm
-	const uint32_t * const K, KLen;//K and word length of K
-	const uint32_t * const IV, IVLen;//IV and word length of IV
-	const uint32_t HASH_SACCR, HASH_HASHCTRL;//relate registers
-	const uint32_t BlockByteLen, BlockWordLen; //byte length of block, word length of block
-	const uint32_t DigestByteLen, DigestWordLen; //byte length of digest,word length of digest
-	const uint32_t Cycle; //interation times
-	uint32_t (* const ByteLenPlus)(uint32_t *, uint32_t); //function pointer
-	uint32_t (* const PadMsg)(HASH_CTX *); //function pointer
+	const    uint16_t HashAlgID;                           //choice hash algorithm
+	const    uint32_t * const K,     KLen;                 //K and word length of K
+	const    uint32_t * const IV,    IVLen;                //IV and word length of IV
+	const    uint32_t HASH_SACCR,    HASH_HASHCTRL;        //relate registers
+	const    uint32_t BlockByteLen,  BlockWordLen;         //byte length of block, word length of block
+	const    uint32_t DigestByteLen, DigestWordLen;        //byte length of digest,word length of digest
+	const    uint32_t Cycle;                               //interation times
+	uint32_t (* const ByteLenPlus)(uint32_t *, uint32_t);  //function pointer
+	uint32_t (* const PadMsg)(HASH_CTX *);                 //function pointer
 }HASH_ALG;
 
 typedef struct _HASH_CTX_
 {
-	const HASH_ALG	*hashAlg;//pointer to HASH_ALG
-	uint32_t		sequence;	// TRUE if the IV should be saved
-	uint32_t 	IV[16]; 
+	const HASH_ALG* hashAlg;       //pointer to HASH_ALG
+	uint32_t		sequence;	   // TRUE if the IV should be saved
+	uint32_t 	    IV[16]; 
 	uint32_t		msgByteLen[4];
-  uint8_t		msgBuf[128+4];
-  uint32_t		msgIdx;
+	uint8_t		    msgBuf[128+4];
+	uint32_t		msgIdx;
 }HASH_CTX;
 
 extern const HASH_ALG HASH_ALG_SHA1[1];

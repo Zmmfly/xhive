@@ -41,3 +41,36 @@ config NATION_N32H47X_48X_USE_USBHS
     help
       Enable the USBHS driver for the Nation N32H47x/48x series microcontrollers.
       This option is useful if your application requires high-speed USB functionality.
+
+config NATION_N32H47X_48X_USB_DEVICE
+    bool "Enable USB Device Mode"
+    default y
+    depends on NATION_N32H47X_48X_USE_USBFS || NATION_N32H47X_48X_USE_USBHS
+    help
+      Enable USB device mode for the Nation N32H47x/48x series microcontrollers.
+      This option is useful if your application needs to function as a USB device.
+
+config NATION_N32H47X_48X_USB_HOST
+    bool "Enable USB Host Mode"
+    default n
+    depends on NATION_N32H47X_48X_USE_USBFS || NATION_N32H47X_48X_USE_USBHS
+    help
+      Enable USB host mode for the Nation N32H47x/48x series microcontrollers.
+      This option is useful if your application needs to function as a USB host.
+
+config NATION_N32H47X_48X_EXTERNAL_INC_DIR
+    string "External Include Directory"
+    default ""
+    depends on NATION_N32H47X_48X_USE_USBFS || NATION_N32H47X_48X_USE_USBHS
+    help
+      Specify an external usbfs/usbhs config and bsp include directory.
+      This option must be set when using USBFS/USBHS in your application.
+      The path refers to project directory.
+
+config NATION_N32H47X_48X_ALGO
+    bool "Enable Cryptographic Algorithms"
+    default n
+    help
+      Enable hardware-accelerated cryptographic algorithms for the Nation N32H47x/48x series microcontrollers.
+      This option is useful for applications that require secure data handling and encryption.
+

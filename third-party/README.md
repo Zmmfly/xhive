@@ -2,11 +2,12 @@
 
 **NOTE: Update the table below when libraries are added or updated**
 
-| Library Name | Version  |                              License                               |                            URL                             |
-| :----------: | :------: | :----------------------------------------------------------------: | :--------------------------------------------------------: |
-|   freertos   |   TBD    |                                TBD                                 |                            TBD                             |
-|  RT-Thread   | `v5.2.2` |                             Apache 2.0                             |                            TBD                             |
-|  SEGGER_RTT  | `8.56a`  | [license](https://github.com/SEGGERMicro/RTT/blob/main/LICENSE.md) | [repository](https://github.com/SEGGERMicro/RTT/tree/main) |
+|  Library Name  | Version  |                              License                               |                            URL                             |
+| :------------: | :------: | :----------------------------------------------------------------: | :--------------------------------------------------------: |
+|    freertos    |   TBD    |                                TBD                                 |                            TBD                             |
+|   RT-Thread    | `v5.2.2` |                             Apache 2.0                             |    [repository](https://github.com/RT-Thread/rt-thread)    |
+| RT-Thread Nano | `v4.1.1` |                             Apache 2.0                             |  [repository](https://github.com/RT-Thread/rtthread-nano)  |
+|   SEGGER_RTT   | `8.56a`  | [license](https://github.com/SEGGERMicro/RTT/blob/main/LICENSE.md) | [repository](https://github.com/SEGGERMicro/RTT/tree/main) |
 
 
 ## RT-Thread Nano

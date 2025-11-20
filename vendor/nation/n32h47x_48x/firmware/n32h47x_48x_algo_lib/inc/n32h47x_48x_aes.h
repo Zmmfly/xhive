@@ -66,28 +66,27 @@
 
 enum
 {
-	AES_Crypto_OK = 0x0,   //AES opreation success
-	AES_Init_OK = 0x0,   //AES_Init opreation success
-	AES_Crypto_ModeError = 0x5a5a5a5a,	 //Working mode error(Neither ECB nor CBC nor CTR)
-	AES_Crypto_EnOrDeError,    //En&De error(Neither encryption nor decryption)
-	AES_Crypto_ParaNull,    // the part of input(output/iv) Null    
-	AES_Crypto_LengthError,     // if Working mode is ECB or CBC,the length of input message must be 4 times and cannot be zero;
-	                            //if Working mode is CTR,the length of input message cannot be zero; othets: return AES_Crypto_LengthError
-	AES_Crypto_KeyLengthError, //the keyWordLen must be 4 or 6 or 8; othets:return AES_Crypto_KeyLengthError
-    AES_Crypto_UnInitError, //AES uninitialized
-    AES_TimeOutError, //AES time out
+	AES_Crypto_OK             = 0x0,          // AES opreation success
+	AES_Init_OK               = 0x0,          // AES_Init opreation success
+	AES_Crypto_ModeError      = 0x5a5a5a5a,   // Working mode error(Neither ECB nor CBC nor CTR)
+	AES_Crypto_EnOrDeError   ,                // En&De error(Neither encryption nor decryption)
+	AES_Crypto_ParaNull      ,                // the part of input(output/iv) Null    
+	AES_Crypto_LengthError   ,                // if Working mode is ECB or CBC,the length of input message must be 4 times and cannot be zero; if Working mode is CTR,the length of input message cannot be zero; othets: return AES_Crypto_LengthError
+	AES_Crypto_KeyLengthError,                // the keyWordLen must be 4 or 6 or 8; othets:return AES_Crypto_KeyLengthError
+	AES_Crypto_UnInitError   ,                // AES uninitialized
+	AES_TimeOutError         ,                // AES time out
 };
 
 typedef struct
 {
-	uint32_t *in;		// the part of input to be encrypted or decrypted
-	uint32_t *iv;		// the part of initial vector
-	uint32_t *out;		// the part of out
-	uint32_t *key;		// the part of key
-	uint32_t keyWordLen;   // the length(by word) of key
-	uint32_t inWordLen;	// the length(by word) of plaintext or cipher
-	uint32_t En_De;	// 0x44444444- encrypt, 0x55555555 - decrypt
-	uint32_t Mode;  // 0x11111111 - ECB, 0x22222222 - CBC, 0x33333333 - CTR
+	uint32_t *in;         // the part of input to be encrypted or decrypted
+	uint32_t *iv;         // the part of initial vector
+	uint32_t *out;        // the part of out
+	uint32_t *key;        // the part of key
+	uint32_t keyWordLen;  // the length(by word) of key
+	uint32_t inWordLen;   // the length(by word) of plaintext or cipher
+	uint32_t En_De;       // 0x44444444- encrypt, 0x55555555 - decrypt
+	uint32_t Mode;        // 0x11111111 - ECB, 0x22222222 - CBC, 0x33333333 - CTR
 }AES_PARM;
 
  /**
@@ -130,9 +129,4 @@ void AES_Close(void);
  */
 void AES_Version(uint8_t *type, uint8_t *customer, uint8_t date[3], uint8_t *version);
 
-
-
-
-#endif
-
-
+#endif // __N32H47X_48X_AES_H__

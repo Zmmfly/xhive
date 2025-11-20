@@ -122,23 +122,28 @@ end
 
 function build_header_with_entry(header_path, entry_path)
     import("xhive.base")
+    import("lib.detect.find_tool")
+    local tool = base.detect_tool({"genconfig", "genconfig.bat"}, {check = "--help"})
     local dirs = base.load_paths()
-    os.execv("genconfig", {"--header-path", header_path, entry_path}, {envs = {curdir = dirs.prjdir}})
+    if not tool then
+        raise("genconfig tool not found! please install by `pip install kconfiglib`")
+    end
+    os.execv(tool.program, {"--header-path", header_path, entry_path}, {envs = {curdir = dirs.prjdir}})
 end
 
 -- Generate xhive_config.h from .config file
-function build_header(project_dir)
+function build_header()
     import("core.cache.memcache")
-    local buildir     = vformat(path.join(project_dir, "build"))
-    local entry       = path.join(buildir, "Kconfig")
+    local dirs        = base.load_paths()
+    local tool        = base.detect_tool({"genconfig", "genconfig.bat"}, {check = "--help"})
     local header_path = load_header_path()
-    local build_ready = memcache.get("xhive", "header_build_" .. project_dir)
+    local build_ready = memcache.get("xhive", "header_build_" .. dirs.prjdir)
     if build_ready then
         return
     end
 
     -- call genconfig command
-    os.execv("genconfig", {"--header-path", header_path, entry}, {envs = {curdir = project_dir}})
+    os.execv(tool.program, {"--header-path", header_path, dirs.kconf_entry}, {envs = {curdir = dirs.prjdir}})
 
     -- Check if generation succeeded
     if not os.isfile(header_path) then
@@ -155,7 +160,7 @@ function build_header(project_dir)
 
     header_content = guard_template:format(header_content)
     io.writefile(header_path, header_content)
-    memcache.set("xhive", "header_build_" .. project_dir, true)
+    memcache.set("xhive", "header_build_" .. dirs.prjdir, true)
 end
 
 -- Get configs for current project, build/Kconfig as entry generated if needed and .config as config file name

@@ -21,7 +21,7 @@
 - **Automatic startup code generation**: Simplified project initialization
 - **Automatic linker script generation**: Optimized memory management
 
-## Requires
+## Requirements
 - python >= 3.10
 - xmake >= 3.0.0
 - kconfiglib, Python pip package
@@ -35,10 +35,7 @@
 
 ## License
 
-This project is available under multiple licensing options:
-
-- **GPLv3**: For open source projects
-- **Commercial License**: For proprietary commercial use
+- **GPLv3**: For open source projects, commercial use is currently not permitted
 
 ### License Terms
 
