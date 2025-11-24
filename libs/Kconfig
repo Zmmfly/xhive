@@ -1,35 +1,47 @@
 menu "Libraries Configuration"
 
-menuconfig LIBS_ENABLE_CJSON
-    bool "Enable cJSON Library"
+config LIBS_ADD_CJSON
+    bool "Add cJSON Library"
     default n
     help
         Enable the cJSON library for JSON parsing and serialization.
 
-menuconfig LIBS_ENABLE_HEATSHRINK
-    bool "Enable HeatsShrink Library"
+menuconfig LIBS_ADD_HEATSHRINK
+    bool "Add HeatsShrink Library"
     default n
     help
-        Enable the HeatsShrink library for data compression.  
+        Add the HeatsShrink library for data compression.
 
-    if LIBS_ENABLE_HEATSHRINK
+    if LIBS_ADD_HEATSHRINK
         rsource "heatshrink/Kconfig"
     endif
 
-menuconfig LIBS_ENABLE_MICRO_ECC
-    bool "Enable micro-ecc Library"
+menuconfig LIBS_ADD_MICRO_ECC
+    bool "Add micro-ecc Library"
     default n
     help
-        Enable the micro-ecc library for ECC (Elliptic Curve Cryptography) operations.
+        Add the micro-ecc library for ECC (Elliptic Curve Cryptography) operations.
 
-    if LIBS_ENABLE_MICRO_ECC
+    if LIBS_ADD_MICRO_ECC
         rsource "micro-ecc/Kconfig"
     endif
 
-menuconfig LIBS_ENABLE_XXHASH
-    bool "Enable xxHash Library"
+config LIBS_ADD_XXHASH
+    bool "Add xxHash Library"
     default n
     help
-        Enable the xxHash library for fast hashing functions.
+        Add the xxHash library for fast hashing functions.
+
+config LIBS_ADD_SHA256
+    bool "Add SHA256 Library"
+    default n
+    help
+        Add the SHA256 library for SHA-256 hashing functions.
+
+config LIBS_ADD_BASE64
+    bool "Add Base64 Library"
+    default n
+    help
+        Add the Base64 library for Base64 encoding and decoding.
 
 endmenu # Libraries Configuration

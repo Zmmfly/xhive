@@ -1,7 +1,9 @@
 #ifndef HEATSHRINK_CONFIG_H
 #define HEATSHRINK_CONFIG_H
 
+#ifdef BUILD_IN_XHIVE
 #include "heatshrink_kconfig.h"
+#endif
 
 /* Should functionality assuming dynamic allocation be used? */
 #ifndef HEATSHRINK_DYNAMIC_ALLOC

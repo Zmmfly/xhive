@@ -4,7 +4,10 @@
 #define _UECC_H_
 
 #include <stdint.h>
+
+#ifdef BUILD_IN_XHIVE
 #include <uECC_kconfig.h>
+#endif
 
 /* Platform selection options.
 If uECC_PLATFORM is not defined, the code will try to guess it based on compiler macros.

@@ -1,0 +1,5 @@
+target("sha256")
+    set_kind("object")
+    set_default(false)
+    add_files("src/*.c")
+    add_includedirs("inc", {public = true})

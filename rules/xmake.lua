@@ -90,22 +90,23 @@ rule("xhive.conf")
             end
         end
 
-        if conf.OPTIMIZE_NONE then
-            target:set("optimize", "none")
-        elseif conf.OPTIMIZE_FAST then 
-            target:set("optimize", "fast")
-        elseif conf.OPTIMIZE_FASTER then 
-            target:set("optimize", "faster")
-        elseif conf.OPTIMIZE_FASTEST then 
-            target:set("optimize", "fastest")
-        elseif conf.OPTIMIZE_SMALLEST then
-            target:set("optimize", "smallest")
-        elseif conf.OPTIMIZE_AGGRESSIVE then
-            target:set("optimize", "aggressive")
-        else
-            raise("No optimization level selected in kconfig for target: " .. target:name())
+        -- Set optimization level
+        local optimize_maps = {
+            OPTIMIZE_NONE       = "none",
+            OPTIMIZE_FAST       = "fast",
+            OPTIMIZE_FASTER     = "faster",
+            OPTIMIZE_FASTEST    = "fastest",
+            OPTIMIZE_SMALLEST   = "smallest",
+            OPTIMIZE_AGGRESSIVE = "aggressive",
+        }
+        for k, v in pairs(optimize_maps) do
+            if conf[k] then
+                target:set("optimize", v)
+                break
+            end
         end
         target:set("symbols", "debug")
+        target:add("defines", "BUILD_IN_XHIVE")
     end)
 rule_end()
 

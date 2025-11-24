@@ -30,6 +30,9 @@ includes("cjson")
 includes("heatshrink")
 includes("micro-ecc")
 includes("xxhash")
+includes("sha256")
+includes("base64")
+includes("bitmap")
 
 target("libs")
     set_kind("object")
@@ -37,10 +40,12 @@ target("libs")
         local conf = target:data("kconfig") or {}
         local maps = {
             -- Edit this map to add new library dependencies or remove existing ones
-            ["LIBS_ENABLE_CJSON"]      = "cjson",
-            ["LIBS_ENABLE_HEATSHRINK"] = "heatshrink",
-            ["LIBS_ENABLE_MICRO_ECC"]  = "micro-ecc",
-            ["LIBS_ENABLE_XXHASH"]     = "xxhash",
+            ["LIBS_ADD_CJSON"]      = "cjson",
+            ["LIBS_ADD_HEATSHRINK"] = "heatshrink",
+            ["LIBS_ADD_MICRO_ECC"]  = "micro-ecc",
+            ["LIBS_ADD_XXHASH"]     = "xxhash",
+            ["LIBS_ADD_SHA256"]     = "sha256",
+            ["LIBS_ADD_BASE64"]     = "base64",
         }
 
         -- Add dependencies based on configuration

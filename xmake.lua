@@ -27,6 +27,7 @@ modification, are permitted provided that the following conditions are met:
 ]]
 
 add_moduledirs("modules")
+add_moduledirs("native_modules")
 
 includes("compiler")
 includes("rules")
