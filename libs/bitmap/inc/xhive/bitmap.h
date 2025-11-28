@@ -150,6 +150,18 @@ __INLINE bool xh_bitmap_test(xh_bitmap_p bitmap, size_t index)
     return (bitmap->data[index / BITDAT_BITS] & ((bitdat_t)1 << (index % BITDAT_BITS))) != 0;
 }
 
+#if defined(__GNUC__) || defined(__clang__)  // GCC/Clang
+    #define POPCOUNT64 __builtin_popcountll
+#else
+    inline uint64_t popcount_swar64(uint64_t x) {
+        x = x - ((x >> 1) & 0x5555555555555555);
+        x = (x & 0x3333333333333333) + ((x >> 2) & 0x3333333333333333);
+        x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0F;
+        return (x * 0x0101010101010101) >> 56;
+    }
+    #define POPCOUNT64 popcount_swar64
+#endif
+
 /**
  * @brief Count the number of set bits in the bitmap
  * 
@@ -164,17 +176,14 @@ __INLINE uint64_t xh_bitmap_count_set_bits(xh_bitmap_p bitmap)
     for (uint64_t i = 0; i < len; i++)
     {
         uint64_t val = bitmap->data[i];
-        while (val)
-        {
-            count += val & (bitdat_t)1;
-            val >>= 1;
-        }
+        count += POPCOUNT64(val);
     }
     return count;
 }
 
 /**
  * @brief Get the index of the leftmost set bit starting from start_index
+ * @note MSB at left side, LSB at right side, index decrease from start_index
  * 
  * @param bitmap 
  * @param start_index Start index at left, include start_index, will auto decrease to 0
@@ -190,13 +199,50 @@ __INLINE uint64_t xh_bitmap_index_of_left_set(xh_bitmap_p bitmap, uint64_t start
 
     for (uint64_t i = start_qty; i != BITDAT_MAX; i--)
     {
-        if (bitmap->data[i] != 0)
+        // skip unset data
+        if (bitmap->data[i] == 0) continue;
+
+        // bits from j down to 0
+        for (uint64_t j = (i == start_qty ? start_rem : BITDAT_BITS-1); j != BITDAT_MAX; j--)
         {
-            // Check bits from j down to 0
-            for (uint64_t j = (i == start_qty ? start_rem : BITDAT_BITS-1); j != BITDAT_MAX; j--)
+            // skip unset bits
+            if (!(bitmap->data[i] & (1U << j))) continue;
+            return (i * BITDAT_BITS) | j;
+        }
+    }
+    return BITDAT_MAX;
+}
+
+/**
+ * @brief Get the index of the leftmost bit starting from start_index with specified bit_value
+ * 
+ * @param bitmap 
+ * @param start_index 
+ * @param bit_value true for 1 bit, false for 0 bit
+ * @return uint64_t return BITDAT_MAX if not found
+ */
+__INLINE uint64_t xh_bitmap_index_of_left(xh_bitmap_p bitmap, uint64_t start_index, bool bit_value)
+{
+    bitmap_assert(bitmap != NULL);
+    bitmap_assert(start_index < bitmap->bits);
+
+    uint64_t start_qty = start_index / BITDAT_BITS;
+    uint64_t start_rem = start_index % BITDAT_BITS;
+
+    for (uint64_t i = start_qty; i != BITDAT_MAX; i--)
+    {
+        if ( (bit_value && bitmap->data[i] == 0) || (!bit_value && bitmap->data[i] != 0) ) continue;
+        // Check bits from j down to 0
+        for (uint64_t j = (i == start_qty ? start_rem : BITDAT_BITS-1); j != BITDAT_MAX; j--)
+        {
+            // clang-format off
+            if (   !(  bit_value &&  (bitmap->data[i] & (1U << j)) ) 
+                && !( !bit_value && !(bitmap->data[i] & (1U << j)) ) )
             {
-                if (bitmap->data[i] & (1U << j)) return (i * BITDAT_BITS) | j;
+                continue;
             }
+            return (i * BITDAT_BITS) | j;
+            // clang-format on
         }
     }
     return BITDAT_MAX;
@@ -204,6 +250,7 @@ __INLINE uint64_t xh_bitmap_index_of_left_set(xh_bitmap_p bitmap, uint64_t start
 
 /**
  * @brief Get the index of the rightmost set bit starting from start_index
+ * @note MSB at left side, LSB at right side, index increase from start_index
  * 
  * @param bitmap 
  * @param start_index Start index at right, will auto increase to bits-1
