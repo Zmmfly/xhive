@@ -54,4 +54,16 @@ config LIBS_ADD_BASE64
     help
         Add the Base64 library for Base64 encoding and decoding.
 
+config LIBS_ADD_BITMAP
+    bool "Add Bitmap Library"
+    default n
+    help
+        Add the Bitmap library for bitmap manipulation.
+
+config LIBS_ADD_LLHTTP
+    bool "Add llhttp Library"
+    default n
+    help
+        Add the llhttp library for HTTP parsing.
+
 endmenu # Libraries Configuration

@@ -34,6 +34,7 @@ includes("sha256")
 includes("base64")
 includes("bitmap")
 includes("divsufsort")
+includes("llhttp")
 
 target("libs")
     set_kind("object")
@@ -47,6 +48,9 @@ target("libs")
             ["LIBS_ADD_XXHASH"]     = "xxhash",
             ["LIBS_ADD_SHA256"]     = "sha256",
             ["LIBS_ADD_BASE64"]     = "base64",
+            ["LIBS_ADD_DIVSUFSORT"] = "divsufsort",
+            ["LIBS_ADD_BITMAP"]     = "bitmap",
+            ["LIBS_ADD_LLHTTP"]     = "llhttp",
         }
 
         -- Add dependencies based on configuration

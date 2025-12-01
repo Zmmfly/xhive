@@ -1,11 +1,8 @@
--- local build_divsufsort_header = function(target, is_64)
-
--- end
-
 includes("@builtin/check")
 
 target("divsufsort")
     set_kind("object")
+    set_default(false)
     set_configdir("$(builddir)/divsufsort")
     add_configfiles("config.h.in")
     configvar_check_cincludes("HAVE_INTTYPES_H", "inttypes.h")
