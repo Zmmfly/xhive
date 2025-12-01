@@ -33,6 +33,7 @@ includes("xxhash")
 includes("sha256")
 includes("base64")
 includes("bitmap")
+includes("divsufsort")
 
 target("libs")
     set_kind("object")

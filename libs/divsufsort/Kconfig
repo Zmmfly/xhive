@@ -1,0 +1,5 @@
+config DIVSUFSORT_ENABLE_64BIT
+    bool "Enable 64-bit Support"
+    default n
+    help
+        Enable 64-bit support in the DivSufSort library for handling larger datasets on 64-bit systems.

@@ -26,6 +26,16 @@ menuconfig LIBS_ADD_MICRO_ECC
         rsource "micro-ecc/Kconfig"
     endif
 
+menuconfig LIBS_ADD_DIVSUFSORT
+    bool "Add DivSufSort Library"
+    default n
+    help
+        Add the DivSufSort library for suffix array construction.
+
+    if LIBS_ADD_DIVSUFSORT
+        rsource "divsufsort/Kconfig"
+    endif
+
 config LIBS_ADD_XXHASH
     bool "Add xxHash Library"
     default n
