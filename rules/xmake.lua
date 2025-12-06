@@ -173,7 +173,7 @@ rule("xhive.embed")
         local conf = target:data("kconfig")
 
         -- Add link scripts
-        if target:kind() == "binary" then
+        if target:kind() == "binary" and (not conf.DISABLE_LD_SCRIPT_OPTIONS) then
             local ld_template = ""
             if conf.USE_DEFAULT_LD_SCRIPT then
                 ld_template = path.join(dirs.sdkdir, "templates", "link.ld")
@@ -185,9 +185,19 @@ rule("xhive.embed")
                 raise("Linker script not found: " .. ld_template .. " for target: " .. target:name())
             end
 
-            local ld_output   = path.join(dirs.builddir, "link.ld")
-            proc.build_link_script(ld_template, target:tool("cc"), ld_output)
-            target:add("ldflags", "-T" .. ld_output, {force = true})
+            local ld_path = nil
+            if conf.USE_DEFAULT_LD_SCRIPT or conf.CUSTOM_LD_SCRIPT_NEED_PROC then
+                local name = target:name() .. "_linkscript"
+                local ld_dir = path.join(dirs.builddir, name)
+                if not os.isdir(ld_dir) then
+                    os.mkdir(ld_dir)
+                end
+                ld_path = path.join(ld_dir, "link.ld")
+                proc.build_link_script(ld_template, target:tool("cc"), ld_path)
+            else
+                ld_path = ld_template
+            end
+            target:add("ldflags", "-T" .. ld_path, {force = true})
             -- printf("Using link script: %s, for target: %s\n", ld_output, target:name())
         end
     end)
@@ -207,7 +217,7 @@ rule("xhive.embed")
             
             -- Display binary size in KB with 2 decimal places
             local bin_size  = os.filesize(bin_path) or 0
-            local rom_len   = conf.ROM_LENGTH * 1024
+            local rom_len   = conf.FLASH_LENGTH * 1024
             local rom_usage = bin_size / rom_len * 100
             print(string.format("ROM used: %7d / %7d, ~ %5.2f%%, ~ %s", bin_size, rom_len, rom_usage, proc.len2hum(bin_size, 2)))
 

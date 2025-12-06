@@ -113,10 +113,19 @@ config NO_STD_STARTFILE
     default y
     help
         Do not link the standard startup files (e.g., crt0.o). Useful for custom startup code.
+        Add -nostartfiles to the linker flags.
+
+config DISABLE_STARTUP_FILE_OPTIONS
+    bool
+    default n
+    help
+        Disable automatic addition of startup file options to the linker command line.
+        Useful when using full custom startup files or specific linker scripts.
 
 config USE_DEFAULT_STARTUP
     bool "Use default startup file"
     default y
+    depends on !DISABLE_STARTUP_FILE_OPTIONS
     help
         Use the default startup file in vendor provided by xhive.
         If you need a custom startup file, disable this option.
@@ -124,26 +133,42 @@ config USE_DEFAULT_STARTUP
 config ENABLE_FAST_STARTUP
     bool "Enable fast startup optimizations"
     default y
+    depends on !DISABLE_STARTUP_FILE_OPTIONS
     help
         Enable fast startup optimizations to reduce boot time.
+
+config DISABLE_LD_SCRIPT_OPTIONS
+    bool
+    default n
+    help
+        Disable automatic addition of linker script options to the linker command line.
+        Useful when using custom linker scripts.
 
 config USE_DEFAULT_LD_SCRIPT
     bool "Use default linker script"
     default y
+    depends on !DISABLE_LD_SCRIPT_OPTIONS
     help
         Use the default linker script provided by xhive.
 
 config CUSTOM_LD_SCRIPT_PATH
     string "Custom linker script path"
     default ""
-    depends on !USE_DEFAULT_LD_SCRIPT
+    depends on (!USE_DEFAULT_LD_SCRIPT && !DISABLE_LD_SCRIPT_OPTIONS)
     help
         Specify the path to a custom linker script if not using the default.
         This can be useful for projects that require a specific memory layout.
         The path should be relative to the project root.
 
+config CUSTOM_LD_SCRIPT_NEED_PROC
+    bool "Custom linker script need proc"
+    default n
+    depends on !USE_DEFAULT_LD_SCRIPT
+    help
+        If the custom linker script need to be processed as header file by xhive, enable this option.
+
 config STACK_LENGTH
-    hex "Stack length"
+    hex "Stack length (in bytes)"
     default 0x400
     help
         Define the stack length for the application (in bytes).

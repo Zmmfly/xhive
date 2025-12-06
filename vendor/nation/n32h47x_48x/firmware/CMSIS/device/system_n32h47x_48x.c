@@ -284,14 +284,14 @@ void SystemInit(void)
     SetSysClock();
 
 #ifdef VECT_TAB_SRAM
-    #ifdef CONFIG_ROM_START
-    SCB->VTOR = CONFIG_ROM_START | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal SRAM. */
+    #ifdef CONFIG_FLASH_START
+    SCB->VTOR = CONFIG_FLASH_START | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal SRAM. */
     #else
     SCB->VTOR = SRAM_BASE | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal SRAM. */
     #endif
 #else
-    #ifdef CONFIG_ROM_START
-    SCB->VTOR = CONFIG_ROM_START | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal FLASH. */
+    #ifdef CONFIG_FLASH_START
+    SCB->VTOR = CONFIG_FLASH_START | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal FLASH. */
     #else
     SCB->VTOR = FLASH_BASE | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal FLASH. */
     #endif

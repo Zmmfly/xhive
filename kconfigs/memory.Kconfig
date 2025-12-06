@@ -1,22 +1,37 @@
 menu "Memory Configuration"
 
-config ROM_START
-    hex "ROM Start Address"
-    default 0x08000000
+config DISABLE_FLASH_OPTIONS
+    bool
+    default n
     help
-      Define the start address of the ROM for the microcontrollers.
+      Disable the Flash configuration, useful for specific use cases.
+
+config FLASH_START
+    hex "Flash Start Address"
+    default 0x08000000
+    depends on !DISABLE_FLASH_OPTIONS
+    help
+      Define the start address of the Flash for the microcontrollers.
       Default to 0x08000000, please adjust according to your microcontroller's specifications.
 
-config ROM_LENGTH
-    int "ROM Length in Kbytes"
+config FLASH_LENGTH
+    int "Flash Length in Kbytes"
     default 64
+    depends on !DISABLE_FLASH_OPTIONS
     help
-      Define the length of the ROM for the microcontrollers.
+      Define the length of the Flash for the microcontrollers.
       Default to 64KB, please adjust according to your microcontroller's specifications.
+
+config DISABLE_RAM_OPTIONS
+    bool
+    default n
+    help
+      Disable the RAM configuration, useful for specific use cases.
 
 config RAM_START
     hex "RAM Start Address"
     default 0x20000000
+    depends on !DISABLE_RAM_OPTIONS
     help
       Define the start address of the RAM for the microcontrollers.
       Default to 0x20000000, please adjust according to your microcontroller's specifications.
@@ -24,6 +39,7 @@ config RAM_START
 config RAM_LENGTH
     int "RAM Length in Kbytes"
     default 16
+    depends on !DISABLE_RAM_OPTIONS
     help
         Define the length of the RAM for the microcontrollers.
         Default to 16KB, please adjust according to your microcontroller's specifications.
@@ -31,8 +47,9 @@ config RAM_LENGTH
 config VTABLE_OFFSET
     hex "VTABLE Offset"
     default 0x00000000
+    depends on !DISABLE_FLASH_OPTIONS
     help
-      Define the offset for the VTABLE in the ROM.
+      Define the offset for the VTABLE in the FLASH.
       This is typically set to 0x00000000, but can be adjusted based on your microcontroller's memory layout.
 
 endmenu

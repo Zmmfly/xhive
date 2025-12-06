@@ -216,7 +216,7 @@ target("n32h47x_48x")
 
         -- Build the startup file with the peripheral ISR list
 
-        if conf.USE_DEFAULT_STARTUP then
+        if (not conf.DISABLE_STARTUP_FILE_OPTIONS) and conf.USE_DEFAULT_STARTUP then
             local template_path = proc.load_startup_template_path()
             local output_path   = path.join(dirs.builddir, prefix .. "_startup.c")
             proc.build_arm_startup(template_path, isr_lst, output_path)

@@ -26,30 +26,30 @@ modification, are permitted provided that the following conditions are met:
    without specific prior written permission.
 */
 
-#ifndef CONFIG_ROM_START
-#define CONFIG_ROM_START 0x08000000
+#ifndef CONFIG_FLASH_START
+#define CONFIG_FLASH_START 0x08000000
 #endif
 
 #ifndef CONFIG_RAM_START
 #define CONFIG_RAM_START 0x20000000
 #endif
 
-#ifndef CONFIG_ROM_LENGTH
-#define CONFIG_ROM_LENGTH 64 /* 64KB */
+#ifndef CONFIG_FLASH_LENGTH
+#define CONFIG_FLASH_LENGTH 64 /* 64KB */
 #endif
 
 #ifndef CONFIG_RAM_LENGTH
 #define CONFIG_RAM_LENGTH 16 /* 16KB */
 #endif
 
-#define ROM_LENGTH CONFIG_ROM_LENGTH * 1024
+#define FLASH_LENGTH CONFIG_FLASH_LENGTH * 1024
 #define RAM_LENGTH CONFIG_RAM_LENGTH * 1024
 
 MEMORY
 {
 
-    ROM (rx) : ORIGIN = CONFIG_ROM_START, LENGTH = ROM_LENGTH /* flash */
-    RAM (rw) : ORIGIN = CONFIG_RAM_START, LENGTH = RAM_LENGTH /* sram */
+    ROM (rx) : ORIGIN = CONFIG_FLASH_START, LENGTH = FLASH_LENGTH /* flash */
+    RAM (rw) : ORIGIN = CONFIG_RAM_START,   LENGTH = RAM_LENGTH /* sram */
 }
 ENTRY(Reset_Handler)
 _system_stack_size = CONFIG_STACK_LENGTH;
