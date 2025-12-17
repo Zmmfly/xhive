@@ -1,0 +1,21 @@
+menuconfig MBEDTLS_USE_TF_PSA_CRYPTO_USER_CONFIG_FILE
+    bool "Use user configuration file for PSA Crypto"
+    default n
+    if MBEDTLS_USE_TF_PSA_CRYPTO_USER_CONFIG_FILE
+        config TF_PSA_CRYPTO_USER_CONFIG_FILE
+            string "Path to user configuration file for mbed PSA Crypto"
+            default ""
+            help
+                The relative path referenced from the root of the project.
+    endif
+
+menuconfig MBEDTLS_USE_USER_CONFIG_FILE
+    bool "Use user configuration file for mbed TLS"
+    default n
+    if MBEDTLS_USE_USER_CONFIG_FILE
+        config MBEDTLS_USER_CONFIG_FILE
+            string "Path to user configuration file for mbed TLS"
+            default ""
+            help
+                The relative path referenced from the root of the project.
+    endif

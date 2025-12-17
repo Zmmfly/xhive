@@ -128,6 +128,16 @@ os.rm(path)
 - 支持递归删除目录树
 - 支持批量删除和模式匹配
 
+**io.readfile - 一次性读取完整文件内容**
+```lua
+local content = io.readfile("file.txt")
+```
+
+**io.writefile - 一次性写入完整文件内容**
+```lua
+io.writefile("file.txt", content)
+```
+
 #### 2. 安全操作接口（不抛异常）
 
 **os.trycp / os.trymv / os.tryrm**

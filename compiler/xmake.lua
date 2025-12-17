@@ -91,10 +91,16 @@ toolchain("xhive_toolchain")
             toolchain:add("ldflags", flags.ldflags)
         end
 
-        -- force recheck for switching toolchain
-        toolchain:config_set("__checked", false)
-        localcache.set("config", "recheck", true)
-        localcache.save()
+        -- load tool infos
+        local tool_infos = toolset.load_tool_infos()
+        local cached_name = localcache.get("xhive", "toolchain_name")
+        if not cached_name or cached_name ~= tool_infos.name then
+            localcache.set("xhive", "toolchain_name", tool_infos.name)
+            -- force recheck for switching toolchain
+            toolchain:config_set("__checked", false)
+            localcache.set("config", "recheck", true)
+            localcache.save()
+        end
     end)
 
     on_check(function(toolchain)

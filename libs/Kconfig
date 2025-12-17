@@ -36,6 +36,16 @@ menuconfig LIBS_ADD_DIVSUFSORT
         rsource "divsufsort/Kconfig"
     endif
 
+menuconfig LIBS_ADD_MBEDTLS
+    bool "Add mbedTLS Library"
+    default n
+    help
+        Add the mbedTLS library for SSL/TLS and cryptographic functions.
+
+    if LIBS_ADD_MBEDTLS
+        rsource "mbedtls/Kconfig"
+    endif
+
 config LIBS_ADD_XXHASH
     bool "Add xxHash Library"
     default n

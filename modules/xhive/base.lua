@@ -65,6 +65,10 @@ function load_paths()
     return paths
 end
 
+function load_dirs()
+    return load_paths()
+end
+
 -- Find the specific path where multiple folders or any files first appear in a directory
 function find_deep_root(dir_path)
     if not os.isdir(dir_path) then

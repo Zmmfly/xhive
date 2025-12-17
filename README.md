@@ -24,7 +24,7 @@
 ## Requirements
 - python >= 3.10
 - xmake >= 3.0.0
-- kconfiglib, Python pip package
+- kconfiglib, with custom modifications, install by `pip install git+https://github.com/Zmmfly/kconfiglib.git@dev/rawstr`
 - windows-curses, Python pip package (for Windows platform)
 
 ## Toolchain support
