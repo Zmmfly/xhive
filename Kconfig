@@ -3,6 +3,9 @@
 
 # menu "Platform Configuration"
 
+# Include vendor-specific configuration
+rsource "vendor/Kconfig"
+
 # Include CPU architecture configuration
 rsource "kconfigs/cpu.Kconfig"
 
@@ -20,9 +23,6 @@ rsource "kconfigs/cplusplus.Kconfig"
 
 # Include common configuration
 rsource "kconfigs/common.Kconfig"
-
-# Include vendor-specific configuration
-rsource "vendor/Kconfig"
 
 # Include library configuration
 rsource "libs/Kconfig"
