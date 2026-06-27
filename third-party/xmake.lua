@@ -26,7 +26,7 @@ modification, are permitted provided that the following conditions are met:
    without specific prior written permission.
 ]]
 
-includes("freertos")
+includes("FreeRTOS")
 includes("rt-thread")
 includes("rttnano")
 includes("SEGGER_RTT")
