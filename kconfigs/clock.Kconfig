@@ -1,5 +1,15 @@
 menu "Clock Configuration"
 
+config CLOCK_CONFIGURE_DISABLED
+    bool
+    default n
+    help
+      Disable clock configuration if your MCU does not support or not need it.
+      Set to 'y' only if clock configuration is not applicable for your specific MCU.
+      Default is 'n' (enabled), disabled by MCU-specific Kconfig if needed.
+
+if !CLOCK_CONFIGURE_DISABLED
+
 # HSE (High Speed External) Clock Configuration
 config CLOCK_HSE_ENABLE
     bool "Enable HSE (High Speed External) Clock"
@@ -286,4 +296,5 @@ config CLOCK_SYSCLK_FREQ
       Check your MCU datasheet for the maximum frequency.
       Common values: 72MHz, 84MHz, 100MHz, 120MHz, 168MHz, 180MHz, 216MHz, 240MHz, 480MHz.
 
-endmenu
+endif # !CLOCK_CONFIGURE_DISABLED
+endmenu # Clock Configuration
