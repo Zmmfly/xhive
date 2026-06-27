@@ -66,6 +66,11 @@ target("n32h47x_48x")
             raise("kconfig not found for target: " .. target:name() .. ". Please make sure to include the xhive.common rule in your project.")
         end
 
+        -- Guard for N32H47X_48X target
+        if not conf.NATION_USE_N32H47X_48X then
+            return
+        end
+
         -- Add HSE_VALUE define if HSE is enabled
         if conf.CLOCK_HSE_ENABLE then
             into(defs, "HSE_VALUE=" .. (conf.CLOCK_HSE_FREQ or 8000000))
@@ -191,6 +196,11 @@ target("n32h47x_48x")
         local sdir   = path.absolute(os.scriptdir())
         local dirs   = base.load_paths()
         local conf   = target:data("kconfig")
+
+        -- Guard for N32H47X_48X target
+        if not conf.NATION_USE_N32H47X_48X then
+            return
+        end
 
         local model_maps = {
             NATION_N32H473 = "n32h473",
