@@ -33,6 +33,14 @@ target("vendor_nation")
     on_load(function(target)
         local conf = target:data("kconfig")
         if conf.NATION_USE_N32H47X_48X then
-            target:add("deps", "n32h47x_48x", {public=true})
+            target:add("deps", "nation_n32h47x_48x", {public=true})
         end
     end)
+target_end()
+
+rule("vendor_rule_nation")
+    after_load(function(target)
+        local conf = target:data("kconfig")
+
+    end)
+rule_end()

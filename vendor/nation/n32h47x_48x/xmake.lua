@@ -26,7 +26,7 @@ modification, are permitted provided that the following conditions are met:
    without specific prior written permission.
 ]]
 
-target("n32h47x_48x")
+target("nation_n32h47x_48x")
     set_kind("object")
     -- CMSIS
     add_files("firmware/CMSIS/device/system_n32h47x_48x.c")
