@@ -33,6 +33,8 @@ function tool_name_by_conf(conf)
         return "arm-none-eabi-gcc"
     elseif conf.COMPILER_ATFE then
         return "ATfE"
+    elseif conf.COMPILER_RISCV_GCC then
+        return "riscv-none-elf-gcc"
     else
         raise("No valid compiler selected in " .. kconf.load_name())
     end
