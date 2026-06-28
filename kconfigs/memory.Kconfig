@@ -1,10 +1,18 @@
 menu "Memory Configuration"
 
+menu "Address and Size Configuration"
+
 config DISABLE_FLASH_OPTIONS
     bool
     default n
     help
       Disable the Flash configuration, useful for specific use cases.
+
+config DISABLE_VTABLE_OFFSET
+    bool
+    default n
+    help
+      Disable the VTABLE offset configuration, useful for specific use cases.
 
 config FLASH_START
     hex "Flash Start Address"
@@ -44,12 +52,56 @@ config RAM_LENGTH
         Define the length of the RAM for the microcontrollers.
         Default to 16KB, please adjust according to your microcontroller's specifications.
 
+config ENABLE_EXT_RAM
+    bool "Enable External RAM"
+    default n
+    depends on !DISABLE_RAM_OPTIONS
+    help
+        Enable this option if your microcontroller has external RAM.
+        This will allow the system to utilize the external RAM for additional memory space.
+
+config EXT_RAM_START
+    hex "External RAM Start Address"
+    default 0x30000000
+    depends on !DISABLE_RAM_OPTIONS && ENABLE_EXT_RAM
+    help
+        Define the start address of the external RAM for the microcontrollers.
+        Default to 0x30000000, please adjust according to your microcontroller's specifications.
+
+config EXT_RAM_LENGTH
+    int "External RAM Length in Kbytes"
+    default 8192
+    depends on !DISABLE_RAM_OPTIONS && ENABLE_EXT_RAM
+    help
+        Define the length of the external RAM for the microcontrollers.
+        Default to 8192KB, please adjust according to your microcontroller's specifications.
+
+endmenu # Address and Size Configuration
+
 config VTABLE_OFFSET
     hex "VTABLE Offset"
     default 0x00000000
-    depends on !DISABLE_FLASH_OPTIONS
+    depends on !DISABLE_VTABLE_OFFSET
     help
       Define the offset for the VTABLE in the FLASH.
       This is typically set to 0x00000000, but can be adjusted based on your microcontroller's memory layout.
 
-endmenu
+menu "Additional Memory Configuration"
+
+config ENABLE_EXEC_IN_RAM
+    bool "Enable Execution in RAM"
+    default n
+    help
+        Enable this option if you want to execute code directly from RAM.
+        This is useful for certain performance-critical sections or when executing code from Flash is not feasible.
+
+config ENABLE_LINK_TO_EXT_RAM
+    bool "Enable Link to External RAM"
+    default n
+    depends on !DISABLE_RAM_OPTIONS && ENABLE_EXT_RAM
+    help
+        Enable this option if you want to link certain sections of code or data directly to the external RAM.
+
+endmenu # Additional Memory Configuration
+
+endmenu # Memory Configuration

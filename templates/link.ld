@@ -45,11 +45,50 @@ modification, are permitted provided that the following conditions are met:
 #define FLASH_LENGTH CONFIG_FLASH_LENGTH * 1024
 #define RAM_LENGTH CONFIG_RAM_LENGTH * 1024
 
+#if CONFIG_ENABLE_EXT_RAM
+
+// For external ram start
+#ifndef CONFIG_EXT_RAM_START
+#define CONFIG_EXT_RAM_START 0x40000000
+#endif
+
+// For external ram length
+#ifndef CONFIG_EXT_RAM_LENGTH
+#define CONFIG_EXT_RAM_LENGTH 8192
+#endif
+
+#define EXT_RAM_LENGTH CONFIG_EXT_RAM_LENGTH * 1024
+
+#endif // CONFIG_ENABLE_EXT_RAM
+
+#if CONFIG_ENABLE_EXT_RAM && CONFIG_ENABLE_LINK_TO_EXT_RAM
+#define DEFAULT_RAM_REGION EXTRAM
+#else
+#define DEFAULT_RAM_REGION RAM
+#endif
+
+#if CONFIG_CPU_64BITS
+#define LINK_TABLE_ENTRY QUAD
+#define LINK_TABLE_ALIGN 8
+#else
+#define LINK_TABLE_ENTRY LONG
+#define LINK_TABLE_ALIGN 4
+#endif
+
 MEMORY
 {
 
     ROM (rx) : ORIGIN = CONFIG_FLASH_START, LENGTH = FLASH_LENGTH /* flash */
+
+    #if CONFIG_ENABLE_EXEC_IN_RAM || (CONFIG_ENABLE_EXT_RAM && CONFIG_ENABLE_LINK_TO_EXT_RAM)
+    RAM (rwx) : ORIGIN = CONFIG_RAM_START,   LENGTH = RAM_LENGTH /* sram */
+    #else
     RAM (rw) : ORIGIN = CONFIG_RAM_START,   LENGTH = RAM_LENGTH /* sram */
+    #endif
+
+    #if CONFIG_ENABLE_EXT_RAM
+    EXTRAM (rwx) : ORIGIN = CONFIG_EXT_RAM_START,   LENGTH = EXT_RAM_LENGTH /* external ram */
+    #endif
 }
 ENTRY(Reset_Handler)
 _system_stack_size = CONFIG_STACK_LENGTH;
@@ -60,15 +99,25 @@ SECTIONS
     {
         . = ALIGN(4);
         _stext = .;
-        KEEP(*(.isr_vector))            /* Startup code */
+        #if CONFIG_CPU_ARM
+        KEEP(*(.isr_vector))            /* ISR Vector */
+        #elif CONFIG_CPU_RISCV
+        #if CONFIG_ARCH_RISCV_HAS_ISR_VECTOR
+        KEEP(*(.isr_vector))            /* ISR Vector */
+        #else
+        KEEP(*(.startup_code))          /* Startup code */
+        #endif
+        #endif
 
         . = ALIGN(4);
         *(.text)                        /* remaining code */
         *(.text.*)                      /* remaining code */
         *(.rodata)                      /* read-only data (constants) */
         *(.rodata*)
+        #if CONFIG_CPU_ARM
         *(.glue_7)
         *(.glue_7t)
+        #endif
         *(.gnu.linkonce.t*)
 
         . = ALIGN(4);
@@ -124,7 +173,10 @@ SECTIONS
 	.except_ordered : 
     {
 		*(.gcc_except_table *.gcc_except_table.*)
-		*(.ARM.extab* .gnu.linkonce.armextab.*)
+
+        #if CONFIG_CPU_ARM
+			*(.ARM.extab* .gnu.linkonce.armextab.*)
+        #endif
 	} > ROM
     
 	.eh_frame_hdr : 
@@ -141,31 +193,121 @@ SECTIONS
 		PROVIDE_HIDDEN ( __eh_frame_end = . );
 	} > ROM
 
-#else
+#else /* CONFIG_CPP_EXCEPTION_SUPPORT */
 
 	/DISCARD/ : {
 		*(.note .note.*)
 		*(.eh_frame .eh_frame.*)
-		*(.ARM.extab* .gnu.linkonce.armextab.*)
-		*(.ARM.exidx*)
+
+        #if CONFIG_CPU_ARM
+			*(.ARM.extab* .gnu.linkonce.armextab.*)
+			*(.ARM.exidx*)
+        #endif
 	}
 
 #endif /* CONFIG_CPP_EXCEPTION_SUPPORT */
 
-    /* .ARM.exidx is sorted, so has to go in its own output section.  */
-    __exidx_start = .;
-    .ARM.exidx :
-    {
-        *(.ARM.exidx* .gnu.linkonce.armexidx.*)
+    #if CONFIG_CPU_ARM
+	    /* .ARM.exidx is sorted, so has to go in its own output section.  */
+	    __exidx_start = .;
+	    .ARM.exidx :
+	    {
+	        *(.ARM.exidx* .gnu.linkonce.armexidx.*)
+	    } > ROM
+	    __exidx_end = .;
+    #endif
 
-        /* This is used by the startup in order to initialize the .data secion */
-        _sidata = .;
+    .copy.table :
+    {
+        . = ALIGN(LINK_TABLE_ALIGN);
+        __copy_table_start__ = .;
+
+        #if CONFIG_ENABLE_EXEC_IN_RAM || (CONFIG_ENABLE_EXT_RAM && CONFIG_ENABLE_LINK_TO_EXT_RAM)
+        LINK_TABLE_ENTRY(LOADADDR(.ram_text));
+        LINK_TABLE_ENTRY(ADDR(.ram_text));
+        LINK_TABLE_ENTRY(SIZEOF(.ram_text));
+        #endif
+
+        #if CONFIG_ENABLE_EXT_RAM
+        LINK_TABLE_ENTRY(LOADADDR(.ext_text));
+        LINK_TABLE_ENTRY(ADDR(.ext_text));
+        LINK_TABLE_ENTRY(SIZEOF(.ext_text));
+        #endif
+
+        LINK_TABLE_ENTRY(LOADADDR(.data));
+        LINK_TABLE_ENTRY(ADDR(.data));
+        LINK_TABLE_ENTRY(SIZEOF(.data));
+
+        #if CONFIG_ENABLE_EXT_RAM && CONFIG_ENABLE_LINK_TO_EXT_RAM
+        LINK_TABLE_ENTRY(LOADADDR(.ram_data));
+        LINK_TABLE_ENTRY(ADDR(.ram_data));
+        LINK_TABLE_ENTRY(SIZEOF(.ram_data));
+        #endif
+
+        #if CONFIG_ENABLE_EXT_RAM
+        LINK_TABLE_ENTRY(LOADADDR(.ext_data));
+        LINK_TABLE_ENTRY(ADDR(.ext_data));
+        LINK_TABLE_ENTRY(SIZEOF(.ext_data));
+        #endif
+
+        __copy_table_end__ = .;
     } > ROM
-    __exidx_end = .;
+
+    .zero.table :
+    {
+        . = ALIGN(LINK_TABLE_ALIGN);
+        __zero_table_start__ = .;
+
+        #if CONFIG_ENABLE_EXT_RAM && CONFIG_ENABLE_LINK_TO_EXT_RAM
+        LINK_TABLE_ENTRY(ADDR(.ram_bss));
+        LINK_TABLE_ENTRY(SIZEOF(.ram_bss));
+        #endif
+
+        #if CONFIG_ENABLE_EXT_RAM
+        LINK_TABLE_ENTRY(ADDR(.ext_bss));
+        LINK_TABLE_ENTRY(SIZEOF(.ext_bss));
+        #endif
+
+        LINK_TABLE_ENTRY(ADDR(.bss));
+        LINK_TABLE_ENTRY(SIZEOF(.bss));
+
+        __zero_table_end__ = .;
+    } > ROM
+
+    #if CONFIG_ENABLE_EXEC_IN_RAM || (CONFIG_ENABLE_EXT_RAM && CONFIG_ENABLE_LINK_TO_EXT_RAM)
+    .ram_text :
+    {
+        . = ALIGN(4);
+        _sram_text = .;
+        *(.ram_text)
+        *(.ram_text.*)
+        *(.ramfunc)
+        *(.ramfunc.*)
+        . = ALIGN(4);
+        _eram_text = .;
+    } > RAM AT > ROM
+    #endif
+
+    #if CONFIG_ENABLE_EXT_RAM
+    .ext_text :
+    {
+        . = ALIGN(4);
+        _sext_text = .;
+        *(.ext_text)
+        *(.ext_text.*)
+        *(.extram_text)
+        *(.extram_text.*)
+        . = ALIGN(4);
+        _eext_text = .;
+    } > EXTRAM AT > ROM
+    #endif
+
+    /* This is used by the startup in order to initialize the .data secion */
+    _sidata = LOADADDR(.data);
 
     /* .data section which is used for initialized data */
 
-    .data : AT (_sidata)
+    .data :
     {
         . = ALIGN(4);
         /* This is used by the startup in order to initialize the .data secion */
@@ -174,6 +316,19 @@ SECTIONS
         *(.data)
         *(.data.*)
         *(.gnu.linkonce.d*)
+        #if !(CONFIG_ENABLE_EXT_RAM && CONFIG_ENABLE_LINK_TO_EXT_RAM)
+        *(.ram_data)
+        *(.ram_data.*)
+        #endif
+
+        #if CONFIG_CPU_RISCV
+        . = ALIGN(4);
+        PROVIDE(__global_pointer$ = . + 0x800);
+        *(.sdata)
+        *(.sdata.*)
+        *(.sdata2)
+        *(.sdata2.*)
+        #endif
 
         /* PROVIDE(__dtors_start__ = .);
         KEEP(*(SORT(.dtors.*)))
@@ -183,19 +338,75 @@ SECTIONS
         . = ALIGN(4);
         /* This is used by the startup in order to initialize the .data secion */
         _edata = . ;
-    } >RAM
+    } > DEFAULT_RAM_REGION AT > ROM
 
-    .stack :
+    #if CONFIG_ENABLE_EXT_RAM && CONFIG_ENABLE_LINK_TO_EXT_RAM
+    .ram_data :
+    {
+        . = ALIGN(4);
+        _sram_data = .;
+        *(.ram_data)
+        *(.ram_data.*)
+        . = ALIGN(4);
+        _eram_data = .;
+    } > RAM AT > ROM
+    #endif
+
+    #if CONFIG_ENABLE_EXT_RAM
+    .ext_data :
+    {
+        . = ALIGN(4);
+        _sext_data = .;
+        *(.ext_data)
+        *(.ext_data.*)
+        *(.extram_data)
+        *(.extram_data.*)
+        *(.ext_ram)
+        *(.ext_ram.*)
+        *(.extram)
+        *(.extram.*)
+        . = ALIGN(4);
+        _eext_data = .;
+    } > EXTRAM AT > ROM
+    #endif
+
+    .stack (NOLOAD) :
     {
         . = ALIGN(4);
         _sstack = .;
         . = . + _system_stack_size;
         . = ALIGN(4);
         _estack = .;
-    } >RAM
+    } > RAM
+
+    #if CONFIG_ENABLE_EXT_RAM && CONFIG_ENABLE_LINK_TO_EXT_RAM
+    .ram_bss (NOLOAD) :
+    {
+        . = ALIGN(4);
+        _sram_bss = .;
+        *(.ram_bss)
+        *(.ram_bss.*)
+        . = ALIGN(4);
+        _eram_bss = .;
+    } > RAM
+    #endif
+
+    #if CONFIG_ENABLE_EXT_RAM
+    .ext_bss (NOLOAD) :
+    {
+        . = ALIGN(4);
+        _sext_bss = .;
+        *(.ext_bss)
+        *(.ext_bss.*)
+        *(.extram_bss)
+        *(.extram_bss.*)
+        . = ALIGN(4);
+        _eext_bss = .;
+    } > EXTRAM
+    #endif
 
     __bss_start = .;
-    .bss :
+    .bss (NOLOAD) :
     {
         . = ALIGN(4);
         /* This is used by the startup in order to initialize the .bss secion */
@@ -203,6 +414,15 @@ SECTIONS
 
         *(.bss)
         *(.bss.*)
+        #if !(CONFIG_ENABLE_EXT_RAM && CONFIG_ENABLE_LINK_TO_EXT_RAM)
+        *(.ram_bss)
+        *(.ram_bss.*)
+        #endif
+        #if CONFIG_CPU_RISCV
+        *(.sbss)
+        *(.sbss.*)
+        *(.scommon)
+        #endif
         *(COMMON)
 
         . = ALIGN(4);
@@ -210,7 +430,7 @@ SECTIONS
         _ebss = . ;
 
         *(.bss.init)
-    } > RAM
+    } > DEFAULT_RAM_REGION
     __bss_end = .;
 
     _end = .;
@@ -223,6 +443,13 @@ SECTIONS
     .stab.index    0 : { *(.stab.index) }
     .stab.indexstr 0 : { *(.stab.indexstr) }
     .comment       0 : { *(.comment) }
+
+    #if CONFIG_CPU_ARM
+    .ARM.attributes 0 : { *(.ARM.attributes) }
+    #elif CONFIG_CPU_RISCV
+    .riscv.attributes 0 : { *(.riscv.attributes) }
+    #endif
+
     /* DWARF debug sections.
      * Symbols in the DWARF debugging sections are relative to the beginning
      * of the section so we begin them at 0.  */

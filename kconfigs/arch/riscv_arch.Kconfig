@@ -1,3 +1,9 @@
+config ARCH_RISCV_HAS_ISR_VECTOR
+	bool
+	default n
+	help
+	    Enable ISR vector support for RISC-V
+
 config ARCH_RISCV_HW_FPU
 	bool
 	default n

@@ -50,7 +50,7 @@ function load_startup_template_path()
     local startup_dir = path.join(path.directory(path.directory(os.scriptdir())), "templates")
     if conf.CPU_ARM then
         return path.join(startup_dir, "startup_arm.c")
-    else
+    elseif conf.CPU_RISCV then
         return path.join(startup_dir, "startup_riscv.c")
     end
 end
