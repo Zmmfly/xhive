@@ -1,0 +1,28 @@
+config OPENECOS_STARRYSKY
+    bool
+    help
+      Enable this option to include support for the StarrySky series microcontrollers in the OpenECOS build system.
+
+choice
+    prompt "Select StarrySky Series"
+    default STARRYSKY_USE_C2
+    help
+      Select the StarrySky series to use.
+
+config STARRYSKY_USE_C2
+    bool "Use StarrySky C2 Series"
+    select OPENECOS_STARRYSKY
+    select CPU_RISCV
+    select ARCH_RISCV_RV32
+    select RISCV_ISA_I
+    select RISCV_ISA_M
+    select RISCV_ISA_A
+    select RISCV_ISA_C
+    help
+      Select this option to include configurations for the StarrySky C2 series microcontrollers.
+
+endchoice
+
+if OPENECOS_STARRYSKY
+    rsource "starrysky/Kconfig"
+endif

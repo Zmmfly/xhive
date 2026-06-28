@@ -3,11 +3,11 @@
 
 # menu "Platform Configuration"
 
-# Include vendor-specific configuration
-rsource "vendor/Kconfig"
-
 # Include CPU architecture configuration
 rsource "kconfigs/cpu.Kconfig"
+
+# Include vendor-specific configuration
+rsource "vendor/Kconfig"
 
 # Include compiler configuration
 rsource "kconfigs/compiler.Kconfig"

@@ -28,6 +28,7 @@ modification, are permitted provided that the following conditions are met:
 
 includes("nation")
 includes("stmicro")
+includes("openecos")
 
 target("vendor")
     set_kind("object")
@@ -39,3 +40,8 @@ target("vendor")
             target:add("deps", "vendor_stmicro", {public=true})
         end
     end)
+target_end()
+
+rule("vendor_rules")
+
+rule_end()

@@ -20,6 +20,11 @@ config VENDOR_USE_STMICRO
     help
       Select this option to include STMicroelectronics vendor-specific configurations.
 
+config VENDOR_USE_OPENECOS
+    bool "Use MCU of OpenECOS project"
+    help
+      Select this option to include OpenECOS vendor-specific configurations.
+
 config VENDOR_USE_NONE
     bool "No Specific Vendor"
     help
@@ -33,6 +38,10 @@ endif
 
 if VENDOR_USE_STMICRO
     orsource "stmicro/Kconfig"
+endif
+
+if VENDOR_USE_OPENECOS
+    orsource "openecos/Kconfig"
 endif
 
 endmenu
