@@ -28,25 +28,7 @@ modification, are permitted provided that the following conditions are met:
 
 target("nation_n32h47x_48x")
     set_kind("object")
-    -- CMSIS
-    add_files("firmware/CMSIS/device/system_n32h47x_48x.c")
-    add_includedirs(
-        "firmware/CMSIS/core",
-        "firmware/CMSIS/device",
-        {public = true}
-    )
-    -- std periph driver
-    add_files("firmware/n32h47x_48x_std_periph_driver/src/*.c")
-    add_includedirs( 
-        "firmware/n32h47x_48x_std_periph_driver/inc",
-        {public = true}
-    )
-    -- algo library
-    add_files("firmware/n32h47x_48x_algo_lib/src/*.c")
-    add_includedirs(
-        "firmware/n32h47x_48x_algo_lib/inc",
-        {public = true}
-    )
+    set_default(false)
 
     on_load(function(target)
         -- Import the xhive.base module for utility functions
@@ -70,6 +52,16 @@ target("nation_n32h47x_48x")
         if not conf.NATION_USE_N32H47X_48X then
             return
         end
+
+        -- Register sources only after selection; returning from on_load
+        -- does not remove files added in the description scope.
+        into(srcs, path.join(sdir, "firmware/CMSIS/device/system_n32h47x_48x.c"))
+        into(incs, path.join(sdir, "firmware/CMSIS/core"))
+        into(incs, path.join(sdir, "firmware/CMSIS/device"))
+        into(srcs, path.join(sdir, "firmware/n32h47x_48x_std_periph_driver/src/*.c"))
+        into(incs, path.join(sdir, "firmware/n32h47x_48x_std_periph_driver/inc"))
+        into(srcs, path.join(sdir, "firmware/n32h47x_48x_algo_lib/src/*.c"))
+        into(incs, path.join(sdir, "firmware/n32h47x_48x_algo_lib/inc"))
 
         -- Add HSE_VALUE define if HSE is enabled
         if conf.CLOCK_HSE_ENABLE then

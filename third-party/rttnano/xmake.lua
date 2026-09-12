@@ -1,18 +1,20 @@
 target("rttnano")
     set_kind("object")
     set_default(false)
-    add_files("src/*.c")
-    add_files("port/*.c")
-    add_includedirs("include", {public=true})
-    add_includedirs("port", {public=true})
 
     on_load(function(target)
+        local conf = target:data("kconfig")
+        if not conf.THIRD_RTOS_RTTNANO then
+            return
+        end
+
         import("xhive.base")
         import("xhive.proc")
-        local conf = target:data("kconfig")
         local sdir = os.scriptdir()
-        local srcs = {}
+        local srcs = {path.join(sdir, "port", "*.c")}
         local incs = {}
+        target:add("includedirs", path.join(sdir, "include"), {public=true})
+        target:add("includedirs", path.join(sdir, "port"), {public=true})
 
         -- components
         if conf.RT_USING_FINSH then
@@ -63,6 +65,10 @@ target("rttnano")
     end)
 
     before_build(function(target)
+        if not target:data("kconfig").THIRD_RTOS_RTTNANO then
+            return
+        end
+
         import("core.cache.memcache")
         import("xhive.base")
         import("xhive.kconf")
