@@ -6,6 +6,9 @@ target("libcpu")
     on_load(function(target)
         import("xhive.proc")
         local conf    = target:data("kconfig")
+        if not conf.THIRD_RTOS_RTTHREAD_STD then
+            return
+        end
 
         -- Get CPU info in Kconfig
         local dir     = os.scriptdir()
