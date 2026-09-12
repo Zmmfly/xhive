@@ -29,6 +29,7 @@ config ARCH_RISCV_RV32
 	bool
 	default n
 	select CPU_RISCV
+	select CPU_32BITS
 	help
 	    32-bit RISC-V architecture
 
@@ -37,5 +38,6 @@ config ARCH_RISCV_RV64
 	bool
 	default n
 	select CPU_RISCV
+	select CPU_64BITS
 	help
 	    64-bit RISC-V architecture

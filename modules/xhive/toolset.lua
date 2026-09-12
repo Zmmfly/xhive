@@ -250,16 +250,60 @@ function build_arm_flags(conf)
 end
 
 function build_riscv_flags(conf)
-    local cxflags = {}
-    local asflags = {}
-    local ldflags = {}
+    assert(conf.COMPILER_RISCV_GCC, "RISC-V requires CONFIG_COMPILER_RISCV_GCC")
+    assert((not not conf.ARCH_RISCV_RV32) ~= (not not conf.ARCH_RISCV_RV64),
+           "Select exactly one RISC-V XLEN")
+    assert(conf.RISCV_ISA_I or conf.RISCV_ISA_G, "RISC-V requires the I base ISA")
 
-    if conf.COMPILER_RISCV_GCC then
-        -- TODO add riscv gcc common flags by CPU arch configs, change TODO to wait test after complete
-    elseif conf.COMPILER_CLANG then
-        -- TODO add clang common flags by CPU arch configs, change TODO to wait test after complete
+    local march = conf.ARCH_RISCV_RV64 and "rv64" or "rv32"
+    if conf.RISCV_ISA_G then
+        march = march .. "g"
+    else
+        for _, ext in ipairs({"I", "M", "A", "F", "D"}) do
+            if conf["RISCV_ISA_" .. ext] then
+                march = march .. ext:lower()
+            end
+        end
     end
-    raise("RISC-V toolchain flags generation not yet implemented")
+    for _, ext in ipairs({"C", "B", "V"}) do
+        if conf["RISCV_ISA_" .. ext] then
+            march = march .. ext:lower()
+        end
+    end
+    -- Multi-letter extensions need separators; sort for reproducible flags.
+    local extensions = {}
+    for key, enabled in pairs(conf) do
+        if enabled and key:startswith("RISCV_ISA_Z") then
+            table.insert(extensions, key:sub(#"RISCV_ISA_" + 1):lower())
+        end
+    end
+    table.sort(extensions)
+    for _, ext in ipairs(extensions) do
+        march = march .. "_" .. ext
+    end
+
+    local abi = conf.ARCH_RISCV_RV64 and "lp64" or "ilp32"
+    if conf.ARCH_RISCV_FPU_DOUBLE then
+        assert(conf.RISCV_ISA_D or conf.RISCV_ISA_G, "Double-float ABI requires D")
+        abi = abi .. "d"
+    elseif conf.ARCH_RISCV_FPU_SINGLE then
+        assert(conf.RISCV_ISA_F or conf.RISCV_ISA_G, "Single-float ABI requires F")
+        abi = abi .. "f"
+    end
+
+    local cxflags = {"-march=" .. march, "-mabi=" .. abi,
+                     "-ffreestanding", "-ffunction-sections", "-fdata-sections"}
+    local asflags = {"-march=" .. march, "-mabi=" .. abi}
+    local ldflags = {"-march=" .. march, "-mabi=" .. abi,
+                     "-Wl,--gc-sections", "--specs=nano.specs", "--specs=nosys.specs"}
+    if conf.NO_STD_STARTFILE then
+        table.insert(ldflags, "-nostartfiles")
+    end
+    if conf.COMPILER_ENABLE_LTO then
+        table.insert(cxflags, "-flto")
+        table.insert(ldflags, "-flto")
+        table.insert(ldflags, "-fuse-linker-plugin")
+    end
 
     return {cxflags = cxflags, asflags = asflags, ldflags = ldflags}
 end
@@ -424,12 +468,15 @@ function elf_to_bin(cc_path, elf_path, bin_output)
     local cc_name = path.filename(cc_path)
     -- If gcc in in cc_name, use objcopy to convert elf to bin
     if cc_name:find("gcc", 1, true) then
-        local objcopy, _   = cc_path:gsub("gcc", "objcopy")
+        -- Replace only the executable name; SDK directory names may contain gcc.
+        local objcopy_name = cc_name:gsub("gcc", "objcopy")
+        local objcopy = path.join(path.directory(cc_path), objcopy_name)
         local args    = {"-O", "binary", elf_path, bin_output}
         local result,  err = os.iorunv(objcopy, args)
     -- If clang in cc_name, use llvm-objcopy to convert elf to bin
     elseif cc_name:find("clang", 1, true) then
-        local objcopy, _   = cc_path:gsub("clang", "llvm-objcopy")
+        local objcopy_name = cc_name:gsub("clang", "llvm-objcopy")
+        local objcopy = path.join(path.directory(cc_path), objcopy_name)
         local args    = {"-O", "binary", elf_path, bin_output}
         local result,  err = os.iorunv(objcopy, args)
     else

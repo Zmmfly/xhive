@@ -90,7 +90,12 @@ MEMORY
     EXTRAM (rwx) : ORIGIN = CONFIG_EXT_RAM_START,   LENGTH = EXT_RAM_LENGTH /* external ram */
     #endif
 }
+#if CONFIG_CPU_RISCV && !CONFIG_ARCH_RISCV_HAS_ISR_VECTOR
+/* ELF loaders must enter the trampoline that establishes sp and gp. */
+ENTRY(Reset_Entry)
+#else
 ENTRY(Reset_Handler)
+#endif
 _system_stack_size = CONFIG_STACK_LENGTH;
 
 SECTIONS
@@ -372,10 +377,19 @@ SECTIONS
 
     .stack (NOLOAD) :
     {
+        #if CONFIG_CPU_RISCV
+        /* The standard RISC-V ABI requires 16-byte alignment at C entry. */
+        . = ALIGN(16);
+        #else
         . = ALIGN(4);
+        #endif
         _sstack = .;
         . = . + _system_stack_size;
+        #if CONFIG_CPU_RISCV
+        . = ALIGN(16);
+        #else
         . = ALIGN(4);
+        #endif
         _estack = .;
     } > RAM
 
