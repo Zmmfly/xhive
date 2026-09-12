@@ -487,6 +487,211 @@ static void test_hp_uart_io_and_budgets(void)
     CHECK_EQ_U32(0u, mock_failures);
 }
 
+static void test_hp_uart_configuration_boundaries(void)
+{
+    static const struct {
+        uint32_t clock_hz;
+        uint32_t baud_rate;
+        c2_status_t result;
+        uint32_t divider;
+    } dividers[] = {
+        {0u, 1u, C2_ERROR_INVALID_ARGUMENT, 0u},
+        {72000000u, 0u, C2_ERROR_INVALID_ARGUMENT, 0u},
+        {2u, 1u, C2_ERROR_INVALID_ARGUMENT, 0u},
+        {3u, 1u, C2_OK, 2u},
+        {65536u, 1u, C2_OK, 65535u},
+        {65537u, 1u, C2_ERROR_INVALID_ARGUMENT, 0u},
+        {UINT32_MAX, 1u, C2_ERROR_INVALID_ARGUMENT, 0u},
+        {72000001u, 115200u, C2_OK, 624u}
+    };
+    static const c2_uart_parity_t parities[] = {
+        C2_UART_PARITY_NONE, C2_UART_PARITY_ODD, C2_UART_PARITY_EVEN
+    };
+    static const uint32_t parity_masks[] = {0u, 0x40u, 0xc0u};
+    static const uint32_t word_masks[] = {0u, 0x08u, 0x10u, 0x18u};
+    C2_HP_UART_TypeDef regs = {0};
+    c2_hp_uart_t uart = {0};
+    c2_hp_uart_config_t config = hp_default_config();
+
+    mock_hp_lsr = &regs.LSR.WORD;
+    mock_reset();
+    CHECK_EQ_U32(C2_OK, c2_hp_uart_init(&uart, &regs, 72000000u, &config));
+
+    for (size_t i = 0u; i < sizeof(dividers) / sizeof(dividers[0]); ++i) {
+        uint32_t old_divider = regs.DIV.WORD;
+        uint32_t old_lcr = uart.lcr_shadow;
+        uint32_t old_fcr = uart.fcr_trigger_shadow;
+
+        mock_reset();
+        config.baud_rate = dividers[i].baud_rate;
+        CHECK_EQ_U32(dividers[i].result,
+                     c2_hp_uart_configure(&uart, dividers[i].clock_hz, &config));
+        CHECK_TRUE(uart.initialized);
+        CHECK_TRUE(uart.regs == &regs);
+        CHECK_EQ_U32(0u, mock_hp_lsr_reads);
+        if (dividers[i].result == C2_OK) {
+            CHECK_EQ_SIZE(5u, mock_write_count);
+            CHECK_EQ_U32(dividers[i].divider, regs.DIV.WORD);
+        } else {
+            CHECK_EQ_SIZE(0u, mock_write_count);
+            CHECK_EQ_U32(old_divider, regs.DIV.WORD);
+            CHECK_EQ_U32(old_lcr, uart.lcr_shadow);
+            CHECK_EQ_U32(old_fcr, uart.fcr_trigger_shadow);
+        }
+        CHECK_EQ_U32(0u, mock_failures);
+    }
+
+    /* Exercise every supported line format without depending on header bits. */
+    config = hp_default_config();
+    for (size_t width = 0u; width < 4u; ++width) {
+        for (size_t parity = 0u; parity < 3u; ++parity) {
+            for (unsigned stop = 0u; stop < 2u; ++stop) {
+                uint32_t frame = word_masks[width] | parity_masks[parity] |
+                                 (stop == 0u ? 0u : 0x20u);
+                uint32_t trigger = (uint32_t)width << 2;
+
+                mock_reset();
+                config.data_bits = (uint8_t)(width + 5u);
+                config.parity = parities[parity];
+                config.stop_bits = stop == 0u ? C2_UART_STOP_BITS_1 :
+                                               C2_UART_STOP_BITS_2;
+                config.rx_trigger = (c2_hp_uart_rx_trigger_t)width;
+                CHECK_EQ_U32(C2_OK, c2_hp_uart_configure(&uart, 72000000u, &config));
+                CHECK_EQ_SIZE(5u, mock_write_count);
+                check_write(2u, &regs.FCR.WORD, trigger | 3u);
+                check_write(3u, &regs.FCR.WORD, trigger);
+                check_write(4u, &regs.LCR.WORD, frame);
+                CHECK_EQ_U32(frame, uart.lcr_shadow);
+                CHECK_EQ_U32(trigger, uart.fcr_trigger_shadow);
+                CHECK_EQ_U32(0u, mock_hp_lsr_reads);
+                CHECK_EQ_U32(0u, mock_failures);
+            }
+        }
+    }
+
+    for (unsigned kind = 1u; kind <= 3u; ++kind) {
+        mock_reset();
+        CHECK_EQ_U32(C2_OK, c2_hp_uart_flush(&uart, (c2_hp_uart_flush_t)kind));
+        CHECK_EQ_SIZE(2u, mock_write_count);
+        check_write(0u, &regs.FCR.WORD, 0x0cu | kind);
+        check_write(1u, &regs.FCR.WORD, 0x0cu);
+        CHECK_EQ_U32(0x0cu, uart.fcr_trigger_shadow);
+        CHECK_EQ_U32(0u, mock_hp_lsr_reads);
+        CHECK_EQ_U32(0u, mock_failures);
+    }
+}
+
+static void test_hp_uart_buffer_boundaries(void)
+{
+    C2_HP_UART_TypeDef regs = {0};
+    c2_hp_uart_t uart = {0};
+    c2_hp_uart_config_t config = hp_default_config();
+    const uint8_t tx[] = {0x00u, 0xffu, 0x5au};
+    uint8_t rx[3] = {0xeeu, 0xeeu, 0xeeu};
+    uint8_t byte = 0xeeu;
+    size_t count = 99u;
+    size_t remaining;
+
+    mock_hp_lsr = &regs.LSR.WORD;
+    mock_reset();
+    CHECK_EQ_U32(C2_OK, c2_hp_uart_init(&uart, &regs, 72000000u, &config));
+    mock_reset();
+
+    CHECK_EQ_U32(C2_OK, c2_hp_uart_write(&uart, NULL, 0u, &count, 0u));
+    CHECK_EQ_SIZE(0u, count);
+    count = 99u;
+    CHECK_EQ_U32(C2_OK, c2_hp_uart_read(&uart, NULL, 0u, &count, 0u));
+    CHECK_EQ_SIZE(0u, count);
+    count = 99u;
+    CHECK_EQ_U32(C2_ERROR_TIMEOUT, c2_hp_uart_write(&uart, tx, 3u, &count, 0u));
+    CHECK_EQ_SIZE(0u, count);
+    count = 99u;
+    CHECK_EQ_U32(C2_ERROR_TIMEOUT, c2_hp_uart_read(&uart, rx, 3u, &count, 0u));
+    CHECK_EQ_SIZE(0u, count);
+    CHECK_EQ_U32(0xeeu, rx[0]);
+    CHECK_EQ_U32(C2_ERROR_TIMEOUT, c2_hp_uart_wait_tx_complete(&uart, 0u));
+
+    count = 99u;
+    CHECK_EQ_U32(C2_ERROR_INVALID_ARGUMENT,
+                 c2_hp_uart_write(&uart, NULL, 1u, &count, 1u));
+    CHECK_EQ_SIZE(99u, count);
+    CHECK_EQ_U32(C2_ERROR_INVALID_ARGUMENT,
+                 c2_hp_uart_read(&uart, NULL, 1u, &count, 1u));
+    CHECK_EQ_SIZE(99u, count);
+    CHECK_EQ_U32(C2_ERROR_INVALID_ARGUMENT,
+                 c2_hp_uart_write(&uart, tx, 1u, NULL, 1u));
+    CHECK_EQ_U32(C2_ERROR_INVALID_ARGUMENT,
+                 c2_hp_uart_read(&uart, rx, 1u, NULL, 1u));
+    CHECK_EQ_U32(0u, mock_hp_lsr_reads);
+    CHECK_EQ_SIZE(0u, mock_write_count);
+
+    mock_push_read(&regs.LSR.WORD, 0u);
+    mock_push_read(&regs.LSR.WORD, C2_HP_UART_STATUS_TX_FIFO_FULL);
+    mock_push_read(&regs.LSR.WORD, C2_HP_UART_STATUS_TX_FIFO_FULL);
+    CHECK_EQ_U32(C2_ERROR_TIMEOUT, c2_hp_uart_write(&uart, tx, 3u, &count, 3u));
+    CHECK_EQ_SIZE(1u, count);
+    CHECK_EQ_SIZE(1u, mock_write_count);
+    CHECK_EQ_U32(3u, mock_hp_lsr_reads);
+    check_write(0u, &regs.TRX.WORD, 0x00u);
+    CHECK_EQ_SIZE(mock_read_count, mock_read_index);
+
+    /* Resume explicitly from the accepted prefix; no hidden retry or flush. */
+    mock_push_read(&regs.LSR.WORD, 0u);
+    mock_push_read(&regs.LSR.WORD, 0u);
+    CHECK_EQ_U32(C2_OK,
+                 c2_hp_uart_write(&uart, tx + count, 3u - count, &remaining, 2u));
+    CHECK_EQ_SIZE(2u, remaining);
+    CHECK_EQ_SIZE(3u, mock_write_count);
+    check_write(1u, &regs.TRX.WORD, 0xffu);
+    check_write(2u, &regs.TRX.WORD, 0x5au);
+    CHECK_EQ_SIZE(mock_read_count, mock_read_index);
+    CHECK_EQ_U32(0u, mock_failures);
+
+    mock_reset();
+    mock_push_read(&regs.LSR.WORD, 0u);
+    mock_push_read(&regs.TRX.WORD, 0x00u);
+    mock_push_read(&regs.LSR.WORD, C2_HP_UART_STATUS_RX_FIFO_EMPTY);
+    mock_push_read(&regs.LSR.WORD, C2_HP_UART_STATUS_RX_FIFO_EMPTY);
+    CHECK_EQ_U32(C2_ERROR_TIMEOUT, c2_hp_uart_read(&uart, rx, 3u, &count, 3u));
+    CHECK_EQ_SIZE(1u, count);
+    CHECK_EQ_U32(0x00u, rx[0]);
+    CHECK_EQ_U32(0xeeu, rx[1]);
+    CHECK_EQ_U32(0xeeu, rx[2]);
+    CHECK_EQ_U32(3u, mock_hp_lsr_reads);
+    CHECK_EQ_SIZE(mock_read_count, mock_read_index);
+    CHECK_EQ_SIZE(0u, mock_write_count);
+    CHECK_EQ_U32(0u, mock_failures);
+
+    mock_reset();
+    mock_push_read(&regs.LSR.WORD, 0u);
+    mock_push_read(&regs.TRX.WORD, 0xffu);
+    mock_push_read(&regs.LSR.WORD, C2_HP_UART_STATUS_PARITY_ERROR);
+    mock_push_read(&regs.TRX.WORD, 0x5au);
+    mock_push_read(&regs.LSR.WORD, 0u);
+    mock_push_read(&regs.TRX.WORD, 0x55u);
+    CHECK_EQ_U32(C2_ERROR_IO, c2_hp_uart_read(&uart, rx, 3u, &count, 3u));
+    CHECK_EQ_SIZE(2u, count);
+    CHECK_EQ_U32(0xffu, rx[0]);
+    CHECK_EQ_U32(0x5au, rx[1]);
+    CHECK_EQ_U32(0xeeu, rx[2]);
+    CHECK_EQ_SIZE(4u, mock_read_index);
+    CHECK_EQ_U32(2u, mock_hp_lsr_reads);
+    CHECK_EQ_U32(C2_OK, c2_hp_uart_read_byte_nonblocking(&uart, &byte));
+    CHECK_EQ_U32(0x55u, byte);
+    CHECK_EQ_SIZE(mock_read_count, mock_read_index);
+    CHECK_EQ_SIZE(0u, mock_write_count);
+    CHECK_EQ_U32(0u, mock_failures);
+
+    mock_reset();
+    mock_push_read(&regs.LSR.WORD,
+                   C2_HP_UART_STATUS_RX_FIFO_EMPTY | C2_HP_UART_STATUS_PARITY_ERROR);
+    CHECK_EQ_U32(C2_ERROR_BUSY, c2_hp_uart_read_byte_nonblocking(&uart, &byte));
+    CHECK_EQ_U32(0x55u, byte);
+    CHECK_EQ_SIZE(mock_read_count, mock_read_index);
+    CHECK_EQ_SIZE(0u, mock_write_count);
+    CHECK_EQ_U32(0u, mock_failures);
+}
+
 int main(void)
 {
     test_gpio_parameters_and_shadow();
@@ -494,6 +699,8 @@ int main(void)
     test_sys_uart();
     test_hp_uart_configuration_irq_and_flush();
     test_hp_uart_io_and_budgets();
+    test_hp_uart_configuration_boundaries();
+    test_hp_uart_buffer_boundaries();
 
     if (test_failures != 0u) {
         fprintf(stderr, "gpio/uart tests: %u failure(s)\n", test_failures);
