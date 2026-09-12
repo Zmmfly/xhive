@@ -27,5 +27,10 @@ target("openecos_starrysky")
 
         target:add("files", srcs)
         target:add("includedirs", incs_pub, {public = true})
+
+        if conf.USE_DEFAULT_STARTUP then
+            import("xhive.proc")
+            target:add("files", proc.load_startup_template_path())
+        end
     end)
 target_end()

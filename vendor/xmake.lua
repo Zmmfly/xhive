@@ -38,6 +38,8 @@ target("vendor")
             target:add("deps", "vendor_nation", {public=true})
         elseif conf.VENDOR_USE_STMICRO then
             target:add("deps", "vendor_stmicro", {public=true})
+        elseif conf.VENDOR_USE_OPENECOS then
+            target:add("deps", "vendor_openecos", {public=true})
         end
     end)
 target_end()

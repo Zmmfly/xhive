@@ -1,0 +1,36 @@
+if STARRYSKY_USE_C2
+
+# These defaults precede the generic memory defaults in the root Kconfig.
+config FLASH_START
+    depends on !DISABLE_FLASH_OPTIONS
+    default 0x00000000
+
+config FLASH_LENGTH
+    depends on !DISABLE_FLASH_OPTIONS
+    default 16384
+
+config RAM_START
+    depends on !DISABLE_RAM_OPTIONS
+    default 0x30000000
+
+config RAM_LENGTH
+    depends on !DISABLE_RAM_OPTIONS
+    default 128
+
+config EXT_RAM_START
+    depends on !DISABLE_RAM_OPTIONS && ENABLE_EXT_RAM
+    default 0x40000000
+
+config EXT_RAM_LENGTH
+    depends on !DISABLE_RAM_OPTIONS && ENABLE_EXT_RAM
+    default 8192
+
+config STARRYSKY_C2_CLOCK_HZ
+    int "C2 board oscillator frequency (Hz)"
+    default 72000000
+    range 1000000 200000000
+    help
+      Actual fitted oscillator frequency used by CPU and peripherals.
+      This value does not reconfigure hardware; the standard board uses 72 MHz.
+
+endif

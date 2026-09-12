@@ -16,7 +16,6 @@ config STARRYSKY_USE_C2
     select ARCH_RISCV_RV32
     select RISCV_ISA_I
     select RISCV_ISA_M
-    select RISCV_ISA_A
     select RISCV_ISA_C
     help
       Select this option to include configurations for the StarrySky C2 series microcontrollers.
