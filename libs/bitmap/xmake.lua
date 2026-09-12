@@ -4,13 +4,13 @@ target("bitmap")
 target_end()
 
 if is_plat("linux", "windows") then
-    if is_plat("linux") then
-        set_policy("build.sanitizer.address", true)
-    end
     add_requires("gtest")
-    set_languages("c++latest")
     for _, file in ipairs(os.files("test/*.cc")) do
         target("test_" .. path.basename(file))
+            if is_plat("linux") then
+                set_policy("build.sanitizer.address", true)
+            end
+            set_languages("c++latest")
             set_kind("binary")
             set_default(false)
             add_files(file)
