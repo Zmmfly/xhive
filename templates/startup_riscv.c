@@ -88,7 +88,14 @@ extern void __libc_init_array(void);
 extern void __libc_fini_array(void);
 
 void Default_Handler(void);
-void Reset_Handler(void);
+/**
+ * @brief Initialize the C runtime and enter the application without returning.
+ *
+ * @pre The reset trampoline or vendor entry must initialize sp and gp.
+ * @note Keep this symbol emitted under LTO: Reset_Entry references it only
+ *       inside basic assembly, which the compiler cannot track as a C call.
+ */
+void Reset_Handler(void) __attribute__((noreturn, used));
 #define WEAK_ALIAS __attribute__((weak, alias("Default_Handler")))
 
 /*
