@@ -5,9 +5,12 @@ function main()
     local sdkdir = path.absolute(path.directory(os.scriptdir()))
     local work = os.tmpfile() .. "-xhive-target-selection"
     local variants = {
-        {name = "bare_riscv", nation = false, nano = false},
+        {name = "bare_riscv", nation = false, nano = false, riscv = true},
         {name = "nation", nation = true, nano = false},
-        {name = "nano", nation = false, nano = true}
+        {name = "nano", nation = false, nano = true},
+        {name = "nano_riscv", nation = false, nano = true, riscv = true},
+        {name = "nano_riscv_custom", nation = false, nano = true,
+         riscv = true, custom_port = true}
     }
     os.mkdir(work)
     try {
@@ -27,6 +30,10 @@ rule("test.config")
             CPU_ARM = %s,
             CPU_RISCV = %s,
             CORE_ARM_CORTEX_M4 = true,
+            RTTNANO_RISCV_PORT_CUSTOM = %s,
+            CORE_RISCV_E906 = %s,
+            RT_USING_FINSH = true,
+            MSH_USING_BUILT_IN_COMMANDS = true,
             CLOCK_SYSCLK_HSE = true,
             CLOCK_HSE_ENABLE = true,
             CLOCK_HSE_FREQ = 8000000
@@ -45,7 +52,7 @@ target("selection_probe")
             {name = "nation_n32h47x_48x", enabled = conf.NATION_USE_N32H47X_48X,
              source = "system_n32h47x_48x.c"},
             {name = "rttnano", enabled = conf.THIRD_RTOS_RTTNANO,
-             source = "context_gcc.S"}
+             source = conf.RTTNANO_RISCV_PORT_CUSTOM and "scheduler.c" or "context_gcc.S"}
         }
         for _, check in ipairs(checks) do
             local optional = assert(project.target(check.name))
@@ -63,6 +70,27 @@ target("selection_probe")
                 assert(#table.wrap(optional:get("includedirs")) == 0)
             end
         end
+        if conf.THIRD_RTOS_RTTNANO then
+            local nano = project.target("rttnano")
+            local files = nano:sourcefiles()
+            local found = {}
+            for _, file in ipairs(files) do
+                found[path.filename(file)] = true
+                if conf.RTTNANO_RISCV_PORT_CUSTOM then
+                    local normalized = file:gsub("\\", "/")
+                    assert(not normalized:find("/libcpu/", 1, true),
+                           "custom port includes built-in CPU sources")
+                    assert(not normalized:find("/rttnano/port/", 1, true),
+                           "custom port includes SDK board sources")
+                end
+            end
+            assert(found["scheduler.c"] and found["shell.c"] and found["cmd.c"],
+                   "port selection lost kernel or MSH sources")
+            if not conf.RTTNANO_RISCV_PORT_CUSTOM then
+                assert(found["board.c"] and found["cpuport.c"] and found["context_gcc.S"],
+                       "standard port lost board or context implementation")
+            end
+        end
         if conf.NATION_USE_N32H47X_48X then
             assert(table.contains(project.target("nation_n32h47x_48x"):get("defines"),
                                   "N32H474"))
@@ -73,8 +101,10 @@ target("selection_probe")
 target_end()
 ]], path.join(sdkdir, "modules"), tostring(variant.nation),
                     tostring(variant.nation), tostring(variant.nation),
-                    tostring(variant.nano), tostring(variant.name ~= "bare_riscv"),
-                    tostring(variant.name == "bare_riscv"),
+                    tostring(variant.nano), tostring(not variant.riscv),
+                    tostring(variant.riscv or false),
+                    tostring(variant.custom_port or false),
+                    tostring(variant.custom_port or false),
                     path.join(sdkdir, "vendor/nation"),
                     path.join(sdkdir, "third-party/rttnano")))
                 os.vrunv(os.programfile(), {"-P", projectdir})

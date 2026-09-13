@@ -11,10 +11,14 @@ target("rttnano")
         import("xhive.base")
         import("xhive.proc")
         local sdir = os.scriptdir()
-        local srcs = {path.join(sdir, "port", "*.c")}
+        local custom_port = conf.CPU_RISCV and conf.RTTNANO_RISCV_PORT_CUSTOM
+        local srcs = {}
         local incs = {}
         target:add("includedirs", path.join(sdir, "include"), {public=true})
-        target:add("includedirs", path.join(sdir, "port"), {public=true})
+        if not custom_port then
+            table.insert(srcs, path.join(sdir, "port", "*.c"))
+            target:add("includedirs", path.join(sdir, "port"), {public=true})
+        end
 
         -- components
         if conf.RT_USING_FINSH then
@@ -38,23 +42,25 @@ target("rttnano")
             table.insert(srcs, path.join(device_dir, "device.c"))
         end
         -- libcpu
-        local cpuinfo = proc.cpuinfo_by_conf(conf)
-        local coredir = path.join(sdir, "libcpu", cpuinfo.arch, cpuinfo.core)
-        if not os.isdir(coredir) then
-            raise(vformat("arch %s core %s not support yet!", cpuinfo.arch, cpuinfo.core))
-        end
-        table.insert(srcs, path.join(coredir, "*_gcc.S"))
-        table.insert(srcs, path.join(coredir, "*.c"))
-        table.insert(incs, coredir)
-        if conf.CPU_ARM then
-            local common_dir = path.join(sdir, "libcpu", "arm", "common")
-            -- table.insert(srcs, path.join(common_dir, "*.S"))
-            table.insert(srcs, path.join(common_dir, "*.c"))
-        elseif conf.CPU_RISCV then
-            local common_dir = path.join(sdir, "libcpu", "riscv", "common")
-            table.insert(srcs, path.join(common_dir, "*_gcc.S"))
-            table.insert(srcs, path.join(common_dir, "*.c"))
-            table.insert(incs, common_dir)
+        if not custom_port then
+            local cpuinfo = proc.cpuinfo_by_conf(conf)
+            local coredir = path.join(sdir, "libcpu", cpuinfo.arch, cpuinfo.core)
+            if not os.isdir(coredir) then
+                raise(vformat("arch %s core %s not support yet!", cpuinfo.arch, cpuinfo.core))
+            end
+            table.insert(srcs, path.join(coredir, "*_gcc.S"))
+            table.insert(srcs, path.join(coredir, "*.c"))
+            table.insert(incs, coredir)
+            if conf.CPU_ARM then
+                local common_dir = path.join(sdir, "libcpu", "arm", "common")
+                -- table.insert(srcs, path.join(common_dir, "*.S"))
+                table.insert(srcs, path.join(common_dir, "*.c"))
+            elseif conf.CPU_RISCV then
+                local common_dir = path.join(sdir, "libcpu", "risc-v", "common")
+                table.insert(srcs, path.join(common_dir, "*_gcc.S"))
+                table.insert(srcs, path.join(common_dir, "*.c"))
+                table.insert(incs, common_dir)
+            end
         end
         -- src
         table.insert(srcs, path.join(sdir, "src", "*.c"))

@@ -40,6 +40,27 @@ endif
 
 if THIRD_RTOS_RTTNANO
 menu "RT-Thread Nano configurations"
+    choice RTTNANO_RISCV_PORT
+        prompt "RISC-V port implementation"
+        depends on CPU_RISCV
+        default RTTNANO_RISCV_PORT_STANDARD
+
+        config RTTNANO_RISCV_PORT_STANDARD
+            bool "Built-in RISC-V port"
+            help
+                Use Nano's standard RISC-V CSR context implementation and
+                SDK board support. The application must configure its tick
+                interrupt and any board-specific interrupt entry.
+
+        config RTTNANO_RISCV_PORT_CUSTOM
+            bool "Application-provided RISC-V port"
+            help
+                Do not compile Nano's built-in libcpu or port sources.
+                Add your CPU context, interrupt, tick and board initialization
+                sources to the application target. Nano kernel, components
+                and configuration header generation remain managed by xhive.
+    endchoice
+
     orsource "rttnano/Kconfig"
 endmenu
 endif
