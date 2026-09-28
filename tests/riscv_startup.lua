@@ -4,6 +4,7 @@
 function main(cc)
     assert(cc, "Pass the RISC-V GCC executable path")
     local sdkdir = path.absolute(path.directory(os.scriptdir()))
+    import("xhive.testing", {rootdir = path.join(sdkdir, "modules")})
     local work = os.tmpfile() .. "-xhive-startup"
     os.mkdir(work)
     try {
@@ -63,6 +64,6 @@ __attribute__((section(".ramfunc"), noinline)) int main(void)
             end
         end,
         catch {function (errors) raise(errors) end},
-        finally {function () os.rm(work) end}
+        finally {function () testing.remove_workdir(work) end}
     }
 end

@@ -49,7 +49,9 @@ target("mbedtls")
     on_load(function(target)
         import("xhive.base")
         local dirs = base.load_dirs()
-        local conf = target:data("kconfig")
+        -- Without application Kconfig, use mbedTLS's bundled defaults.
+        -- Firmware configuration is validated by xhive.conf before this hook.
+        local conf = target:data("kconfig") or {}
         if conf.MBEDTLS_USE_TF_PSA_CRYPTO_USER_CONFIG_FILE then
             local psa_user_config = conf.MBEDTLS_TF_PSA_CRYPTO_USER_CONFIG_FILE
             local conf_path = path.join(dirs.prjdir, psa_user_config)

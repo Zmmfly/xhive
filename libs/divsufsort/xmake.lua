@@ -13,9 +13,8 @@ target("divsufsort")
         local is_64    = (conf and conf.DIVSUFSORT_ENABLE_64BIT) or false
         local suffix   = is_64 and "64" or "32"
         local sdir     = os.scriptdir()
-        local builddir = path.join(os.projectdir(), "build")
-        local mk_dir   = path.join(builddir, "divsufsort")
-        local inc_dir  = path.join(mk_dir, "inc")
+        -- Honor out-of-tree builds and keep host/embed generated headers apart.
+        local inc_dir  = path.join(target:autogendir(), "inc")
         local orig_dir = path.join(sdir, "libdivsufsort")
         local orig_inc = path.join(orig_dir, "include")
         local incs     = {}

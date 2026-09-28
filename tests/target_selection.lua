@@ -3,6 +3,7 @@
 
 function main()
     local sdkdir = path.absolute(path.directory(os.scriptdir()))
+    import("xhive.testing", {rootdir = path.join(sdkdir, "modules")})
     local work = os.tmpfile() .. "-xhive-target-selection"
     local variants = {
         {name = "bare_riscv", nation = false, nano = false, riscv = true},
@@ -107,19 +108,26 @@ target_end()
                     tostring(variant.custom_port or false),
                     path.join(sdkdir, "vendor/nation"),
                     path.join(sdkdir, "third-party/rttnano")))
-                os.vrunv(os.programfile(), {"-P", projectdir})
+                -- -P alone also updates the invoking directory's project
+                -- cache. A child of `xmake test` must not lock or redirect the
+                -- parent project: launch each fixture from its own directory.
+                local runopt = {
+                    curdir = projectdir,
+                    envs = {XMAKE_CONFIGDIR = projectdir, XMAKE_STATS = "false"}
+                }
+                os.vrunv(os.programfile(), {"-P", projectdir}, runopt)
                 if variant.name == "bare_riscv" then
                     -- Explicitly building disabled targets must also be inert,
                     -- including RTT Nano's rtconfig.h generation hook.
                     os.vrunv(os.programfile(), {"build", "-P", projectdir,
-                                               "nation_n32h47x_48x"})
-                    os.vrunv(os.programfile(), {"build", "-P", projectdir, "rttnano"})
+                                               "nation_n32h47x_48x"}, runopt)
+                    os.vrunv(os.programfile(), {"build", "-P", projectdir, "rttnano"}, runopt)
                     assert(not os.isfile(path.join(projectdir, "build/rtconfig.h")))
                 end
                 print("PASS: " .. variant.name)
             end
         end,
         catch {function (errors) raise(errors) end},
-        finally {function () os.rm(work) end}
+        finally {function () testing.remove_workdir(work) end}
     }
 end

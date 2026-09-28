@@ -2,7 +2,8 @@
 """Run deterministic C2 mock tests and freestanding RISC-V compilation.
 
 No hardware is accessed. Artifacts are created in a temporary directory.
-Requires cc, c++, and clang (with RISC-V backend); no board SDK is required.
+Requires cc and c++; full validation also needs clang with a RISC-V backend.
+Use --host-only to omit the RISC-V checks. No board SDK is required.
 """
 import argparse
 import pathlib
@@ -96,6 +97,8 @@ def main():
     parser.add_argument('--cxx', default='c++')
     parser.add_argument('--clang', default='clang')
     parser.add_argument('--sanitize', action='store_true', help='enable host ASan/UBSan')
+    parser.add_argument('--host-only', action='store_true',
+                        help='run host checks without requiring a RISC-V compiler')
     args = parser.parse_args()
     include = ['-I', ROOT / 'inc']
     warnings = ['-Wall', '-Wextra', '-Werror', '-pedantic']
@@ -150,6 +153,10 @@ def main():
                                     text=True, capture_output=True)
             assert result.returncode != 0, 'Read-only register accepted a write: ' + assignment
         print('Read-only WORD/BITS write rejection checks passed', flush=True)
+        if args.host_only:
+            print('All C2 host software tests passed; RISC-V checks not run '
+                  '(not a hardware qualification).')
+            return
         target = [args.clang, '--target=riscv32-unknown-elf', '-march=rv32im', '-mabi=ilp32',
                   '-std=c11', '-ffreestanding', '-fno-builtin', '-Os', *warnings, *include]
         for source in sources:

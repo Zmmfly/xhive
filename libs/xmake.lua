@@ -55,9 +55,10 @@ target("libs")
             -- LIBS_ADD_MBEDTLS    = "mbedtls", // need explicit declaration
         }
 
-        -- Add dependencies based on configuration
+        -- Standalone SDK builds check the portable libraries with their
+        -- upstream defaults. Applications retain their Kconfig selection.
         for key, dep in pairs(maps) do
-            if conf[key] then
+            if target:values("xhive.standalone") or conf[key] then
                 target:add("deps", dep)
             end
         end

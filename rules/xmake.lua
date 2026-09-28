@@ -59,9 +59,8 @@ rule("xhive.conf")
                 memcache.set("xhive", "kconfig", conf)
             end
         else
-            print("Warning: " .. kconf.load_name() .. " file not found at: " .. dot_config_path)
-            print("Please run 'xmake menuconfig' to config your project.")
-            return
+            raise("Application configuration not found: %s. Run 'xmake menuconfig' in the application project.",
+                  dot_config_path)
         end
 
         --[[ 

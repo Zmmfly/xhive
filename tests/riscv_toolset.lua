@@ -5,6 +5,7 @@ function main(cc)
     assert(cc, "Pass the RISC-V GCC executable path")
     local sdkdir = path.directory(os.scriptdir())
     import("xhive.toolset", {rootdir = path.join(sdkdir, "modules")})
+    import("xhive.testing", {rootdir = path.join(sdkdir, "modules")})
 
     local variants = {
         {name = "rv32imc", bits = 32, isa = {"I", "M", "C"}},
@@ -59,5 +60,5 @@ void _start(void) { zeroed = initialized; for (;;) {} }
         assert(rejected, "Accepted invalid XLEN")
     end
     print("PASS: reject missing/ambiguous XLEN")
-    os.rm(work)
+    testing.remove_workdir(work)
 end

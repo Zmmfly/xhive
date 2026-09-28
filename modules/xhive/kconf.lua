@@ -93,7 +93,8 @@ function build_entry()
     end
 
     local content = string.format("source \"%s\"\n", sdk_entry)
-    if os.isfile(prj_entry) then
+    -- The SDK root is itself a valid project; do not source it twice.
+    if path.normalize(prj_entry) ~= path.normalize(sdk_entry) and os.isfile(prj_entry) then
         content = content .. string.format("source \"%s\"\n", prj_entry)
     end
 

@@ -5,18 +5,8 @@ target("base64")
     add_includedirs("inc", {public = true})
 target_end()
 
-if is_plat("linux", "windows") then
-    add_requires("gtest")
-    set_languages("c++latest")
-    for _, file in ipairs(os.files("test/*.cc")) do
-        target("test_" .. path.basename(file))
-            set_kind("binary")
-            set_default(false)
-            add_files(file)
-            add_deps("base64")
-            add_tests("default")
-            add_packages("gtest")
-            add_includedirs("test")
-        target_end()
-    end
+-- The SDK registers these tests only in xhive_host. Preserve direct
+-- `xmake test -P libs/base64` usage without registering embedded copies.
+if path.normalize(os.projectdir()) == path.normalize(os.scriptdir()) then
+    includes("tests.lua")
 end

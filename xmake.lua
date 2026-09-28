@@ -33,28 +33,54 @@ includes("compiler")
 includes("rules")
 includes("plugins")
 
--- Define xhive_host namespace to include libraries for host builds to provide test isolation
+-- The SDK is also a native development project. Including it from an
+-- application keeps the application's Kconfig and embedded target graph.
+local standalone = path.normalize(os.projectdir()) == path.normalize(os.scriptdir())
+
+option("xhive_tests")
+    set_default(true)
+    set_showmenu(true)
+    set_description("Build and register xhive host tests (requires GoogleTest)")
+option_end()
+
+if standalone then
+    set_project("xhive")
+    add_rules("mode.debug", "mode.release")
+end
+
 namespace("xhive_host", function()
-    add_rules("xhive.conf")
+    if standalone then
+        -- Use the libraries' upstream host defaults, not a board .config.
+        -- In particular, do not define BUILD_IN_XHIVE or generate a header.
+        add_values("xhive.standalone", true)
+    else
+        add_rules("xhive.conf")
+    end
     includes("libs")
+    if has_config("xhive_tests") then
+        includes("libs/*/tests.lua")
+    end
     target("deps")
         set_kind("object")
-        add_deps("libs", {public=true})
+        add_deps("libs", {public = true})
     target_end()
-end) -- xhive_host
+end)
 
--- Define xhive_embed namespace to include libraries for embedded builds
-namespace("xhive_embed", function()
-    add_rules("xhive.embed")
-    includes("libs")
-    includes("vendor")
-    includes("third-party")
+if standalone then
+    includes("tests")
+else
+    namespace("xhive_embed", function()
+        add_rules("xhive.embed")
+        includes("libs")
+        includes("vendor")
+        includes("third-party")
 
-    target("deps")
-        set_kind("object")
-        add_deps("libs", {public=true})
-        add_deps("vendor", {public=true})
-        add_deps("third-party", {public=true})
-    target_end()
-end) -- xhive_embed
+        target("deps")
+            set_kind("object")
+            add_deps("libs", {public = true})
+            add_deps("vendor", {public = true})
+            add_deps("third-party", {public = true})
+        target_end()
+    end)
+end
 

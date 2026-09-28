@@ -3,21 +3,8 @@ target("bitmap")
     add_includedirs("inc", {public = true})
 target_end()
 
-if is_plat("linux", "windows") then
-    add_requires("gtest")
-    for _, file in ipairs(os.files("test/*.cc")) do
-        target("test_" .. path.basename(file))
-            if is_plat("linux") then
-                set_policy("build.sanitizer.address", true)
-            end
-            set_languages("c++latest")
-            set_kind("binary")
-            set_default(false)
-            add_files(file)
-            add_deps("bitmap")
-            add_tests("default")
-            add_packages("gtest")
-            add_includedirs("test")
-        target_end()
-    end
+-- The SDK registers these tests only in xhive_host. Preserve direct
+-- `xmake test -P libs/bitmap` usage without registering embedded copies.
+if path.normalize(os.projectdir()) == path.normalize(os.scriptdir()) then
+    includes("tests.lua")
 end
