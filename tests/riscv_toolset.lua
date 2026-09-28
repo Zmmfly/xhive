@@ -2,7 +2,10 @@
 -- Cross-compile and link real objects; no hardware or simulator is required.
 
 function main(cc)
-    assert(cc, "Pass the RISC-V GCC executable path")
+    import("lib.detect.find_program")
+    local name = assert(cc, "Pass the RISC-V GCC executable path")
+    cc = find_program(name)
+    assert(cc, "RISC-V GCC not found: %s; configure --xhive_riscv_gcc=/path/to/gcc", name)
     local sdkdir = path.directory(os.scriptdir())
     import("xhive.toolset", {rootdir = path.join(sdkdir, "modules")})
     import("xhive.testing", {rootdir = path.join(sdkdir, "modules")})

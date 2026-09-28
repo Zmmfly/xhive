@@ -57,9 +57,6 @@ namespace("xhive_host", function()
         add_rules("xhive.conf")
     end
     includes("libs")
-    if has_config("xhive_tests") then
-        includes("libs/*/tests.lua")
-    end
     target("deps")
         set_kind("object")
         add_deps("libs", {public = true})
@@ -68,6 +65,7 @@ end)
 
 if standalone then
     includes("tests")
+    includes("vendor/openecos/starrysky/c2/tests")
 else
     namespace("xhive_embed", function()
         add_rules("xhive.embed")

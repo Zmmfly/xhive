@@ -2,7 +2,10 @@
 -- Link the real startup/linker templates, including assembly-only references.
 
 function main(cc)
-    assert(cc, "Pass the RISC-V GCC executable path")
+    import("lib.detect.find_program")
+    local name = assert(cc, "Pass the RISC-V GCC executable path")
+    cc = find_program(name)
+    assert(cc, "RISC-V GCC not found: %s; configure --xhive_riscv_gcc=/path/to/gcc", name)
     local sdkdir = path.absolute(path.directory(os.scriptdir()))
     import("xhive.testing", {rootdir = path.join(sdkdir, "modules")})
     local work = os.tmpfile() .. "-xhive-startup"

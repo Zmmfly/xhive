@@ -87,8 +87,12 @@ function main()
         assert(table.contains(deps, name), name)
     end
     if config.get("plat") == "linux" or config.get("plat") == "windows" or config.get("plat") == "macosx" then
-        assert(targets["xhive_host::test_base64_decode"])
-        assert(targets["xhive_host::test_bitmap"])
+        assert(targets["xhive_host::base64_test_base64_decode"])
+        assert(targets["xhive_host::bitmap_test_bitmap"])
+        assert(targets["xhive_host::divsufsort_test_divsufsort"])
+        assert(targets["xhive_host::divsufsort_test_consumer32"])
+        assert(targets["xhive_host::divsufsort_test_consumer64"])
+        assert(not targets["xhive_host::divsufsort_test_rv32_index32"])
     end
 ]]
             _probe(path.join(work, "standalone"), sdkdir, standalone)
@@ -104,6 +108,38 @@ function main()
 ]])
             print("PASS: disabling tests removes tests and GoogleTest requirement")
 
+            for _, library in ipairs({"base64", "bitmap", "divsufsort"}) do
+                _probe(path.join(work, library), path.join(sdkdir, "libs", library), string.format([[
+    local targets = project.targets()
+    local library = %q
+    assert(targets[library])
+    assert(not targets[library]:get("tests"))
+    local count = 0
+    for name, target in pairs(targets) do
+        if target:get("tests") then
+            assert(name:find(library .. "_test_", 1, true) == 1, name)
+            assert(not target:is_default(), name)
+            assert(target:kind() == "binary", name)
+            assert(#table.wrap(target:get("tests")) == 1, name)
+            assert(not name:find("_main$"), name)
+            count = count + 1
+        end
+    end
+    local discovered = 0
+    for _, file in ipairs(os.files(path.join(os.projectdir(), "test/**.cc"))) do
+        local relative = path.relative(file, path.join(os.projectdir(), "test"))
+        if relative ~= "main.cc" then
+            local suffix = relative:gsub("%%.cc$", ""):gsub("[/\\]", "_")
+            local target = assert(targets[library .. "_test_" .. suffix], relative)
+            assert(target:get("tests") == path.basename(file), relative)
+            discovered = discovered + 1
+        end
+    end
+    assert(discovered > 0 and count >= discovered, library)
+]], library))
+            end
+            print("PASS: standalone libraries declare independent non-default test binaries")
+
             _probe(path.join(work, "cross"), sdkdir, [[
     config.set("xhive_tests", false)
     config.set("xhive_cross_tests", true)
@@ -113,11 +149,40 @@ function main()
     assert(targets["xhive_test_riscv_startup"])
     assert(not targets["xhive_test_c2"])
     assert(not targets["xhive_embed::deps"])
+    assert(not targets["xhive_host::divsufsort_test_divsufsort"])
+    assert(#table.wrap(project.get("xhive_host::requires")) == 0)
+    for _, xlen in ipairs({32, 64}) do
+        for _, bits in ipairs({32, 64}) do
+            local name = "xhive_host::divsufsort_test_rv" .. xlen .. "_index" .. bits
+            local target = assert(targets[name], name)
+            assert(target:kind() == "object" and not target:is_default(), name)
+            assert(target:extraconf("tests", "compile", "build_should_pass"), name)
+        end
+    end
 ]])
             print("PASS: cross checks are explicit and independent of firmware targets")
 
-            -- Check the adapter's negative paths without a real cross compiler.
-            import("core.project.config")
+            -- Configure the real compile-only toolchain with a missing compiler;
+            -- it must fail instead of silently resolving the host GCC.
+            local crossdir = path.join(work, "cross-missing")
+            os.mkdir(crossdir)
+            local cross_error
+            try {
+                function ()
+                    os.iorunv(os.programfile(), {"f", "-P", sdkdir, "-y", "-m", "debug",
+                        "-o", path.join(crossdir, "build"), "--xhive_tests=n", "--xhive_cross_tests=y",
+                        "--xhive_riscv_gcc=" .. path.join(work, "missing-riscv-gcc")}, {
+                        curdir = crossdir, timeout = 30 * 1000,
+                        envs = {XMAKE_CONFIGDIR = crossdir, XMAKE_STATS = "false"}
+                    })
+                end,
+                catch {function (errors) cross_error = tostring(errors) end}
+            }
+            assert(cross_error and cross_error:find("RISC-V GCC not found", 1, true),
+                   cross_error or "Compile-only toolchain accepted a missing compiler")
+            print("PASS: native cross test targets reject a missing compiler")
+
+            -- Check script failure propagation and exact compiler resolution.
             local failing = path.join(work, "failure.lua")
             io.writefile(failing, 'function main() raise("expected SDK test failure") end\n')
             local values = {["xhive.test.script"] = failing}
@@ -125,12 +190,10 @@ function main()
             local result = {run_timeout = 5000}
             assert(not testing(mock, result))
             assert(result.errors:find("expected SDK test failure", 1, true))
-            local old_compiler = config.get("xhive_riscv_gcc")
-            config.set("xhive_riscv_gcc", path.join(work, "missing-riscv-gcc"))
-            values["xhive.test.riscv_gcc"] = true
+            values["xhive.test.script"] = path.join(sdkdir, "tests/riscv_toolset.lua")
+            values["xhive.test.args"] = path.join(work, "missing-riscv-gcc")
             result = {run_timeout = 5000}
             local passed = testing(mock, result)
-            config.set("xhive_riscv_gcc", old_compiler)
             assert(not passed and result.errors:find("RISC-V GCC not found", 1, true),
                    "Missing cross compiler fell back to host GCC")
             print("PASS: script failures and unavailable cross compilers fail the test")
@@ -184,6 +247,8 @@ CONFIG_LIBS_ADD_BASE64=y
     local deps = table.wrap(targets["xhive_host::libs"]:get("deps"))
     assert(#deps == 1 and deps[1] == "base64")
     assert(targets["xhive_host::base64"]:data("kconfig").LIBS_ADD_BASE64)
+    assert(targets["xhive_host::base64_test_base64_decode"])
+    assert(#table.wrap(project.get("xhive_embed::requires")) == 0)
     assert(targets.firmware:plat() == "cross")
     assert(table.contains(table.wrap(targets.firmware:get("deps")), "xhive_embed::deps"))
 ]])

@@ -1,4 +1,5 @@
-#include "main.hpp"
+#include <gtest/gtest.h>
+#include <stdio.h>
 #include <xhive/bitmap.h>
 
 // Test fixture for bitmap tests

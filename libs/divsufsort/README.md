@@ -56,14 +56,15 @@ cc -std=c99 \
 从 SDK 根目录执行：
 
 ```sh
-xmake f -y -m debug --xhive_tests=y --xhive_cross_tests=n
-xmake test 'test_divsufsort/default' 'xhive_test_divsufsort/divsufsort' -v
+xmake f -P . -y -m debug --xhive_tests=y --xhive_cross_tests=n
+xmake test -v 'divsufsort_test_*/*'
 ```
 
-- C++ 用例将两套 C 库一起链接，覆盖类型/格式宏、后缀排序、BWT、搜索及参数边界。
-- 构建回归使用全新的临时工程分别选择 32/64 位库，检查 C99/C++11 头文件兼容性、公有包含路径和运行结果，并断言构建目录中没有生成头文件。
-- 两项测试均属于 `xhive` 主机组。
-- 启用 SDK 的 `xhive_cross_tests` 后，`xhive_test_riscv_divsufsort/riscv_divsufsort` 另检查 RV32/RV64 与两种索引宽度的四种组合，使用 `-ffreestanding` 编译，不访问硬件。
+- C++ 用例（`divsufsort_test_divsufsort/divsufsort`）将两套 C 库一起链接，覆盖类型/格式宏、后缀排序、BWT、搜索及参数边界。
+- 签入的 C/C++ 消费者 fixture 位于 `test/compile/`，分别按 32/64 位索引用普通二进制目标构建并运行（`divsufsort_test_consumer32/consumer`、`divsufsort_test_consumer64/consumer`），检查 C99/C++11 头文件兼容性、公有包含路径、混合 C/C++ 链接及 `PRIdSAINT_T` 格式；不依赖 GoogleTest，也不需要生成头文件。
+- 三个主机用例都属于 `xhive` 主机组，目标名遵循 `<库名>_test_<相对路径>` 约定，可直接用 `divsufsort_test_*/*` 全量运行。
+- 启用 SDK 的 `xhive_cross_tests` 后，`divsufsort_test_rv{32,64}_index{32,64}/compile` 另检查 RV32/RV64 与两种索引宽度的四种组合，使用 `-ffreestanding` 编译；它们属于 `xhive_cross` 组，在 SDK 主机工程中选用独立交叉工具链编译、不在主机上执行。启用交叉检查后，上面的通配符也会匹配这些交叉对象目标，只保留主机用例时使用 `xmake test -g xhive -v 'divsufsort_test_*/*'`，选项必须放在选择器前。
+- 该库的 `xmake.lua` 也自行加载测试定义，因此支持独立的 `-P` 入口（只传 `-y -m debug` 等主机参数）；独立模式需同时隔离当前目录与配置缓存，示例见 [AGENTS.md 的 3.3.2](../../AGENTS.md)。
 
 公共头记录了上游实现的边界行为，包括零长度仍要求非空的必需指针，以及 `inverse_bw_transform*()` 对长度不超过 1 的输入不写输出的现有行为。
 

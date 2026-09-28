@@ -1,5 +1,5 @@
-#include "main.hpp"
-#include "../inc/base64.h"
+#include <gtest/gtest.h>
+#include <base64.h>
 #include <string>
 #include <cstring>
 

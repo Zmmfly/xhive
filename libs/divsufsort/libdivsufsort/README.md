@@ -19,9 +19,9 @@ automatic DLL export configuration are intentionally not included.
 From the xHive SDK root:
 
 ```sh
-xmake f -y -m debug --xhive_tests=y --xhive_cross_tests=n
+xmake f -P . -y -m debug --xhive_tests=y --xhive_cross_tests=n
 xmake b xhive_host::divsufsort
-xmake test 'test_divsufsort/default' 'xhive_test_divsufsort/divsufsort' -v
+xmake test -v 'divsufsort_test_*/*'
 ```
 
 The C sources can also be compiled directly with `-std=c99` and

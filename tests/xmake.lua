@@ -17,7 +17,8 @@ option("xhive_clang")
     set_description("Clang executable with a RISC-V backend for C2 full checks")
 option_end()
 
--- One native script test per file. Cross-compiler tests are opt-in below.
+-- Only build-system regressions live here. Library tests are ordinary
+-- targets declared in each library's xmake.lua, outside its production target.
 if has_config("xhive_tests") then
     for _, file in ipairs(os.files("*.lua|xmake.lua|riscv_*.lua")) do
         local name = path.basename(file)
@@ -29,16 +30,6 @@ if has_config("xhive_tests") then
             on_test("xhive.testing")
         target_end()
     end
-
-    target("xhive_test_c2")
-        set_kind("phony")
-        set_default(false)
-        add_values("xhive.test.script", path.join(os.scriptdir(), "../vendor/openecos/starrysky/c2/tests/run_tests.py"))
-        add_values("xhive.test.python", true)
-        add_values("xhive.test.args", "--host-only")
-        add_tests("host", {group = "xhive", realtime_output = false, run_timeout = 120 * 1000})
-        on_test("xhive.testing")
-    target_end()
 end
 
 if has_config("xhive_cross_tests") then
@@ -48,19 +39,24 @@ if has_config("xhive_cross_tests") then
             set_kind("phony")
             set_default(false)
             add_values("xhive.test.script", path.join(os.scriptdir(), file))
-            add_values("xhive.test.riscv_gcc", true)
+            add_values("xhive.test.args", get_config("xhive_riscv_gcc") or "riscv-none-elf-gcc")
             add_tests(name, {group = "xhive_cross", realtime_output = false, run_timeout = 120 * 1000})
             on_test("xhive.testing")
         target_end()
     end
 
-    target("xhive_test_c2_full")
-        set_kind("phony")
-        set_default(false)
-        add_values("xhive.test.script", path.join(os.scriptdir(), "../vendor/openecos/starrysky/c2/tests/run_tests.py"))
-        add_values("xhive.test.python", true)
-        add_values("xhive.test.clang", true)
-        add_tests("full", {group = "xhive_cross", realtime_output = false, run_timeout = 120 * 1000})
-        on_test("xhive.testing")
-    target_end()
+    -- Exact compiler selection for compile-only native Xmake test targets.
+    toolchain("xhive_test_riscv")
+        set_kind("standalone")
+        set_toolset("cc", "gcc@" .. (get_config("xhive_riscv_gcc") or "riscv-none-elf-gcc"))
+        on_check(function(toolchain)
+            import("core.project.config")
+            import("lib.detect.find_program")
+            local name = config.get("xhive_riscv_gcc") or "riscv-none-elf-gcc"
+            -- Do not let compiler-name canonicalization select host GCC.
+            assert(find_program(name),
+                   "RISC-V GCC not found: %s; configure --xhive_riscv_gcc=/path/to/gcc", name)
+            return true
+        end)
+    toolchain_end()
 end

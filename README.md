@@ -39,14 +39,14 @@ remains an explicitly selected target, as in application builds.
 
 ```sh
 cd /path/to/xhive
-xmake f -y -m debug
+xmake f -P . -y -m debug --xhive_tests=y --xhive_cross_tests=n
 xmake
 xmake test -g xhive -v
 ```
 
 The host test group contains the base64/bitmap/divsufsort GoogleTest cases, C2
-MMIO mock and C/C++ header/link checks, and the SDK entry/target-selection/library
-integration regressions. Test
+MMIO mock and C/C++ header/link checks, and the SDK entry/target-selection
+build-system regressions. Test
 targets are non-default: `xmake` builds libraries, while `xmake test` builds and
 runs the tests. The C2 checks use Python 3 and GCC/Clang-compatible `cc` and `c++`
 executables on `PATH`; the native test group does **not** invoke a RISC-V compiler.
@@ -59,17 +59,44 @@ linked workspace roots. This workflow is validated on Linux; other hosts need
 compatible host compilers and have not been validated.
 
 ```sh
-# Existing component test names are preserved.
-xmake test 'test_base64_decode/default' -v
-xmake test 'xhive_test_c2/host' -v
-xmake test 'xhive_test_sdk_entry/sdk_entry' -v
+# Library test targets are <library>_test_<relative path>, the test case is the
+# source basename, and all host cases share the xhive group.
+xmake test -v 'base64_test_*/*'
+xmake test -v 'divsufsort_test_*/*'
+xmake test -v 'xhive_test_c2/host'
+xmake test -v 'xhive_test_sdk_entry/sdk_entry'
 
 # A libraries-only build does not require GoogleTest or Python.
-xmake f -y --xhive_tests=n
+xmake f -P . -y --xhive_tests=n --xhive_cross_tests=n
 xmake
 # Re-enable host tests.
-xmake f -y --xhive_tests=y
+xmake f -P . -y --xhive_tests=y --xhive_cross_tests=n
 ```
+
+Libraries with host tests declare them in `libs/<library>/xmake.lua`, outside
+its production target: each `test/**.cc` except the shared `test/main.cc` becomes
+an independent non-default binary target with its own Xmake test case. The
+`tests/` directory keeps only SDK build-system regressions (`sdk_entry`,
+`target_selection`, `riscv_toolset`/`riscv_startup`) and is not the pattern for
+new library tests. The C2 wrapper targets live in
+`vendor/openecos/starrysky/c2/tests/xmake.lua` and keep the `xhive_test_c2/host`
+and `xhive_test_c2_full/full` selectors.
+
+### Standalone library tests (optional)
+
+base64, bitmap, and divsufsort each load their own test definitions, so `-P` also
+works against a library directory. Use a subshell to isolate both the working
+directory and the configuration cache (POSIX shell):
+
+```sh
+component="$PWD/libs/base64"   # or libs/bitmap, libs/divsufsort
+(cd "$component" && XMAKE_CONFIGDIR="$component" xmake f -P . -y -m debug && XMAKE_CONFIGDIR="$component" xmake test -P . -v)
+```
+
+Standalone mode takes host options only (`-y -m debug`); SDK-root-only options
+such as `--xhive_tests` and `--xhive_cross_tests` do not apply there, and the
+compile-only cross targets are registered only in the SDK-root project. Prefer
+the SDK-root selectors above for day-to-day work.
 
 ### Optional cross-compiler checks
 
@@ -78,19 +105,25 @@ RISC-V GCC executable supporting the tested RV32/RV64 multilib variants. Full C2
 validation also needs Clang with a RISC-V backend.
 
 ```sh
-xmake f -y --xhive_cross_tests=y \
+xmake f -P . -y --xhive_tests=y --xhive_cross_tests=y \
     --xhive_riscv_gcc=/path/to/riscv-none-elf-gcc \
     --xhive_clang=clang
 xmake test -g xhive_cross -v
 
 # Return to the default host-only test set.
-xmake f -y --xhive_cross_tests=n
+xmake f -P . -y --xhive_tests=y --xhive_cross_tests=n
 ```
 
 `xhive_cross` covers RISC-V compiler flags, startup/linker templates (with and
-without LTO), freestanding divsufsort builds, and the full C2 software runner.
+without LTO), compile-only freestanding divsufsort object builds, and the full C2
+software runner.
 Enabling it makes an unfiltered
-`xmake test` run both groups. Missing tools and subprocess failures are reported
+`xmake test` run both groups, and a selector such as `divsufsort_test_*/*` also
+matches the cross object targets. Put options **before** selectors, e.g.
+`xmake test -g xhive -v 'divsufsort_test_*/*'`, to keep host cases only.
+Xmake 3.0.8 treats arguments after the first selector as additional selectors,
+so trailing `-g`/`-v` options do not take effect.
+Missing tools and subprocess failures are reported
 as failures, not silently skipped or replaced with a host compiler. These tests
 do not flash or access a board and are not hardware qualification.
 
@@ -102,6 +135,10 @@ xmake l tests/target_selection.lua
 python3 vendor/openecos/starrysky/c2/tests/run_tests.py --host-only
 python3 vendor/openecos/starrysky/c2/tests/run_tests.py --sanitize
 ```
+
+The former `tests/divsufsort.lua` and `tests/riscv_divsufsort.lua` entry points no
+longer exist: divsufsort host coverage runs through `divsufsort_test_*/*`, and its
+freestanding cross check runs through the library's `xhive_cross` object targets.
 
 ### External applications and `-P`
 

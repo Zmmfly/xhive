@@ -12,7 +12,7 @@
 cd /path/to/xhive
 
 # 使用主机 Debug 配置，启用主机测试，关闭可选交叉检查。
-xmake f -y -m debug --xhive_tests=y --xhive_cross_tests=n
+xmake f -P . -y -m debug --xhive_tests=y --xhive_cross_tests=n
 
 # 构建默认的可移植库。
 xmake
@@ -87,12 +87,13 @@ xmake test -g xhive -v
 
 | 内容 | 测试入口 |
 | --- | --- |
-| base64 解码 | `test_base64_decode/default` |
-| base64 编码 | `test_base64_encode/default` |
-| base64 输入检查 | `test_is_base64/default` |
-| bitmap | `test_bitmap/default` |
-| divsufsort 两套索引 API、排序/BWT/搜索 | `test_divsufsort/default` |
-| divsufsort 32/64 位构建与免生成头检查 | `xhive_test_divsufsort/divsufsort` |
+| base64 解码 | `base64_test_base64_decode/base64_decode` |
+| base64 编码 | `base64_test_base64_encode/base64_encode` |
+| base64 输入检查 | `base64_test_is_base64/is_base64` |
+| bitmap | `bitmap_test_bitmap/bitmap` |
+| divsufsort 两套索引 API、排序/BWT/搜索 | `divsufsort_test_divsufsort/divsufsort` |
+| divsufsort 32 位索引 C/C++ 消费者构建 | `divsufsort_test_consumer32/consumer` |
+| divsufsort 64 位索引 C/C++ 消费者构建 | `divsufsort_test_consumer64/consumer` |
 | C2 MMIO mock、C/C++ 头文件及链接检查 | `xhive_test_c2/host` |
 | SDK 入口、配置隔离、错误传播与清理检查 | `xhive_test_sdk_entry/sdk_entry` |
 | 可选 MCU/RTOS 目标选择 | `xhive_test_target_selection/target_selection` |
@@ -100,24 +101,35 @@ xmake test -g xhive -v
 例如，只运行某一项：
 
 ```sh
-xmake test 'test_base64_decode/default' -v
-xmake test 'xhive_test_c2/host' -v
-xmake test 'xhive_test_sdk_entry/sdk_entry' -v
+xmake test -v 'base64_test_base64_decode/base64_decode'
+xmake test -v 'xhive_test_c2/host'
+xmake test -v 'xhive_test_sdk_entry/sdk_entry'
 ```
 
-测试目标均为非默认目标，不会因为执行普通 `xmake` 而自动运行。
+测试目标均为非默认目标，不会因为执行普通 `xmake` 而自动运行。自动发现的库测试目标名为 `<库名>_test_<相对 test/ 的路径，去扩展名并将分隔符转下划线>`，用例名是源文件 basename，因此也可用通配符一次运行一个库的全部用例（`base64_test_*/*`、`bitmap_test_*/*`、`divsufsort_test_*/*`）。测试定义在各库 `libs/<库>/xmake.lua` 的生产目标之外；`tests/` 目录只保留 SDK 构建系统回归脚本（`sdk_entry`、`target_selection`、`riscv_toolset`/`riscv_startup`），不是新增库测试的模板。C2 的包装目标声明在 `vendor/openecos/starrysky/c2/tests/xmake.lua`，选择器仍为 `xhive_test_c2/host` 与 `xhive_test_c2_full/full`。
+
+### 只用某个库自己的测试入口（可选）
+
+base64、bitmap、divsufsort 都在自身上下文加载测试定义，因此也可用 `-P` 直接针对库目录测试。用子 shell 同时隔离当前目录和配置缓存（POSIX shell）：
+
+```sh
+component="$PWD/libs/base64"   # 可换成 libs/bitmap、libs/divsufsort
+(cd "$component" && XMAKE_CONFIGDIR="$component" xmake f -P . -y -m debug && XMAKE_CONFIGDIR="$component" xmake test -P . -v)
+```
+
+独立入口只传主机配置参数（`-y -m debug`），不接受 `--xhive_tests`、`--xhive_cross_tests` 等 SDK 根工程选项；交叉对象目标也只在 SDK 根工程下注册。日常开发优先使用上面的 SDK 根选择器方式。
 
 ### 只构建库，不启用测试
 
 ```sh
-xmake f -y -m debug --xhive_tests=n --xhive_cross_tests=n
+xmake f -P . -y -m debug --xhive_tests=n --xhive_cross_tests=n
 xmake
 ```
 
 重新启用主机测试：
 
 ```sh
-xmake f -y -m debug --xhive_tests=y --xhive_cross_tests=n
+xmake f -P . -y -m debug --xhive_tests=y --xhive_cross_tests=n
 xmake test -g xhive -v
 ```
 
@@ -144,6 +156,8 @@ python3 vendor/openecos/starrysky/c2/tests/run_tests.py
 
 C2 脚本还支持 `--cc`、`--cxx`、`--clang` 参数，可显式选择对应编译器。
 
+`tests/divsufsort.lua` 与 `tests/riscv_divsufsort.lua` 已删除：divsufsort 的主机覆盖由 `divsufsort_test_*/*` 提供，裸机编译检查由该库在 `xhive_cross` 组注册的对象目标提供。
+
 ## 可选的 RISC-V 交叉检查
 
 交叉检查默认关闭，与主机测试分组独立。启用前需准备：
@@ -153,7 +167,7 @@ C2 脚本还支持 `--cc`、`--cxx`、`--clang` 参数，可显式选择对应�
 - 主机测试所需的 Python 与主机编译器。
 
 ```sh
-xmake f -y -m debug --xhive_tests=y --xhive_cross_tests=y \
+xmake f -P . -y -m debug --xhive_tests=y --xhive_cross_tests=y \
     --xhive_riscv_gcc=/path/to/bin/riscv-none-elf-gcc \
     --xhive_clang=clang
 
@@ -164,16 +178,18 @@ xmake test -g xhive_cross -v
 
 - RISC-V 编译参数、ABI 及非法配置拒绝检查。
 - 启动代码与链接脚本检查，包括启用和关闭 LTO 的情况。
-- divsufsort 在 RV32/RV64 裸机编译模式下的 32/64 位索引构建检查。
+- divsufsort 在 RV32/RV64 裸机编译模式下的 32/64 位索引构建检查（只编译，不在主机上执行）。
 - C2 完整软件检查，包括 RV32 编译及寄存器位域布局验证。
 
 恢复为默认的主机测试配置：
 
 ```sh
-xmake f -y -m debug --xhive_tests=y --xhive_cross_tests=n
+xmake f -P . -y -m debug --xhive_tests=y --xhive_cross_tests=n
 ```
 
-**启用交叉检查后，不带分组参数的 `xmake test` 会运行两个组中已注册的测试。** 只想运行主机测试时，继续使用 `xmake test -g xhive -v`。
+**启用交叉检查后，不带分组参数的 `xmake test` 会运行两个组中已注册的测试。** 只想运行主机测试时，继续使用 `xmake test -g xhive -v`；同理，`divsufsort_test_*/*` 之类的通配符也会匹配 divsufsort 的交叉对象目标，可用 `xmake test -g xhive -v 'divsufsort_test_*/*'` 只保留该库主机用例。
+
+**`-g`、`-v` 等选项必须放在选择器前。** Xmake 3.0.8 会将首个选择器后的参数当作更多选择器，后置 `-g xhive` 并不能限制测试分组。
 
 缺少工具、编译失败或子进程失败都会报告为失败，不会静默跳过，也不会用主机 GCC 替代指定的 RISC-V GCC。
 
