@@ -1,5 +1,7 @@
 config DIVSUFSORT_ENABLE_64BIT
-    bool "Enable 64-bit Support"
+    bool "Use 64-bit suffix indices"
     default n
     help
-        Enable 64-bit support in the DivSufSort library for handling larger datasets on 64-bit systems.
+        Build the divsufsort64.h API with 64-bit suffix indices and *64 symbols.
+        Otherwise use divsufsort.h and 32-bit indices. This selects the index
+        width, not the CPU architecture; all buffers must fit the address space.

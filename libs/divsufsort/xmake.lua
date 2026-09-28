@@ -1,83 +1,14 @@
-includes("@builtin/check")
-
 target("divsufsort")
     set_kind("object")
     set_default(false)
+    set_languages("c99")
     add_files("libdivsufsort/lib/*.c")
-    add_defines("HAVE_CONFIG_H")
-    add_includedirs("inc", "libdivsufsort/include")
+    add_includedirs("libdivsufsort/include", {public = true})
 
     on_load(function(target)
-        -- import("xhive.base")
-        local conf = target:data("kconfig")
-        local is_64    = (conf and conf.DIVSUFSORT_ENABLE_64BIT) or false
-        local suffix   = is_64 and "64" or "32"
-        local sdir     = os.scriptdir()
-        -- Honor out-of-tree builds and keep host/embed generated headers apart.
-        local inc_dir  = path.join(target:autogendir(), "inc")
-        local orig_dir = path.join(sdir, "libdivsufsort")
-        local orig_inc = path.join(orig_dir, "include")
-        local incs     = {}
-        local defs     = {}
-
-        -- mkdir inc dir
-        if not os.isdir(inc_dir) then
-            os.mkdir(inc_dir)
-        end
-
-        -- read header file
-        local orig_header = io.readfile(path.join(orig_inc, "divsufsort.h.cmake"))
-        if not orig_header then
-            raise("divsufsort: read header file failed!")
-        end
-
-        -- export/import
-        if target:kind() == "shared" and target:is_plat("windows") then
-            -- replace @DIVSUFSORT_EXPORT@ in orig_header
-            orig_header = orig_header:gsub("@DIVSUFSORT_EXPORT@", "__declspec(dllexport)")
-        else
-            orig_header = orig_header:gsub("@DIVSUFSORT_EXPORT@", "")
-            orig_header = orig_header:gsub("@DIVSUFSORT_IMPORT@", "")
-        end
-
-        -- replace @INCFILE@ to #include <stdint.h>
-        orig_header = orig_header:gsub("@INCFILE@", "#include <stdint.h>\n" .. "#include <inttypes.h>")
-
-        -- replace @SAUCHAR_TYPE@ to uint8_t
-        orig_header = orig_header:gsub("@SAUCHAR_TYPE@", "uint8_t")
-
-        -- replace @SAINT32_TYPE@ to int32_t
-        orig_header = orig_header:gsub("@SAINT32_TYPE@", "int32_t")
-
-        local header_path = ""
-
-        -- replace types
-        if is_64 then
-            header_path = path.join(inc_dir, "divsufsort64.h")
-            -- replace @W64BIT@ to 64
-            orig_header = orig_header:gsub("@W64BIT@", "64")
-            -- replace @SAINDEX_TYPE@ to int64_t
-            orig_header = orig_header:gsub("@SAINDEX_TYPE@", "int64_t")
-            -- replace @SAINDEX_PRId@ to PRId64
-            orig_header = orig_header:gsub("@SAINDEX_PRId@", "PRId64")
-            -- replace @SAINT_PRId@ to PRId64
-            orig_header = orig_header:gsub("@SAINT_PRId@", "PRId64")
-            -- add BUILD_DIVSUFSORT64
+        local conf = target:data("kconfig") or {}
+        if conf.DIVSUFSORT_ENABLE_64BIT then
             target:add("defines", "BUILD_DIVSUFSORT64")
-        else
-            header_path = path.join(inc_dir, "divsufsort.h")
-            -- replace @W64BIT@ to empty
-            orig_header = orig_header:gsub("@W64BIT@", "")
-            -- replace @SAINDEX_TYPE@ to int32_t
-            orig_header = orig_header:gsub("@SAINDEX_TYPE@", "int32_t")
-            -- replace @SAINDEX_PRId@ to PRId32
-            orig_header = orig_header:gsub("@SAINDEX_PRId@", "PRId32")
-            -- replace @SAINT_PRId@ to PRId32
-            orig_header = orig_header:gsub("@SAINT_PRId@", "PRId32")
         end
-        
-        -- write header file
-        io.writefile(header_path, orig_header)
-        target:add("includedirs", inc_dir, {public = true})
     end)
 target_end()

@@ -24,22 +24,40 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef _LFS_H
-#define _LFS_H 1
+#ifndef DIVSUFSORT_LFS_H
+#define DIVSUFSORT_LFS_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif /* __cplusplus */
+/* Example-only I/O policy. Include this before any system header. */
+#if !defined(DIVSUFSORT_NO_LFS) && (defined(__unix__) || defined(__APPLE__))
+# ifndef _POSIX_C_SOURCE
+#  define _POSIX_C_SOURCE 200112L
+# endif
+# ifndef _FILE_OFFSET_BITS
+#  define _FILE_OFFSET_BITS 64
+# endif
+#endif
 
-#ifndef __STRICT_ANSI__
-# define LFS_OFF_T @LFS_OFF_T@
-# define LFS_FOPEN @LFS_FOPEN@
-# define LFS_FTELL @LFS_FTELL@
-# define LFS_FSEEK @LFS_FSEEK@
-# define LFS_PRId  @LFS_PRID@
+#include <stdio.h>
+#include <stdint.h>
+#include <inttypes.h>
+
+#define LFS_FOPEN fopen
+#if !defined(DIVSUFSORT_NO_LFS) && defined(_WIN32)
+# define LFS_OFF_T int64_t
+# define LFS_FTELL _ftelli64
+# define LFS_FSEEK _fseeki64
+# define LFS_PRId PRId64
+#elif !defined(DIVSUFSORT_NO_LFS) && (defined(__unix__) || defined(__APPLE__))
+# include <sys/types.h>
+/* Reject an incompatible off_t instead of silently truncating large offsets. */
+typedef char divsufsort_lfs_requires_64_bit_off_t[(sizeof(off_t) >= 8) ? 1 : -1];
+# define LFS_OFF_T int64_t
+# define LFS_FTELL ftello
+# define LFS_FSEEK fseeko
+# define LFS_PRId PRId64
 #else
+/* ISO C fallback; file offsets are limited by the host's long type. */
 # define LFS_OFF_T long
-# define LFS_FOPEN fopen
 # define LFS_FTELL ftell
 # define LFS_FSEEK fseek
 # define LFS_PRId "ld"
@@ -48,9 +66,4 @@ extern "C" {
 # define PRIdOFF_T LFS_PRId
 #endif
 
-
-#ifdef __cplusplus
-} /* extern "C" */
-#endif /* __cplusplus */
-
-#endif /* _LFS_H */
+#endif /* DIVSUFSORT_LFS_H */

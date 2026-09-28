@@ -31,42 +31,17 @@
 extern "C" {
 #endif /* __cplusplus */
 
-#if HAVE_CONFIG_H
-# include "config.h"
-#endif
 #include <assert.h>
 #include <stdio.h>
-#if HAVE_STRING_H
-# include <string.h>
-#endif
-#if HAVE_STDLIB_H
-# include <stdlib.h>
-#endif
-#if HAVE_MEMORY_H
-# include <memory.h>
-#endif
-#if HAVE_STDDEF_H
-# include <stddef.h>
-#endif
-#if HAVE_STRINGS_H
-# include <strings.h>
-#endif
-#if HAVE_INTTYPES_H
-# include <inttypes.h>
-#else
-# if HAVE_STDINT_H
-#  include <stdint.h>
-# endif
-#endif
+#include <string.h>
+#include <stdlib.h>
+#include <stddef.h>
+
+/* Select the internal index type without changing either public API. */
 #if defined(BUILD_DIVSUFSORT64)
 # include "divsufsort64.h"
-# ifndef SAIDX_T
-#  define SAIDX_T
-#  define saidx_t saidx64_t
-# endif /* SAIDX_T */
-# ifndef PRIdSAIDX_T
-#  define PRIdSAIDX_T PRIdSAIDX64_T
-# endif /* PRIdSAIDX_T */
+typedef saidx64_t saidx_t;
+# define PRIdSAIDX_T PRIdSAIDX64_T
 # define divsufsort divsufsort64
 # define divbwt divbwt64
 # define divsufsort_version divsufsort64_version

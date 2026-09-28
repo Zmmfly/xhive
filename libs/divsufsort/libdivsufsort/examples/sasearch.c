@@ -24,34 +24,16 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#if HAVE_CONFIG_H
-# include "config.h"
-#endif
+#include "lfs.h"
 #include <stdio.h>
-#if HAVE_STRING_H
-# include <string.h>
-#endif
-#if HAVE_STDLIB_H
-# include <stdlib.h>
-#endif
-#if HAVE_MEMORY_H
-# include <memory.h>
-#endif
-#if HAVE_STDDEF_H
-# include <stddef.h>
-#endif
-#if HAVE_STRINGS_H
-# include <strings.h>
-#endif
-#if HAVE_SYS_TYPES_H
-# include <sys/types.h>
-#endif
-#if HAVE_IO_H && HAVE_FCNTL_H
+#include <string.h>
+#include <stdlib.h>
+#include <stddef.h>
+#if defined(_WIN32)
 # include <io.h>
 # include <fcntl.h>
 #endif
 #include <divsufsort.h>
-#include "lfs.h"
 
 
 static
@@ -83,7 +65,7 @@ main(int argc, const char *argv[]) {
   Psize = strlen(P);
 
   /* Open a file for reading. */
-#if HAVE_FOPEN_S
+#if defined(_MSC_VER)
   if(fopen_s(&fp, argv[2], "rb") != 0) {
 #else
   if((fp = LFS_FOPEN(argv[2], "rb")) == NULL) {
@@ -128,7 +110,7 @@ main(int argc, const char *argv[]) {
   fclose(fp);
 
   /* Open the SA file for reading. */
-#if HAVE_FOPEN_S
+#if defined(_MSC_VER)
   if(fopen_s(&fp, argv[3], "rb") != 0) {
 #else
   if((fp = LFS_FOPEN(argv[3], "rb")) == NULL) {

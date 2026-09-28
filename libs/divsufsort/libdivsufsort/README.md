@@ -10,38 +10,26 @@ This library provides a simple and an efficient C API to construct a suffix arra
 The algorithm runs in O(n log n) worst-case time using only 5n+O(1) bytes of memory space, where n is the length of
 the string.
 
-## Build requirements
-* An ANSI C Compiler (e.g. GNU GCC)
-* [CMake](http://www.cmake.org/ "CMake") version 2.4.2 or newer
-* CMake-supported build tool
+## Building this SDK copy
 
-## Building on GNU/Linux
-1. Get the source code from GitHub. You can either
-    * use git to clone the repository
-    ```
-    git clone https://github.com/y-256/libdivsufsort.git
-    ```
-    * or download a [zip file](../../archive/master.zip) directly
-2. Create a `build` directory in the package source directory.
-```shell
-$ cd libdivsufsort
-$ mkdir build
-$ cd build
+This in-tree copy uses C99 and checked-in public headers. Only the SDK's Xmake
+object-library integration is maintained; CMake, packaging, installation and
+automatic DLL export configuration are intentionally not included.
+
+From the xHive SDK root:
+
+```sh
+xmake f -y -m debug --xhive_tests=y --xhive_cross_tests=n
+xmake b xhive_host::divsufsort
+xmake test 'test_divsufsort/default' 'xhive_test_divsufsort/divsufsort' -v
 ```
-3. Configure the package for your system.
-If you want to install to a different location,  change the -DCMAKE_INSTALL_PREFIX option.
-```shell
-$ cmake -DCMAKE_BUILD_TYPE="Release" \
--DCMAKE_INSTALL_PREFIX="/usr/local" ..
-```
-4. Compile the package.
-```shell
-$ make
-```
-5. (Optional) Install the library and header files.
-```shell
-$ sudo make install
-```
+
+The C sources can also be compiled directly with `-std=c99` and
+`-Ilibs/divsufsort/libdivsufsort/include` from the SDK root, without generated
+headers. The five example sources
+are retained. See the [SDK integration notes](../README.md) for direct compiler
+commands, index-width selection and example usage. The upstream project and
+its history remain available at <https://github.com/y-256/libdivsufsort>.
 
 ## API
 ```c
@@ -64,7 +52,7 @@ divsufsort(const sauchar_t *T, saidx_t *SA, saidx_t n);
  * Constructs the burrows-wheeler transformed string of a given string.
  * @param T[0..n-1] The input string.
  * @param U[0..n-1] The output string. (can be T)
- * @param A[0..n-1] The temporary array. (can be NULL)
+ * @param A[0..n] The temporary array of n+1 indices. (can be NULL)
  * @param n The length of the given string.
  * @return The primary index if no error occurred, -1 or -2 otherwise.
  */

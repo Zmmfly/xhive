@@ -44,8 +44,9 @@ xmake
 xmake test -g xhive -v
 ```
 
-The host test group contains the base64/bitmap GoogleTest cases, C2 MMIO mock and
-C/C++ header/link checks, and the SDK entry/target-selection regressions. Test
+The host test group contains the base64/bitmap/divsufsort GoogleTest cases, C2
+MMIO mock and C/C++ header/link checks, and the SDK entry/target-selection/library
+integration regressions. Test
 targets are non-default: `xmake` builds libraries, while `xmake test` builds and
 runs the tests. The C2 checks use Python 3 and GCC/Clang-compatible `cc` and `c++`
 executables on `PATH`; the native test group does **not** invoke a RISC-V compiler.
@@ -87,7 +88,8 @@ xmake f -y --xhive_cross_tests=n
 ```
 
 `xhive_cross` covers RISC-V compiler flags, startup/linker templates (with and
-without LTO), and the full C2 software runner. Enabling it makes an unfiltered
+without LTO), freestanding divsufsort builds, and the full C2 software runner.
+Enabling it makes an unfiltered
 `xmake test` run both groups. Missing tools and subprocess failures are reported
 as failures, not silently skipped or replaced with a host compiler. These tests
 do not flash or access a board and are not hardware qualification.

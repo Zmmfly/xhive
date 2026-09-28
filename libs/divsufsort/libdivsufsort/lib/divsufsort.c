@@ -394,5 +394,6 @@ divbwt(const sauchar_t *T, sauchar_t *U, saidx_t *A, saidx_t n) {
 
 const char *
 divsufsort_version(void) {
-  return PROJECT_VERSION_FULL;
+  /* Preserve the version exposed by the SDK's previous fixed configuration. */
+  return "2.0.1";
 }

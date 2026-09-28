@@ -91,6 +91,8 @@ xmake test -g xhive -v
 | base64 编码 | `test_base64_encode/default` |
 | base64 输入检查 | `test_is_base64/default` |
 | bitmap | `test_bitmap/default` |
+| divsufsort 两套索引 API、排序/BWT/搜索 | `test_divsufsort/default` |
+| divsufsort 32/64 位构建与免生成头检查 | `xhive_test_divsufsort/divsufsort` |
 | C2 MMIO mock、C/C++ 头文件及链接检查 | `xhive_test_c2/host` |
 | SDK 入口、配置隔离、错误传播与清理检查 | `xhive_test_sdk_entry/sdk_entry` |
 | 可选 MCU/RTOS 目标选择 | `xhive_test_target_selection/target_selection` |
@@ -162,6 +164,7 @@ xmake test -g xhive_cross -v
 
 - RISC-V 编译参数、ABI 及非法配置拒绝检查。
 - 启动代码与链接脚本检查，包括启用和关闭 LTO 的情况。
+- divsufsort 在 RV32/RV64 裸机编译模式下的 32/64 位索引构建检查。
 - C2 完整软件检查，包括 RV32 编译及寄存器位域布局验证。
 
 恢复为默认的主机测试配置：

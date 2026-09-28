@@ -1,5 +1,5 @@
 /*
- * config.h for libdivsufsort
+ * Common public types for libdivsufsort.
  * Copyright (c) 2003-2008 Yuta Mori All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person
@@ -24,58 +24,39 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef _CONFIG_H
-#define _CONFIG_H 1
+#ifndef DIVSUFSORT_TYPES_H
+#define DIVSUFSORT_TYPES_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif /* __cplusplus */
-
-/** Define to the version of this package. **/
-#cmakedefine PROJECT_VERSION_FULL "${PROJECT_VERSION_FULL}"
-
-/** Define to 1 if you have the header files. **/
-#cmakedefine HAVE_INTTYPES_H 1
-#cmakedefine HAVE_STDDEF_H 1
-#cmakedefine HAVE_STDINT_H 1
-#cmakedefine HAVE_STDLIB_H 1
-#cmakedefine HAVE_STRING_H 1
-#cmakedefine HAVE_STRINGS_H 1
-#cmakedefine HAVE_MEMORY_H 1
-#cmakedefine HAVE_SYS_TYPES_H 1
-
-/** for WinIO **/
-#cmakedefine HAVE_IO_H 1
-#cmakedefine HAVE_FCNTL_H 1
-#cmakedefine HAVE__SETMODE 1
-#cmakedefine HAVE_SETMODE 1
-#cmakedefine HAVE__FILENO 1
-#cmakedefine HAVE_FOPEN_S 1
-#cmakedefine HAVE__O_BINARY 1
-#ifndef HAVE__SETMODE
-# if HAVE_SETMODE
-#  define _setmode setmode
-#  define HAVE__SETMODE 1
-# endif
-# if HAVE__SETMODE && !HAVE__O_BINARY
-#  define _O_BINARY 0
-#  define HAVE__O_BINARY 1
+/* Some freestanding GCC/libc combinations need the libc type metadata before
+ * inttypes.h. Use it when available, without inventing typedefs or formats. */
+#if defined(__has_include)
+# if __has_include(<sys/types.h>)
+#  include <sys/types.h>
 # endif
 #endif
+#include <stdint.h>
+#include <inttypes.h>
 
-/** for inline **/
-#ifndef INLINE
-# define INLINE @INLINE@
+/** @brief Optional declaration annotation; empty for the SDK object library. */
+#ifndef DIVSUFSORT_API
+#define DIVSUFSORT_API
 #endif
 
-/** for VC++ warning **/
-#ifdef _MSC_VER
-#pragma warning(disable: 4127)
+#ifndef SAUCHAR_T
+#define SAUCHAR_T
+/** @brief Unsigned input/output byte, independent of the index width. */
+typedef uint8_t sauchar_t;
 #endif
 
+#ifndef SAINT_T
+#define SAINT_T
+/** @brief Signed 32-bit status or character value in both API variants. */
+typedef int32_t saint_t;
+#endif
 
-#ifdef __cplusplus
-} /* extern "C" */
-#endif /* __cplusplus */
+#ifndef PRIdSAINT_T
+/** @brief printf decimal format fragment for saint_t (always 32-bit). */
+#define PRIdSAINT_T PRId32
+#endif
 
-#endif /* _CONFIG_H */
+#endif /* DIVSUFSORT_TYPES_H */
