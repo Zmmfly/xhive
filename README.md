@@ -6,6 +6,8 @@
 🚀 Modern embedded SDK for ARM/RISC-V MCUs with intelligent build system, xmake-based. 
 </div>
 
+English | [简体中文](README.zh_CN.md)
+
 ## Maintenance Notice
 
 - This project is maintained by an individual developer during personal time. While usage and issue reporting are welcome, please understand that timely responses to all requests cannot be guaranteed.
