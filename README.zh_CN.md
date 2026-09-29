@@ -94,6 +94,10 @@ xmake test -g xhive -v
 | divsufsort 两套索引 API、排序/BWT/搜索 | `divsufsort_test_divsufsort/divsufsort` |
 | divsufsort 32 位索引 C/C++ 消费者构建 | `divsufsort_test_consumer32/consumer` |
 | divsufsort 64 位索引 C/C++ 消费者构建 | `divsufsort_test_consumer64/consumer` |
+| ezctrl PID 初始化、参数校验与状态管理 | `ezctrl_test_pid_config/pid_config` |
+| ezctrl PID 计算、限幅与防饱和 | `ezctrl_test_pid_update/pid_update` |
+| ezctrl C++ 包装层 | `ezctrl_test_pid_cpp/pid_cpp` |
+| ezctrl C/C++ 头文件及链接检查 | `ezctrl_test_consumer/consumer` |
 | C2 MMIO mock、C/C++ 头文件及链接检查 | `xhive_test_c2/host` |
 | SDK 入口、配置隔离、错误传播与清理检查 | `xhive_test_sdk_entry/sdk_entry` |
 | 可选 MCU/RTOS 目标选择 | `xhive_test_target_selection/target_selection` |
@@ -106,14 +110,14 @@ xmake test -v 'xhive_test_c2/host'
 xmake test -v 'xhive_test_sdk_entry/sdk_entry'
 ```
 
-测试目标均为非默认目标，不会因为执行普通 `xmake` 而自动运行。自动发现的库测试目标名为 `<库名>_test_<相对 test/ 的路径，去扩展名并将分隔符转下划线>`，用例名是源文件 basename，因此也可用通配符一次运行一个库的全部用例（`base64_test_*/*`、`bitmap_test_*/*`、`divsufsort_test_*/*`）。测试定义在各库 `libs/<库>/xmake.lua` 的生产目标之外；`tests/` 目录只保留 SDK 构建系统回归脚本（`sdk_entry`、`target_selection`、`riscv_toolset`/`riscv_startup`），不是新增库测试的模板。C2 的包装目标声明在 `vendor/openecos/starrysky/c2/tests/xmake.lua`，选择器仍为 `xhive_test_c2/host` 与 `xhive_test_c2_full/full`。
+测试目标均为非默认目标，不会因为执行普通 `xmake` 而自动运行。自动发现的库测试目标名为 `<库名>_test_<相对 test/ 的路径，去扩展名并将分隔符转下划线>`，用例名是源文件 basename，因此也可用通配符一次运行一个库的全部用例（`base64_test_*/*`、`bitmap_test_*/*`、`divsufsort_test_*/*`、`ezctrl_test_*/*`）。测试定义在各库 `libs/<库>/xmake.lua` 的生产目标之外；`tests/` 目录只保留 SDK 构建系统回归脚本（`sdk_entry`、`target_selection`、`riscv_toolset`/`riscv_startup`），不是新增库测试的模板。C2 的包装目标声明在 `vendor/openecos/starrysky/c2/tests/xmake.lua`，选择器仍为 `xhive_test_c2/host` 与 `xhive_test_c2_full/full`。
 
 ### 只用某个库自己的测试入口（可选）
 
-base64、bitmap、divsufsort 都在自身上下文加载测试定义，因此也可用 `-P` 直接针对库目录测试。用子 shell 同时隔离当前目录和配置缓存（POSIX shell）：
+base64、bitmap、divsufsort、ezctrl 都在自身上下文加载测试定义，因此也可用 `-P` 直接针对库目录测试。用子 shell 同时隔离当前目录和配置缓存（POSIX shell）：
 
 ```sh
-component="$PWD/libs/base64"   # 可换成 libs/bitmap、libs/divsufsort
+component="$PWD/libs/base64"   # 可换成 libs/bitmap、libs/divsufsort、libs/ezctrl
 (cd "$component" && XMAKE_CONFIGDIR="$component" xmake f -P . -y -m debug && XMAKE_CONFIGDIR="$component" xmake test -P . -v)
 ```
 

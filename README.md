@@ -63,6 +63,7 @@ compatible host compilers and have not been validated.
 # source basename, and all host cases share the xhive group.
 xmake test -v 'base64_test_*/*'
 xmake test -v 'divsufsort_test_*/*'
+xmake test -v 'ezctrl_test_*/*'
 xmake test -v 'xhive_test_c2/host'
 xmake test -v 'xhive_test_sdk_entry/sdk_entry'
 
@@ -84,12 +85,12 @@ and `xhive_test_c2_full/full` selectors.
 
 ### Standalone library tests (optional)
 
-base64, bitmap, and divsufsort each load their own test definitions, so `-P` also
-works against a library directory. Use a subshell to isolate both the working
-directory and the configuration cache (POSIX shell):
+base64, bitmap, divsufsort, and ezctrl each load their own test definitions, so
+`-P` also works against a library directory. Use a subshell to isolate both the
+working directory and the configuration cache (POSIX shell):
 
 ```sh
-component="$PWD/libs/base64"   # or libs/bitmap, libs/divsufsort
+component="$PWD/libs/base64"   # or libs/bitmap, libs/divsufsort, libs/ezctrl
 (cd "$component" && XMAKE_CONFIGDIR="$component" xmake f -P . -y -m debug && XMAKE_CONFIGDIR="$component" xmake test -P . -v)
 ```
 
