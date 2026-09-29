@@ -70,6 +70,13 @@ config LIBS_ADD_BITMAP
     help
         Add the Bitmap library for bitmap manipulation.
 
+config LIBS_ADD_EZCTRL
+    bool "Add ezctrl Control Library"
+    default n
+    help
+        Add the ezctrl control library (PID controller and other control
+        primitives).
+
 config LIBS_ADD_LLHTTP
     bool "Add llhttp Library"
     default n
