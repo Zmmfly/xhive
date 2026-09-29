@@ -83,12 +83,14 @@ function main()
         end
     end
     local deps = table.wrap(targets["xhive_host::libs"]:get("deps"))
-    for _, name in ipairs({"base64", "bitmap", "heatshrink", "micro-ecc", "cjson"}) do
+    for _, name in ipairs({"base64", "bitmap", "ezctrl", "heatshrink", "micro-ecc", "cjson"}) do
         assert(table.contains(deps, name), name)
     end
     if config.get("plat") == "linux" or config.get("plat") == "windows" or config.get("plat") == "macosx" then
         assert(targets["xhive_host::base64_test_base64_decode"])
         assert(targets["xhive_host::bitmap_test_bitmap"])
+        assert(targets["xhive_host::ezctrl_test_pid_config"])
+        assert(targets["xhive_host::ezctrl_test_consumer"])
         assert(targets["xhive_host::divsufsort_test_divsufsort"])
         assert(targets["xhive_host::divsufsort_test_consumer32"])
         assert(targets["xhive_host::divsufsort_test_consumer64"])
@@ -108,7 +110,7 @@ function main()
 ]])
             print("PASS: disabling tests removes tests and GoogleTest requirement")
 
-            for _, library in ipairs({"base64", "bitmap", "divsufsort"}) do
+            for _, library in ipairs({"base64", "bitmap", "divsufsort", "ezctrl"}) do
                 _probe(path.join(work, library), path.join(sdkdir, "libs", library), string.format([[
     local targets = project.targets()
     local library = %q
