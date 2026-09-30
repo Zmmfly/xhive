@@ -128,7 +128,10 @@
  *
  * The host test suites are further executable examples: `test/pid_update.cc`
  * for the step semantics, `test/pid_options.cc` for the optional features, and
- * `test/compile/consumer.c` for plain C consumption.
+ * `test/compile/consumer.c` for plain C consumption. A complete runnable
+ * program is checked in at `libs/ezctrl/examples/pid_c.c`, with its C++
+ * counterpart next to it; the files under `examples/` are deliberately not part
+ * of the build.
  *
  * A context must be initialized by the matching `*_init()` entry point before
  * it is used. A zero-initialized context is a valid disabled controller (all

@@ -48,7 +48,10 @@
  * for that type.
  *
  * The host test suites are further executable examples: `test/pid_cpp.cc` for
- * the wrapper and `test/compile/headers.cpp` for mixed-language consumption.
+ * the wrapper and `test/compile/headers.cpp` for mixed-language consumption. A
+ * complete runnable program is checked in at
+ * `libs/ezctrl/examples/pid_cpp.cpp`, with its C counterpart next to it; the
+ * files under `examples/` are deliberately not part of the build.
  *
  * Include `ezctrl.hpp` to pull in this layer together with every other C++
  * wrapper of the library.
