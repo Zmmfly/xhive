@@ -83,6 +83,36 @@ static int check_f32(void)
     if (out != 1.0f) {
         return 1;
     }
+    /* The optional features are reachable from C as well. */
+    if (ezc_pid_f32_set_derivative_source(&ctx, EZC_PID_DERIV_ON_MEASUREMENT) != EZC_OK) {
+        return 1;
+    }
+    if (ezc_pid_f32_set_derivative_filter(&ctx, 0.05f) != EZC_OK) {
+        return 1;
+    }
+    if (ezc_pid_f32_set_integral_limit(&ctx, -5.0f, 5.0f) != EZC_OK) {
+        return 1;
+    }
+    if (ezc_pid_f32_set_integral_separation(&ctx, 2.0f) != EZC_OK) {
+        return 1;
+    }
+    if (ezc_pid_f32_set_setpoint_weight(&ctx, 0.0f) != EZC_OK) {
+        return 1;
+    }
+    /* Proportional on the measurement: a setpoint step cannot move the output. */
+    if (ezc_pid_f32_set_gains(&ctx, 2.0f, 0.0f, 0.0f) != EZC_OK) {
+        return 1;
+    }
+    ezc_pid_f32_reset(&ctx);
+    if (ezc_pid_f32_update(&ctx, 10.0f, 0.0f, 1.0f) != 0.0f) {
+        return 1;
+    }
+    if (ezc_pid_f32_clear_integral_limit(&ctx) != EZC_OK) {
+        return 1;
+    }
+    if (ezc_pid_f32_clear_integral_separation(&ctx) != EZC_OK) {
+        return 1;
+    }
     return 0;
 }
 
@@ -136,6 +166,28 @@ static int check_f64(void)
     /* Half a second advances half the integral and returns P + I. */
     out = ezc_pid_f64_update(&ctx, 2.0, 0.0, 0.5);
     if (out != 1.0) {
+        return 1;
+    }
+    /* The optional features are reachable from the double API as well. */
+    if (ezc_pid_f64_set_derivative_source(&ctx, EZC_PID_DERIV_ON_MEASUREMENT) != EZC_OK) {
+        return 1;
+    }
+    if (ezc_pid_f64_set_derivative_filter(&ctx, 0.1) != EZC_OK) {
+        return 1;
+    }
+    if (ezc_pid_f64_set_integral_limit(&ctx, -5.0, 5.0) != EZC_OK) {
+        return 1;
+    }
+    if (ezc_pid_f64_clear_integral_limit(&ctx) != EZC_OK) {
+        return 1;
+    }
+    if (ezc_pid_f64_set_integral_separation(&ctx, 2.0) != EZC_OK) {
+        return 1;
+    }
+    if (ezc_pid_f64_clear_integral_separation(&ctx) != EZC_OK) {
+        return 1;
+    }
+    if (ezc_pid_f64_set_setpoint_weight(&ctx, 1.0) != EZC_OK) {
         return 1;
     }
     return 0;

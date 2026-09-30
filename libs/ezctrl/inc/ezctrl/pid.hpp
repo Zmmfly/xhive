@@ -8,22 +8,47 @@
  * @copyright Copyright (c) 2026, License under GPLv3
  *
  * The wrapper is header-only and holds the C context by value, so it adds no
- * allocation and no virtual dispatch. The scalar type selects the C API through
- * the @ref ezc::pid_traits specialization for that type:
+ * allocation and no virtual dispatch. The shortest form needs no configuration
+ * structure at all:
  *
  * @code
- * ezc::pid<float> controller;
- * ezc_pid_f32_cfg_t cfg{};
- * cfg.kp = 1.0f;
- * cfg.ki = 0.1f;
- * cfg.limit_enabled = true;
- * cfg.out_min = -1.0f;
- * cfg.out_max = 1.0f;
- * cfg.anti_windup_enabled = true;
- * if (controller.init(cfg) == EZC_OK) {
- *     float duty = controller.update(setpoint, measure, dt_seconds);
- * }
+ * #include "ezctrl.hpp"
+ *
+ * ezc::pid<float> pid;              // default-constructed: disabled controller
+ * pid.set_params(1.0f, 0.5f, 0.0f); // kp, ki per second, kd per second
+ *
+ * // once per control period, dt = seconds since the previous call
+ * float duty = pid.update(setpoint, measure, dt);
  * @endcode
+ *
+ * Every setter enables what it configures, so the optional features need
+ * neither a bitmask nor a C configuration structure:
+ *
+ * @code
+ * ezc::pid<float> ctrl;
+ * ctrl.set_params(2.0f, 0.5f, 0.01f); // kp, ki per second, kd per second
+ * ctrl.limit(0.0f, 1.0f);             // clamp the output to the actuator range
+ * ctrl.anti_windup(true);
+ * ctrl.integral_limit(-1.0f, 1.0f);   // enables EZC_PID_OPT_INTEGRAL_LIMIT
+ * ctrl.integral_separation(5.0f);     // enables EZC_PID_OPT_INTEGRAL_SEPARATION
+ * ctrl.setpoint_weight(0.5f);         // enables EZC_PID_OPT_SETPOINT_WEIGHT
+ * ctrl.derivative_source(EZC_PID_DERIV_ON_MEASUREMENT);
+ * ctrl.derivative_filter(0.01f);      // first-order filter, 10 ms
+ *
+ * float duty = ctrl.update(setpoint, measure, dt_seconds);
+ * @endcode
+ *
+ * Configuration methods are named after what they set (`limit`, `anti_windup`,
+ * `integral_limit`, `integral_separation`, `setpoint_weight`,
+ * `derivative_source`, `derivative_filter`), except `set_params` and
+ * `set_callback`; all of them return `ezc_status_t` like their C counterparts.
+ * `init()` is still there for bulk configuration from `ezc_pid_f32_cfg_t` (or
+ * its f64 variant), and `context()` exposes the C state when it is needed. The
+ * scalar type selects the C API through the @ref ezc::pid_traits specialization
+ * for that type.
+ *
+ * The host test suites are further executable examples: `test/pid_cpp.cc` for
+ * the wrapper and `test/compile/headers.cpp` for mixed-language consumption.
  *
  * Include `ezctrl.hpp` to pull in this layer together with every other C++
  * wrapper of the library.
@@ -135,6 +160,94 @@ struct pid_traits<float> {
     static ezc_status_t set_callback(context_type *ctx, callback_type callback,
                                      void *user_ctx) noexcept {
         return ezc_pid_f32_set_callback(ctx, callback, user_ctx);
+    }
+
+    /**
+     * @brief Select the derivative source; forwards to
+     *        ezc_pid_f32_set_derivative_source().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @param[in] source Derivative source, see @ref ezc_pid_deriv_source_t.
+     * @return ezc_status_t Result of ezc_pid_f32_set_derivative_source().
+     */
+    static ezc_status_t set_derivative_source(context_type *ctx,
+                                              ezc_pid_deriv_source_t source) noexcept {
+        return ezc_pid_f32_set_derivative_source(ctx, source);
+    }
+
+    /**
+     * @brief Enable or disable the derivative filter; forwards to
+     *        ezc_pid_f32_set_derivative_filter().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @param[in] deriv_filter_t Filter time constant in seconds; 0 disables it.
+     * @return ezc_status_t Result of ezc_pid_f32_set_derivative_filter().
+     */
+    static ezc_status_t set_derivative_filter(context_type *ctx,
+                                              value_type deriv_filter_t) noexcept {
+        return ezc_pid_f32_set_derivative_filter(ctx, deriv_filter_t);
+    }
+
+    /**
+     * @brief Enable the integral limit; forwards to
+     *        ezc_pid_f32_set_integral_limit().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @param[in] integral_min Lower integral limit.
+     * @param[in] integral_max Upper integral limit; must not be below the
+     *                         lower one.
+     * @return ezc_status_t Result of ezc_pid_f32_set_integral_limit().
+     */
+    static ezc_status_t set_integral_limit(context_type *ctx, value_type integral_min,
+                                           value_type integral_max) noexcept {
+        return ezc_pid_f32_set_integral_limit(ctx, integral_min, integral_max);
+    }
+
+    /**
+     * @brief Disable the integral limit; forwards to
+     *        ezc_pid_f32_clear_integral_limit().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @return ezc_status_t Result of ezc_pid_f32_clear_integral_limit().
+     */
+    static ezc_status_t clear_integral_limit(context_type *ctx) noexcept {
+        return ezc_pid_f32_clear_integral_limit(ctx);
+    }
+
+    /**
+     * @brief Enable integral separation; forwards to
+     *        ezc_pid_f32_set_integral_separation().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @param[in] threshold Error magnitude above which integration stops.
+     * @return ezc_status_t Result of ezc_pid_f32_set_integral_separation().
+     */
+    static ezc_status_t set_integral_separation(context_type *ctx,
+                                                value_type threshold) noexcept {
+        return ezc_pid_f32_set_integral_separation(ctx, threshold);
+    }
+
+    /**
+     * @brief Disable integral separation; forwards to
+     *        ezc_pid_f32_clear_integral_separation().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @return ezc_status_t Result of ezc_pid_f32_clear_integral_separation().
+     */
+    static ezc_status_t clear_integral_separation(context_type *ctx) noexcept {
+        return ezc_pid_f32_clear_integral_separation(ctx);
+    }
+
+    /**
+     * @brief Set the proportional setpoint weight; forwards to
+     *        ezc_pid_f32_set_setpoint_weight().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @param[in] weight Setpoint weight, 0 to 1.
+     * @return ezc_status_t Result of ezc_pid_f32_set_setpoint_weight().
+     */
+    static ezc_status_t set_setpoint_weight(context_type *ctx, value_type weight) noexcept {
+        return ezc_pid_f32_set_setpoint_weight(ctx, weight);
     }
 
     /**
@@ -252,6 +365,94 @@ struct pid_traits<double> {
     }
 
     /**
+     * @brief Select the derivative source; forwards to
+     *        ezc_pid_f64_set_derivative_source().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @param[in] source Derivative source, see @ref ezc_pid_deriv_source_t.
+     * @return ezc_status_t Result of ezc_pid_f64_set_derivative_source().
+     */
+    static ezc_status_t set_derivative_source(context_type *ctx,
+                                              ezc_pid_deriv_source_t source) noexcept {
+        return ezc_pid_f64_set_derivative_source(ctx, source);
+    }
+
+    /**
+     * @brief Enable or disable the derivative filter; forwards to
+     *        ezc_pid_f64_set_derivative_filter().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @param[in] deriv_filter_t Filter time constant in seconds; 0 disables it.
+     * @return ezc_status_t Result of ezc_pid_f64_set_derivative_filter().
+     */
+    static ezc_status_t set_derivative_filter(context_type *ctx,
+                                              value_type deriv_filter_t) noexcept {
+        return ezc_pid_f64_set_derivative_filter(ctx, deriv_filter_t);
+    }
+
+    /**
+     * @brief Enable the integral limit; forwards to
+     *        ezc_pid_f64_set_integral_limit().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @param[in] integral_min Lower integral limit.
+     * @param[in] integral_max Upper integral limit; must not be below the
+     *                         lower one.
+     * @return ezc_status_t Result of ezc_pid_f64_set_integral_limit().
+     */
+    static ezc_status_t set_integral_limit(context_type *ctx, value_type integral_min,
+                                           value_type integral_max) noexcept {
+        return ezc_pid_f64_set_integral_limit(ctx, integral_min, integral_max);
+    }
+
+    /**
+     * @brief Disable the integral limit; forwards to
+     *        ezc_pid_f64_clear_integral_limit().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @return ezc_status_t Result of ezc_pid_f64_clear_integral_limit().
+     */
+    static ezc_status_t clear_integral_limit(context_type *ctx) noexcept {
+        return ezc_pid_f64_clear_integral_limit(ctx);
+    }
+
+    /**
+     * @brief Enable integral separation; forwards to
+     *        ezc_pid_f64_set_integral_separation().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @param[in] threshold Error magnitude above which integration stops.
+     * @return ezc_status_t Result of ezc_pid_f64_set_integral_separation().
+     */
+    static ezc_status_t set_integral_separation(context_type *ctx,
+                                                value_type threshold) noexcept {
+        return ezc_pid_f64_set_integral_separation(ctx, threshold);
+    }
+
+    /**
+     * @brief Disable integral separation; forwards to
+     *        ezc_pid_f64_clear_integral_separation().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @return ezc_status_t Result of ezc_pid_f64_clear_integral_separation().
+     */
+    static ezc_status_t clear_integral_separation(context_type *ctx) noexcept {
+        return ezc_pid_f64_clear_integral_separation(ctx);
+    }
+
+    /**
+     * @brief Set the proportional setpoint weight; forwards to
+     *        ezc_pid_f64_set_setpoint_weight().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @param[in] weight Setpoint weight, 0 to 1.
+     * @return ezc_status_t Result of ezc_pid_f64_set_setpoint_weight().
+     */
+    static ezc_status_t set_setpoint_weight(context_type *ctx, value_type weight) noexcept {
+        return ezc_pid_f64_set_setpoint_weight(ctx, weight);
+    }
+
+    /**
      * @brief Reset the controller state; forwards to ezc_pid_f64_reset().
      *
      * @param[in,out] ctx Controller context. NULL is ignored.
@@ -288,6 +489,12 @@ struct pid_traits<double> {
  *
  * @note The wrapper adds no synchronization. As with the C API, update steps
  *       that share one controller must be serialized.
+ * @note The setters configure and enable in one call: `limit()` sets
+ *       `limit_enabled`, `anti_windup()` stores the flag, `integral_limit()`,
+ *       `integral_separation()` and `setpoint_weight()` set their
+ *       `EZC_PID_OPT_*` bit, and `derivative_filter()` filters while its time
+ *       constant is greater than zero. Nothing has to be enabled twice, and
+ *       `init()` is only needed for bulk configuration.
  */
 template <typename T>
 class pid {
@@ -320,14 +527,14 @@ public:
     }
 
     /**
-     * @brief Change the gains, see ezc_pid_*_set_gains().
+     * @brief Set the gains, see ezc_pid_*_set_gains().
      *
      * @param[in] kp Proportional gain.
-     * @param[in] ki Integral gain applied per sample.
-     * @param[in] kd Derivative gain applied per sample.
+     * @param[in] ki Integral gain per second.
+     * @param[in] kd Derivative gain per second.
      * @return ezc_status_t EZC_OK on success.
      */
-    ezc_status_t set_gains(value_type kp, value_type ki, value_type kd) noexcept {
+    ezc_status_t set_params(value_type kp, value_type ki, value_type kd) noexcept {
         return traits_type::set_gains(&ctx_, kp, ki, kd);
     }
 
@@ -339,7 +546,7 @@ public:
      * @return ezc_status_t EZC_OK on success, EZC_ERR_INVALID_ARG for an
      *         inverted or non-comparable range.
      */
-    ezc_status_t set_limit(value_type out_min, value_type out_max) noexcept {
+    ezc_status_t limit(value_type out_min, value_type out_max) noexcept {
         return traits_type::set_limit(&ctx_, out_min, out_max);
     }
 
@@ -358,7 +565,7 @@ public:
      * @param[in] enable true to enable anti-windup, false to disable it.
      * @return ezc_status_t EZC_OK on success.
      */
-    ezc_status_t set_anti_windup(bool enable) noexcept {
+    ezc_status_t anti_windup(bool enable) noexcept {
         return traits_type::set_anti_windup(&ctx_, enable);
     }
 
@@ -373,6 +580,79 @@ public:
      */
     ezc_status_t set_callback(callback_type callback, void *user_ctx = nullptr) noexcept {
         return traits_type::set_callback(&ctx_, callback, user_ctx);
+    }
+
+    /**
+     * @brief Select the derivative source.
+     *
+     * @param[in] source Derivative source; deriving the error is the default.
+     * @return ezc_status_t EZC_OK on success.
+     */
+    ezc_status_t derivative_source(ezc_pid_deriv_source_t source) noexcept {
+        return traits_type::set_derivative_source(&ctx_, source);
+    }
+
+    /**
+     * @brief Enable or disable the derivative filter.
+     *
+     * @param[in] deriv_filter_t Filter time constant in seconds; 0 disables it.
+     * @return ezc_status_t EZC_OK on success, EZC_ERR_INVALID_ARG for a negative
+     *         or non-comparable time constant.
+     */
+    ezc_status_t derivative_filter(value_type deriv_filter_t) noexcept {
+        return traits_type::set_derivative_filter(&ctx_, deriv_filter_t);
+    }
+
+    /**
+     * @brief Enable the integral limit and its `EZC_PID_OPT_INTEGRAL_LIMIT` bit.
+     *
+     * @param[in] integral_min Lower integral limit.
+     * @param[in] integral_max Upper integral limit; must not be below
+     *                         @p integral_min.
+     * @return ezc_status_t EZC_OK on success.
+     */
+    ezc_status_t integral_limit(value_type integral_min, value_type integral_max) noexcept {
+        return traits_type::set_integral_limit(&ctx_, integral_min, integral_max);
+    }
+
+    /**
+     * @brief Disable the integral limit.
+     *
+     * @return ezc_status_t EZC_OK on success.
+     */
+    ezc_status_t clear_integral_limit() noexcept {
+        return traits_type::clear_integral_limit(&ctx_);
+    }
+
+    /**
+     * @brief Enable integral separation and its option bit.
+     *
+     * @param[in] threshold Error magnitude above which integration stops; must
+     *                      be greater than zero.
+     * @return ezc_status_t EZC_OK on success.
+     */
+    ezc_status_t integral_separation(value_type threshold) noexcept {
+        return traits_type::set_integral_separation(&ctx_, threshold);
+    }
+
+    /**
+     * @brief Disable integral separation.
+     *
+     * @return ezc_status_t EZC_OK on success.
+     */
+    ezc_status_t clear_integral_separation() noexcept {
+        return traits_type::clear_integral_separation(&ctx_);
+    }
+
+    /**
+     * @brief Set the proportional setpoint weight and its option bit.
+     *
+     * @param[in] weight Setpoint weight inside `[0, 1]`; 1 keeps the default
+     *                   term and 0 makes the term follow the measurement only.
+     * @return ezc_status_t EZC_OK on success.
+     */
+    ezc_status_t setpoint_weight(value_type weight) noexcept {
+        return traits_type::set_setpoint_weight(&ctx_, weight);
     }
 
     /**

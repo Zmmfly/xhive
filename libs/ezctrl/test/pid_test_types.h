@@ -93,6 +93,28 @@ struct pid_api<float> {
     static ezc_status_t set_callback(context_type *ctx, callback_type callback, void *user_ctx) {
         return ezc_pid_f32_set_callback(ctx, callback, user_ctx);
     }
+    static ezc_status_t set_derivative_source(context_type *ctx, ezc_pid_deriv_source_t source) {
+        return ezc_pid_f32_set_derivative_source(ctx, source);
+    }
+    static ezc_status_t set_derivative_filter(context_type *ctx, value_type deriv_filter_t) {
+        return ezc_pid_f32_set_derivative_filter(ctx, deriv_filter_t);
+    }
+    static ezc_status_t set_integral_limit(context_type *ctx, value_type integral_min,
+                                           value_type integral_max) {
+        return ezc_pid_f32_set_integral_limit(ctx, integral_min, integral_max);
+    }
+    static ezc_status_t clear_integral_limit(context_type *ctx) {
+        return ezc_pid_f32_clear_integral_limit(ctx);
+    }
+    static ezc_status_t set_integral_separation(context_type *ctx, value_type threshold) {
+        return ezc_pid_f32_set_integral_separation(ctx, threshold);
+    }
+    static ezc_status_t clear_integral_separation(context_type *ctx) {
+        return ezc_pid_f32_clear_integral_separation(ctx);
+    }
+    static ezc_status_t set_setpoint_weight(context_type *ctx, value_type weight) {
+        return ezc_pid_f32_set_setpoint_weight(ctx, weight);
+    }
     static void reset(context_type *ctx) { ezc_pid_f32_reset(ctx); }
 
     /*
@@ -169,6 +191,28 @@ struct pid_api<double> {
     }
     static ezc_status_t set_callback(context_type *ctx, callback_type callback, void *user_ctx) {
         return ezc_pid_f64_set_callback(ctx, callback, user_ctx);
+    }
+    static ezc_status_t set_derivative_source(context_type *ctx, ezc_pid_deriv_source_t source) {
+        return ezc_pid_f64_set_derivative_source(ctx, source);
+    }
+    static ezc_status_t set_derivative_filter(context_type *ctx, value_type deriv_filter_t) {
+        return ezc_pid_f64_set_derivative_filter(ctx, deriv_filter_t);
+    }
+    static ezc_status_t set_integral_limit(context_type *ctx, value_type integral_min,
+                                           value_type integral_max) {
+        return ezc_pid_f64_set_integral_limit(ctx, integral_min, integral_max);
+    }
+    static ezc_status_t clear_integral_limit(context_type *ctx) {
+        return ezc_pid_f64_clear_integral_limit(ctx);
+    }
+    static ezc_status_t set_integral_separation(context_type *ctx, value_type threshold) {
+        return ezc_pid_f64_set_integral_separation(ctx, threshold);
+    }
+    static ezc_status_t clear_integral_separation(context_type *ctx) {
+        return ezc_pid_f64_clear_integral_separation(ctx);
+    }
+    static ezc_status_t set_setpoint_weight(context_type *ctx, value_type weight) {
+        return ezc_pid_f64_set_setpoint_weight(ctx, weight);
     }
     static void reset(context_type *ctx) { ezc_pid_f64_reset(ctx); }
 

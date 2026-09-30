@@ -73,7 +73,7 @@ void check_configured_flow() {
     EXPECT_NEAR(pid.context().integral, T(1), eps);
 
     /* Runtime gain changes and reset keep their C semantics. */
-    ASSERT_EQ(pid.set_gains(T(0), T(1), T(0)), EZC_OK);
+    ASSERT_EQ(pid.set_params(T(0), T(1), T(0)), EZC_OK);
     EXPECT_EQ(step(pid, T(1), T(0)), T(2));
     pid.reset();
     EXPECT_EQ(pid.context().integral, T(0));
@@ -90,8 +90,8 @@ void check_configured_flow() {
     EXPECT_EQ(step(pid, T(1), T(0)), T(0));
 
     /* The setters report rejected ranges without changing the context. */
-    ASSERT_EQ(pid.set_limit(T(-1), T(1)), EZC_OK);
-    EXPECT_EQ(pid.set_limit(T(1), T(-1)), EZC_ERR_INVALID_ARG);
+    ASSERT_EQ(pid.limit(T(-1), T(1)), EZC_OK);
+    EXPECT_EQ(pid.limit(T(1), T(-1)), EZC_ERR_INVALID_ARG);
     EXPECT_TRUE(as_const(pid).limit_enabled);
     EXPECT_EQ(as_const(pid).out_max, T(1));
 }
@@ -142,9 +142,9 @@ void check_limit_and_windup_flow() {
     EXPECT_FALSE(sink.limited);
 
     /* Anti-windup can be disabled again without touching the state. */
-    ASSERT_EQ(pid.set_anti_windup(false), EZC_OK);
+    ASSERT_EQ(pid.anti_windup(false), EZC_OK);
     EXPECT_FALSE(as_const(pid).anti_windup_enabled);
-    ASSERT_EQ(pid.set_limit(T(-10), T(10)), EZC_OK);
+    ASSERT_EQ(pid.limit(T(-10), T(10)), EZC_OK);
     EXPECT_NEAR(step(pid, T(100), T(0)), T(10), eps);
     EXPECT_NEAR(pid.context().integral, T(110), eps);
 
@@ -180,6 +180,57 @@ void check_sample_period_flow() {
     EXPECT_EQ(pid.context().prev_error, T(2));
 }
 
+/* The default-constructed wrapper needs neither init() nor a C structure. */
+template <typename T>
+void check_setter_only_flow() {
+    using controller = ezc::pid<T>;
+    const T eps = ezc_test::pid_epsilon<T>();
+    SCOPED_TRACE(scalar_name<T>());
+
+    controller ctrl;
+    ASSERT_EQ(ctrl.set_params(T(2), T(1), T(0)), EZC_OK);
+    EXPECT_EQ(ctrl.context().kp, T(2));
+    EXPECT_EQ(ctrl.context().ki, T(1));
+    EXPECT_EQ(ctrl.context().kd, T(0));
+
+    /* P = 2, I = 1 at dt = 1 s. */
+    EXPECT_NEAR(ctrl.update(T(1), T(0), T(1)), T(3), eps);
+}
+
+/* Every setter enables what it configures and clears just its own bit. */
+template <typename T>
+void check_setters_enable_their_features() {
+    using controller = ezc::pid<T>;
+    const T eps = ezc_test::pid_epsilon<T>();
+    SCOPED_TRACE(scalar_name<T>());
+
+    controller ctrl;
+    ASSERT_EQ(ctrl.set_params(T(0), T(1), T(0)), EZC_OK);
+    EXPECT_EQ(ctrl.context().options, 0u);
+
+    ASSERT_EQ(ctrl.limit(T(-2), T(2)), EZC_OK);
+    EXPECT_TRUE(ctrl.context().limit_enabled);
+    ASSERT_EQ(ctrl.anti_windup(true), EZC_OK);
+    EXPECT_TRUE(ctrl.context().anti_windup_enabled);
+    ASSERT_EQ(ctrl.integral_limit(T(-1), T(1)), EZC_OK);
+    EXPECT_NE(ctrl.context().options & EZC_PID_OPT_INTEGRAL_LIMIT, 0u);
+    ASSERT_EQ(ctrl.integral_separation(T(5)), EZC_OK);
+    EXPECT_NE(ctrl.context().options & EZC_PID_OPT_INTEGRAL_SEPARATION, 0u);
+    ASSERT_EQ(ctrl.setpoint_weight(T(0)), EZC_OK);
+    EXPECT_NE(ctrl.context().options & EZC_PID_OPT_SETPOINT_WEIGHT, 0u);
+
+    /* The features are active: P = 0, I clamps at 1 while |e| = 4 <= 5. */
+    EXPECT_NEAR(ctrl.update(T(4), T(0), T(1)), T(1), eps);
+    EXPECT_NEAR(ctrl.context().integral, T(1), eps);
+    EXPECT_NEAR(ctrl.update(T(4), T(0), T(1)), T(1), eps);
+    EXPECT_NEAR(ctrl.context().integral, T(1), eps);
+
+    /* Clearing removes the option bit and keeps the values. */
+    ASSERT_EQ(ctrl.clear_integral_limit(), EZC_OK);
+    EXPECT_EQ(ctrl.context().options & EZC_PID_OPT_INTEGRAL_LIMIT, 0u);
+    EXPECT_EQ(ctrl.context().integral_max, T(1));
+}
+
 } /* namespace */
 
 TEST(PidCppTest, FloatWrapperMatchesTheCApi) {
@@ -204,4 +255,20 @@ TEST(PidCppTest, FloatWrapperFollowsTheSamplePeriodRules) {
 
 TEST(PidCppTest, DoubleWrapperFollowsTheSamplePeriodRules) {
     check_sample_period_flow<double>();
+}
+
+TEST(PidCppTest, FloatSetterOnlyConfigurationWorks) {
+    check_setter_only_flow<float>();
+}
+
+TEST(PidCppTest, DoubleSetterOnlyConfigurationWorks) {
+    check_setter_only_flow<double>();
+}
+
+TEST(PidCppTest, FloatSettersEnableTheirFeatures) {
+    check_setters_enable_their_features<float>();
+}
+
+TEST(PidCppTest, DoubleSettersEnableTheirFeatures) {
+    check_setters_enable_their_features<double>();
 }

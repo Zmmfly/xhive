@@ -16,6 +16,7 @@
 #include "ezctrl/pid.h"
 
 #include <type_traits>
+#include <utility>
 
 /* The C declarations stay C declarations when they are consumed from C++. */
 static_assert(std::is_same<decltype(ezc_pid_f32_init(nullptr, nullptr)), ezc_status_t>::value,
@@ -42,6 +43,17 @@ static_assert(std::is_same<ezc::pid<double>::context_type, ezc_pid_f64_t>::value
               "ezc::pid<double> must wrap the f64 C API");
 static_assert(std::is_same<ezc::pid<double>::callback_type, ezc_pid_f64_cb_t>::value,
               "ezc::pid<double> must reuse the f64 callback type");
+
+static_assert(std::is_same<decltype(std::declval<ezc::pid<float> &>().update(1.0f, 0.0f, 1.0f)),
+                           float>::value,
+              "the wrapper update must return the scalar type");
+static_assert(std::is_same<decltype(std::declval<ezc::pid<float> &>().setpoint_weight(0.0f)),
+                           ezc_status_t>::value,
+              "the wrapper setters must return ezc_status_t");
+static_assert(std::is_same<decltype(std::declval<ezc::pid<double> &>().derivative_source(
+                           EZC_PID_DERIV_ON_ERROR)),
+                           ezc_status_t>::value,
+              "the wrapper must accept the C derivative source enum");
 
 extern "C" int ezctrl_cpp_consumer_check(void);
 
@@ -90,7 +102,35 @@ extern "C" int ezctrl_cpp_consumer_check(void) {
     if (ezc_pid_f64_clear_limit(&f64.context()) != EZC_OK) {
         return 1;
     }
-    if (f32.update(1.0f, 0.0f, 1.0f) != 1.0f) {
+
+    /* The optional features are reachable through the wrapper as well. */
+    if (f32.derivative_source(EZC_PID_DERIV_ON_MEASUREMENT) != EZC_OK ||
+        f32.derivative_filter(0.05f) != EZC_OK ||
+        f32.integral_limit(-1.0f, 1.0f) != EZC_OK ||
+        f32.integral_separation(1.0f) != EZC_OK ||
+        f32.setpoint_weight(0.0f) != EZC_OK) {
+        return 1;
+    }
+    if (f64.derivative_source(EZC_PID_DERIV_ON_MEASUREMENT) != EZC_OK ||
+        f64.derivative_filter(0.1) != EZC_OK ||
+        f64.integral_limit(-1.0, 1.0) != EZC_OK ||
+        f64.integral_separation(1.0) != EZC_OK ||
+        f64.setpoint_weight(0.0) != EZC_OK) {
+        return 1;
+    }
+    if (f32.clear_integral_limit() != EZC_OK ||
+        f32.clear_integral_separation() != EZC_OK ||
+        f64.clear_integral_limit() != EZC_OK ||
+        f64.clear_integral_separation() != EZC_OK) {
+        return 1;
+    }
+
+    /* Proportional on the measurement keeps a setpoint step out of the output. */
+    if (f32.set_params(2.0f, 0.0f, 0.0f) != EZC_OK) {
+        return 1;
+    }
+    f32.reset();
+    if (f32.update(10.0f, 0.0f, 1.0f) != 0.0f) {
         return 1;
     }
     return 0;

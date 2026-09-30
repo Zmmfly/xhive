@@ -96,6 +96,7 @@ xmake test -g xhive -v
 | divsufsort 64 位索引 C/C++ 消费者构建 | `divsufsort_test_consumer64/consumer` |
 | ezctrl PID 初始化、参数校验与状态管理 | `ezctrl_test_pid_config/pid_config` |
 | ezctrl PID 计算、限幅与防饱和 | `ezctrl_test_pid_update/pid_update` |
+| ezctrl PID 可选项：微分先行/滤波、积分限幅/分离、设定值权重 | `ezctrl_test_pid_options/pid_options` |
 | ezctrl C++ 包装层 | `ezctrl_test_pid_cpp/pid_cpp` |
 | ezctrl C/C++ 头文件及链接检查 | `ezctrl_test_consumer/consumer` |
 | C2 MMIO mock、C/C++ 头文件及链接检查 | `xhive_test_c2/host` |
