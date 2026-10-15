@@ -61,7 +61,7 @@ enum{
 	RNG_OK = 0x5a5a5a5a,
 	LENError = 0x311ECF50,   //RNG generation of key length error 
     ADDRNULL = 0x7A9DB86C,   // This address is empty
-	RNGATTACKED = 0x7A9DB86F,  //RNG hardware appears to be compromised
+	RNGATTACKED = 0x7A9DB86D,  //RNG hardware appears to be compromised
 	RNG_TimeOutError = 0x7A9DB86E  //RNG operation timeout
 };
 
