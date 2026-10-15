@@ -104,20 +104,20 @@ typedef struct
 /** TIM Output Compare Init structure definition **/
 typedef struct
 {
-    uint32_t OCMode;       		  /* Specifies the TIM mode.
+    uint32_t OCMode;                 /* Specifies the TIM mode.
                                                              This parameter can be a value of TIM_Output_Compare_and_PWM_modes */
 
-    uint32_t OutputState;  		  /* Specifies the TIM Output Compare state.
+    uint32_t OutputState;            /* Specifies the TIM Output Compare state.
                                                              This parameter can be a value of TIM_Output_Compare_state */
 
-    uint32_t OutputNState; 		  /* Specifies the TIM complementary Output Compare state.
+    uint32_t OutputNState;           /* Specifies the TIM complementary Output Compare state.
                                                              This parameter can be a value of TIM_Output_Compare_N_state
                                                              This parameter is valid for ATIM and GTIM8-10. */
 
-    uint32_t Pulse;       		  /* Specifies the pulse value to be loaded into the Capture_Compare_Register.
+    uint32_t Pulse;                 /* Specifies the pulse value to be loaded into the Capture_Compare_Register.
                                                              This parameter can be a number between 0x0000 and 0xFFFF */
 
-    uint32_t OCPolarity;   		  /* Specifies the output polarity.
+    uint32_t OCPolarity;             /* Specifies the output polarity.
                                                              This parameter can be a value of TIM_Output_Compare_Polarity */
 
     uint32_t OCNPolarity;       /* Specifies the complementary output polarity.
@@ -153,7 +153,7 @@ typedef struct
                                                              This parameter can be a number between 0x0 and 0xF */
 } TIM_ICInitType;
 
-/** BDTR structure definition is used only with TIM1	**/
+/** BDTR structure definition is used only with TIM1    **/
 typedef struct
 {
 
@@ -193,7 +193,7 @@ typedef struct
 
 } TIM_BDTRInitType;
 
-/** Filter structure definition	**/
+/** Filter structure definition    **/
 typedef struct
 {
     uint32_t ThreshHold;        /* Specifies the threshold value of filter, the range is [0, 64]. */

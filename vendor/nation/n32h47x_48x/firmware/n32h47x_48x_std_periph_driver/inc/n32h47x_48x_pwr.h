@@ -217,6 +217,10 @@ typedef enum
 #define PWR_LCO_ENABLE   (PWR_CTRL6_LCOEN)
 
 /** PWR_NRSTPIN **/
+#define PWR_NRST_DFW_MASK          (~PWR_NRSTCTRL_NRSTDFW)
+#define PWR_DF_ENABLE              (PWR_NRSTCTRL_NRSTDFEN)
+#define PWR_AF_ENABLE              (PWR_NRSTCTRL_NRSTAFEN)
+
 #define PWR_NRST_SEL_MASK          (~PWR_CTRL6_NRSTSEL)
 #define PWR_NRSTPIN_INPUT          (PWR_CTRL6_NRSTSEL_0)
 #define PWR_NRSTPIN_INPUTOUTPUT    (PWR_REG_BIT_MASK)
@@ -249,6 +253,9 @@ void PWR_ClearLSECSSFlag(void);
 void PWR_ConfigLco(uint32_t LCO_source);
 void PWR_EnableLCO(FunctionalState Cmd);
 void PWR_ConfigNRSTMode(uint32_t NRST_mode);
+void PWR_ConfigNRSTDigitalFilterWidth(uint32_t NRST_dfw);
+void PWR_EnableNRSTDigitalFilter(FunctionalState Cmd);
+void PWR_EnableNRSTAnalogFilter(FunctionalState Cmd);
 
 #ifdef __cplusplus
 }

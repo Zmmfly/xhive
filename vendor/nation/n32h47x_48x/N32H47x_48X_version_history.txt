@@ -1,4 +1,25 @@
-﻿Nations.N32H47x_48x_Library.1.1.0版本：
+﻿Nations.N32H47x_48x_Library.1.2.0版本：
+1.优化n32h47x_48x_tim.c文件函数
+2.修改USBFSD demo，删除demo系统时钟配置，通过系统初始化宏定义配置不同系列系统时钟以及时钟源选择HSE
+3.SHRTIM_TIM_PFC demo删除test文件夹
+4. SHRTIM系统故障的位，顺序修改
+5. PWR新增NRST滤波控制寄存器及驱动函数
+6. RCC新增SHRTPLL失锁控制寄存器，且配置SHRTPLL时默认使能；修改RCC_SetHSECSSPhaseOffsetLimit函数命名为RCC_SetHSECSSFrequencyChangeLimit
+7. SPI新增SPI_NSSFailCRCEnable驱动函数
+8. 优化XSPI四线demo
+9. 修改system_n32h47x_48x.c：47x系列最高主频默认240M，APB2默认为AHB 2分频，NRST默认开启滤波
+10. 更新UART demo，在判断RXDNE处添加对OREF标志的判断
+11. 新增applications文件夹，包含GCC demo及JumptoBoot应用笔记示例
+12. 修改工程下拉框为N32H47X\N32H48X\N32H480，不同系列使用同一启动文件，通过宏定义做区分
+13. 修改EXTI例程中断函数标志判断为EXTI_GetStatusFlag
+14. TIM新增例程：ATIM1与GTIM5的16位计数器进行级联实现32位计数器
+15. SHRTIM的Demo增加时钟失效到故障的配置代码
+
+
+Nations.N32H47x_48x_Library.1.1.1版本：
+1.优化SHRTIM、DAC、USBFS、USBHS模块例程中SHRTPLL的配置流程
+
+Nations.N32H47x_48x_Library.1.1.0版本：
 1.优化TIMTrigger_AutoInjection的DEMO例程
 2.在n32h47x_48x_dac.c文件中，修改DAC_SetSawtoothResetValue以及DAC_SetSawtoothStepValue函数
 3.DMA模块中内存到内存模式相关的demo，添加DMA_RequestRemap()函数，映射到空余请求位
@@ -76,6 +97,26 @@ Nations.N32H47x_48x_Library.0.9.0版本：
 Nations.N32H47x_48x_Library.0.8.0版本：
 1.初版发布
 ----------------------------------------------------------------------------------------------------------------------------------------------------
+Nations.N32H47x_48x_Library.1.2.0 version:
+1. Optimize the n32h47x_48x_tim. c file function
+2. Modify the USB FSD demo, delete the demo system clock configuration, define the configuration of different series of system clocks and clock source selection HSE through system initialization macros
+3. SHRTIM_TIM_SFC demo Delete test folder
+4. Modify the sequence of SHRTIM system faults
+5. New NRST filter control register and driver function added to PWR
+6. RCC adds SHRTPLL lock loss control register and enables it by default when configuring SHRTPLL；Modify the function RCC_SetHSECSSPhaseOffsetLimit and rename it to RCC_SetHSECSSFrequencyChangeLimit.
+7. SPI adds SPI_NSSFailCRCEnable driver function
+8. Optimize XSPI XSPI_QUAD and XSPI_QUAD_DMA demo
+9. Modify system_n32h47x_48x.c: The highest frequency of the 47x series defaults to 240M, APB2 defaults to AHB 2 division, and NRST defaults to enabling filtering
+10. Update UART demo and add a check for the OREF flag at the RXDNE check point
+11. Add an applications folder containing GCC demo and JumptoBoot application note examples
+12. Modify the project dropdown menu N32H47X\N32H48X\N32H480 to use the same startup file for different series and differentiate them through macro definitions
+13. Modify the interrupt function flag of the EXTI routine to be determined as EXTI_Gets Status Flag
+14. TIM new routine: cascading 16 bit counters from ATIM1 and GTIM5 to implement 32-bit counters
+15. SHRTIM Demo: Configuration code added for clock failure to fault transition
+
+Nations.N32H47x_48x_Library.1.1.1version:
+1. Optimize the SHRTIM、DAC、USBFS、USBHS module demo SHRTPLL configuration process
+
 Nations.N32H47x_48x_Library.1.1.0 version:
 1. Optimize TIMTrigger_AutoInjection demo
 2. In n32h47x_48x_dac.c file, modify DAC_SetSawtoothResetValue and DAC_SetSawtoothStepValue functions .

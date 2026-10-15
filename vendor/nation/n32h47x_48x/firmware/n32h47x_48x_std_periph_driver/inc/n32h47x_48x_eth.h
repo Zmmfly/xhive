@@ -56,9 +56,8 @@
 #define __N32H47X_48X_ETH_H__
 
 /*
- Only the N32H487 series supports ETH
+ Only the N32H487/N32H488 series supports ETH
  */
-#ifdef N32H487
 
 #ifdef __cplusplus
 extern "C" {
@@ -1410,7 +1409,6 @@ void ETH_ConfigDMACh0Interrupt(ETH_Module* ETHx, uint32_t Interrupt, FunctionalS
 }
 #endif
 
-#endif /* N32H487 */
 
 #endif /* __N32H47X_48X_ETH_H__ */
 

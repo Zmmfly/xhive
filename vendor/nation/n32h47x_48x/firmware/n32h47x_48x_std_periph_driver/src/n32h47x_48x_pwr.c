@@ -749,7 +749,70 @@ void PWR_ConfigNRSTMode(uint32_t NRST_mode)
     PWR->CTRL6 = temp_value;
 }
 
+/**
+*\*\name   PWR_ConfigNRSTDigitalFilterWidth.
+*\*\fun    Configuring the NRST digital filter width.
+*\*\param  NRST_dfw: 
+*\*\        - 0x0 ~ 0xFF  
+*\*\return  none. 
+*\*\note  digital filter width =  sysclk * NRST_dfw. 
+**/
+void PWR_ConfigNRSTDigitalFilterWidth(uint32_t NRST_dfw)
+{
+    uint32_t temp_value;
+
+    temp_value = PWR->NRSTCTRL;
+    /* Clear NRSTDFW[7:0] bits */
+    temp_value &= PWR_NRST_DFW_MASK;
+    /* Set NRSTDFW[7:0] bits according to NRST_dfw value */
+    temp_value |= ((NRST_dfw & 0xFF) << 4);
+
+    /* Store the new value */
+    PWR->NRSTCTRL = temp_value;
+}
 
 
+/**
+*\*\name    PWR_EnableNRSTDigitalFilter.
+*\*\fun     Enable or disable NRST digital filter 
+*\*\param   Cmd: 
+*\*\          - ENABLE  
+*\*\          - DISABLE   
+*\*\return  none
+**/
+void PWR_EnableNRSTDigitalFilter(FunctionalState Cmd)
+{ 
+   if(Cmd == ENABLE)
+   {
+       /* Reset NRSTDFEN bit */
+       PWR->NRSTCTRL &= (~PWR_DF_ENABLE);
+   }
+   else
+   {
+       /* Set NRSTDFEN bit */
+       PWR->NRSTCTRL |= PWR_DF_ENABLE;
+   }  
+}
 
+/**
+*\*\name    PWR_EnableNRSTAnalogFilter.
+*\*\fun     Enable or disable NRST Analog filter 
+*\*\param   Cmd: 
+*\*\          - ENABLE  
+*\*\          - DISABLE   
+*\*\return  none
+**/
+void PWR_EnableNRSTAnalogFilter(FunctionalState Cmd)
+{ 
+   if(Cmd == ENABLE)
+   {
+       /* Reset NRSTAFEN bit */
+       PWR->NRSTCTRL &= (~PWR_AF_ENABLE);
+   }
+   else
+   {
+       /* Set NRSTAFEN bit */
+       PWR->NRSTCTRL |= PWR_AF_ENABLE;
+   }  
+}
 

@@ -112,10 +112,9 @@ extern "C" {
 /*
  * Configuration of the Cortex-M4 Processor and Core Peripherals
  */
-#if defined (N32H473) || defined (N32H474) || defined (N32H475) || defined (N32H481) || defined (N32H482) || defined (N32H487) || defined (N32H488)
 #define __MPU_PRESENT 1          /* MPU present*/
 #define __FPU_PRESENT 1          /* FPU present                            */
-#endif                           /* N32H47X_48X */
+                                 /* N32H47X_48X */
 #define __NVIC_PRIO_BITS       4 /* N32H47X_48X uses 4 Bits for the Priority Levels    */
 #define __Vendor_SysTickConfig 0 /* Set to 1 if different SysTick Config is used */
 
@@ -567,7 +566,7 @@ typedef enum IRQn
     DAC1_2_3_4_Underflow_IRQn   = 114, /* DAC1/2/3/4 underflow Interrupt                               */
     DAC5_6_7_8_Underflow_IRQn   = 115, /* DAC5/6/7/8 underflow Interrupt                               */
     USB_HS_IRQn                 = 116, /* USB HS global Interrupt                                  */
-#elif defined (N32H482)
+#elif defined (N32H482) || defined (N32H480)
     /******  N32H482 specific Interrupt Numbers ********************************************************/
     WWDG_IRQn                   = 0,   /* Window WatchDog Interrupt                                    */
     PVD_IRQn                    = 1,   /* PVD through EXTI Line16 detection Interrupt                  */
@@ -1707,8 +1706,7 @@ typedef struct
     uint32_t RESERVED1;        //0x14
     uint32_t RESERVED2;        //0x18
     uint32_t RESERVED3;        //0x1C
-    uint32_t RESERVED4;        //0x20
-//    uint32_t PWR_WAKEKUP_AGF;  //0x20
+    __IO uint32_t NRSTCTRL;    //0x20
     uint32_t RESERVED5;        //0x24
     __IO uint32_t CTRL5;       //0x28
     __IO uint32_t CTRL6;       //0x2C
@@ -2592,6 +2590,11 @@ typedef struct {
 /** Bit definition for PWR_CTRL4 register  **/
 #define PWR_CTRL4_LSENIMEN         ((uint32_t)0x00000400U) /*LSE Noise Elimination Enable */
 
+/** Bit definition for PWR_NRSTCTRL register  **/
+#define PWR_NRSTCTRL_NRSTDFW        ((uint32_t)0x00000FF0U) /*NRST digital filtering width */
+#define PWR_NRSTCTRL_NRSTDFEN       ((uint32_t)0x00000008U) /*NRST Digital Filter Enable */
+#define PWR_NRSTCTRL_NRSTAFEN       ((uint32_t)0x00000004U) /*NRST Analog Filter Enable */
+
 /** Bit definition for PWR_CTRL5 register  **/
 #define PWR_CTRL5_LSECSSIEN        ((uint32_t)0x80000000U) /*LSE Crystal Mode Clock Safety System Interrupt Enable */
 #define PWR_CTRL5_LSECSSCRYF       ((uint32_t)0x20000000U) /*LSE Crystal Mode Clock Safety Fault Flag */
@@ -3351,14 +3354,14 @@ typedef struct {
 /** Bit definition for RCC_CSSCTRL register  **/
 #define RCC_CSSCTRL_HSICSSEN       ((uint32_t)0x00400000U) /* HSI clock security system enable */
 #define RCC_CSSCTRL_WKUPCLKSEL     ((uint32_t)0x00100000U) /* STOP0 mode wake-up clock selection */
-#define RCC_CSSCTRL_HSEPOF         ((uint32_t)0x00040000U) /* HSE phase shift out of range flag */
+#define RCC_CSSCTRL_HSEPOF         ((uint32_t)0x00040000U) /* HSE frequency change rate out of range flag */
 #define RCC_CSSCTRL_HSEFHF         ((uint32_t)0x00020000U) /* HSE frequency out of high limit flag */
 #define RCC_CSSCTRL_HSEFLF         ((uint32_t)0x00010000U) /* HSE frequency out of low limit flag */
-#define RCC_CSSCTRL_HSEPOEN        ((uint32_t)0x00008000U) /* HSE phase shift out of range enable */
+#define RCC_CSSCTRL_HSEPOEN        ((uint32_t)0x00008000U) /* HSE frequency change rate out of range enable */
 #define RCC_CSSCTRL_HSEFHEN        ((uint32_t)0x00004000U) /* HSE frequency out of high limit enable */
 #define RCC_CSSCTRL_HSEFLEN        ((uint32_t)0x00002000U) /* HSE frequency exceeds low limit value enable */
 #define RCC_CSSCTRL_HSEDLSEL       ((uint32_t)0x00001000U) /* HSE detection delay selection */
-#define RCC_CSSCTRL_HSEPOTHR       ((uint32_t)0x00000F00U) /* HSE phase offset threshold configuration */
+#define RCC_CSSCTRL_HSEPOTHR       ((uint32_t)0x00000F00U) /* HSE frequency change rate threshold configuration */
 #define RCC_CSSCTRL_HSEFHTHR       ((uint32_t)0x000000F0U) /* HSE frequency high limit value configuration */
 #define RCC_CSSCTRL_HSEFLTHR       ((uint32_t)0x0000000FU) /* HSE frequency low limit value configuration */
 
@@ -3447,6 +3450,7 @@ typedef struct {
 
 /** Bit definition for RCC_SHRTPLLCTRL3 register  **/
 #define RCC_SHRTPLLCTRL3_SHRTPLLRDF     ((uint32_t)0x10000000U) /*SHRTPLL Clock Ready Flag */
+#define RCC_SHRTPLLCTRL3_SHRTPLLLCK     ((uint32_t)0x08000000U) /*SHRTPLL clock lose lock control */
 #define RCC_SHRTPLLCTRL3_SHRTPLLSRC     ((uint32_t)0x04000000U) /*SHRTPLL clock source */
 #define RCC_SHRTPLLCTRL3_SHRTPLLEN      ((uint32_t)0x02000000U) /*SHRTPLL Enable */
 #define RCC_SHRTPLLCTRL3_BWTRIM         ((uint32_t)0x00FFF000U) /*SHRTPLL band widths */
@@ -8000,17 +8004,6 @@ typedef struct {
 #define RTC_TSSS_SSE ((uint32_t)0x0000FFFFU)
 
 /** Bits definition for RTC_TSD register **/
-#define RTC_TSD_YRT   ((uint32_t)0x00F00000U)
-#define RTC_TSD_YRT_0 ((uint32_t)0x00100000U)
-#define RTC_TSD_YRT_1 ((uint32_t)0x00200000U)
-#define RTC_TSD_YRT_2 ((uint32_t)0x00400000U)
-#define RTC_TSD_YRT_3 ((uint32_t)0x00800000U)
-#define RTC_TSD_YRU   ((uint32_t)0x000F0000U)
-#define RTC_TSD_YRU_0 ((uint32_t)0x00010000U)
-#define RTC_TSD_YRU_1 ((uint32_t)0x00020000U)
-#define RTC_TSD_YRU_2 ((uint32_t)0x00040000U)
-#define RTC_TSD_YRU_3 ((uint32_t)0x00080000U)
-
 #define RTC_TSD_MOT   ((uint32_t)0x00008000U)
 #define RTC_TSD_WDU   ((uint32_t)0x00007000U)
 #define RTC_TSD_WDU_0 ((uint32_t)0x00001000U)
@@ -13695,29 +13688,29 @@ typedef struct {
 #define SHRTIM_TXEXEVFLT2_EXEV10FLT_2                             ((uint32_t)0x08000000U)            /* Bit27 */
 #define SHRTIM_TXEXEVFLT2_EXEV10FLT_3                             ((uint32_t)0x10000000U)            /* Bit28 */
 #define SHRTIM_TXEXEVFLT2_EXEV10LATCH                             ((uint32_t)0x01000000U)            /* Bit[24] External event 10 latch */
-#define SHRTIM_TXEXEVFLT2_EXE9VFLT                                ((uint32_t)0x00780000U)            /* Bit[22:19] External event 9 filter */
-#define SHRTIM_TXEXEVFLT2_EXE9VFLT_0                              ((uint32_t)0x00080000U)            /* Bit19 */
-#define SHRTIM_TXEXEVFLT2_EXE9VFLT_1                              ((uint32_t)0x00100000U)            /* Bit20 */
-#define SHRTIM_TXEXEVFLT2_EXE9VFLT_2                              ((uint32_t)0x00200000U)            /* Bit21 */
-#define SHRTIM_TXEXEVFLT2_EXE9VFLT_3                              ((uint32_t)0x00400000U)            /* Bit22 */
+#define SHRTIM_TXEXEVFLT2_EXEV9FLT                                ((uint32_t)0x00780000U)            /* Bit[22:19] External event 9 filter */
+#define SHRTIM_TXEXEVFLT2_EXEV9FLT_0                              ((uint32_t)0x00080000U)            /* Bit19 */
+#define SHRTIM_TXEXEVFLT2_EXEV9FLT_1                              ((uint32_t)0x00100000U)            /* Bit20 */
+#define SHRTIM_TXEXEVFLT2_EXEV9FLT_2                              ((uint32_t)0x00200000U)            /* Bit21 */
+#define SHRTIM_TXEXEVFLT2_EXEV9FLT_3                              ((uint32_t)0x00400000U)            /* Bit22 */
 #define SHRTIM_TXEXEVFLT2_EXEV9LATCH                              ((uint32_t)0x00040000U)            /* Bit[18] External event 9 latch */
-#define SHRTIM_TXEXEVFLT2_EXE8VFLT                                ((uint32_t)0x0001E000U)            /* Bit[16:13] External event 8 filter */
-#define SHRTIM_TXEXEVFLT2_EXE8VFLT_0                              ((uint32_t)0x00002000U)            /* Bit13 */
-#define SHRTIM_TXEXEVFLT2_EXE8VFLT_1                              ((uint32_t)0x00004000U)            /* Bit14 */
-#define SHRTIM_TXEXEVFLT2_EXE8VFLT_2                              ((uint32_t)0x00008000U)            /* Bit15 */
-#define SHRTIM_TXEXEVFLT2_EXE8VFLT_3                              ((uint32_t)0x00010000U)            /* Bit16 */
+#define SHRTIM_TXEXEVFLT2_EXEV8FLT                                ((uint32_t)0x0001E000U)            /* Bit[16:13] External event 8 filter */
+#define SHRTIM_TXEXEVFLT2_EXEV8FLT_0                              ((uint32_t)0x00002000U)            /* Bit13 */
+#define SHRTIM_TXEXEVFLT2_EXEV8FLT_1                              ((uint32_t)0x00004000U)            /* Bit14 */
+#define SHRTIM_TXEXEVFLT2_EXEV8FLT_2                              ((uint32_t)0x00008000U)            /* Bit15 */
+#define SHRTIM_TXEXEVFLT2_EXEV8FLT_3                              ((uint32_t)0x00010000U)            /* Bit16 */
 #define SHRTIM_TXEXEVFLT2_EXEV8LATCH                              ((uint32_t)0x00001000U)            /* Bit[12] External event 8 latch */
-#define SHRTIM_TXEXEVFLT2_EXE7VFLT                                ((uint32_t)0x00000780U)            /* Bit[10:7] External event 7 filter */
-#define SHRTIM_TXEXEVFLT2_EXE7VFLT_0                              ((uint32_t)0x00000080U)            /* Bit7 */
-#define SHRTIM_TXEXEVFLT2_EXE7VFLT_1                              ((uint32_t)0x00000100U)            /* Bit8 */
-#define SHRTIM_TXEXEVFLT2_EXE7VFLT_2                              ((uint32_t)0x00000200U)            /* Bit9 */
-#define SHRTIM_TXEXEVFLT2_EXE7VFLT_3                              ((uint32_t)0x00000400U)            /* Bit10 */
+#define SHRTIM_TXEXEVFLT2_EXEV7FLT                                ((uint32_t)0x00000780U)            /* Bit[10:7] External event 7 filter */
+#define SHRTIM_TXEXEVFLT2_EXEV7FLT_0                              ((uint32_t)0x00000080U)            /* Bit7 */
+#define SHRTIM_TXEXEVFLT2_EXEV7FLT_1                              ((uint32_t)0x00000100U)            /* Bit8 */
+#define SHRTIM_TXEXEVFLT2_EXEV7FLT_2                              ((uint32_t)0x00000200U)            /* Bit9 */
+#define SHRTIM_TXEXEVFLT2_EXEV7FLT_3                              ((uint32_t)0x00000400U)            /* Bit10 */
 #define SHRTIM_TXEXEVFLT2_EXEV7LATCH                              ((uint32_t)0x00000040U)            /* Bit[6] External event 7 latch */
-#define SHRTIM_TXEXEVFLT2_EXE6VFLT                                ((uint32_t)0x0000001EU)            /* Bit[4:1] External event 6 filter */
-#define SHRTIM_TXEXEVFLT2_EXE6VFLT_0                              ((uint32_t)0x00000002U)            /* Bit1 */
-#define SHRTIM_TXEXEVFLT2_EXE6VFLT_1                              ((uint32_t)0x00000004U)            /* Bit2 */
-#define SHRTIM_TXEXEVFLT2_EXE6VFLT_2                              ((uint32_t)0x00000008U)            /* Bit3 */
-#define SHRTIM_TXEXEVFLT2_EXE6VFLT_3                              ((uint32_t)0x00000010U)            /* Bit4 */
+#define SHRTIM_TXEXEVFLT2_EXEV6FLT                                ((uint32_t)0x0000001EU)            /* Bit[4:1] External event 6 filter */
+#define SHRTIM_TXEXEVFLT2_EXEV6FLT_0                              ((uint32_t)0x00000002U)            /* Bit1 */
+#define SHRTIM_TXEXEVFLT2_EXEV6FLT_1                              ((uint32_t)0x00000004U)            /* Bit2 */
+#define SHRTIM_TXEXEVFLT2_EXEV6FLT_2                              ((uint32_t)0x00000008U)            /* Bit3 */
+#define SHRTIM_TXEXEVFLT2_EXEV6FLT_3                              ((uint32_t)0x00000010U)            /* Bit4 */
 #define SHRTIM_TXEXEVFLT2_EXEV6LATCH                              ((uint32_t)0x00000001U)            /* Bit[0] External event 6 latch */
 
 /** Bit definition for SHRTIM_TACNTRST register  **/
@@ -15088,12 +15081,13 @@ typedef struct {
 #define SHRTIM_FALTIN1_FALT1E                                 ((uint32_t)0x00000001U)            /* Bit[0] Fault 1 enable */
 
 /** Bit definition for SHRTIM_FALTIN2 register  **/
-#define SHRTIM_FALTIN2_SFALTFLECCEN                            ((uint32_t)0x80000000U)            /* Bit[31] The flash ECC double detection error as SHRTIM system fault input enable */
-#define SHRTIM_FALTIN2_SFALTPVDEN                              ((uint32_t)0x40000000U)            /* Bit[30] The PVD error as SHRTIM system fault input enable */
-#define SHRTIM_FALTIN2_SFALTLOCKUPEN                           ((uint32_t)0x20000000U)            /* Bit[29] The core lockup as SHRTIM system fault input enable */
-#define SHRTIM_FALTIN2_SFALTSMPAREN                            ((uint32_t)0x10000000U)            /* Bit[28] The sram parity error as SHRTIM system fault input enable */
-#define SHRTIM_FALTIN2_SFALTSMECCEN                            ((uint32_t)0x08000000U)            /* Bit[27] The sram ECC error as SHRTIM system fault input enable */
-#define SHRTIM_FALTIN2_SFALTCKSECEN                            ((uint32_t)0x04000000U)            /* Bit[26] The clock security system error as SHRTIM system fault input enable */
+#define SHRTIM_FALTIN2_SFALTCKSECEN                            ((uint32_t)0x80000000U)            /* Bit[31] The clock security system error as SHRTIM system fault input enable*/
+#define SHRTIM_FALTIN2_SFALTLOCKUPEN                           ((uint32_t)0x40000000U)            /* Bit[30] The core lockup as SHRTIM system fault input enable */
+#define SHRTIM_FALTIN2_SFALTPVDEN                              ((uint32_t)0x20000000U)            /* Bit[29] The PVD error as SHRTIM system fault input enable */
+#define SHRTIM_FALTIN2_SFALTSMECCEN                            ((uint32_t)0x10000000U)            /* Bit[28] The sram ECC error as SHRTIM system fault input enable */
+#define SHRTIM_FALTIN2_SFALTFLECCEN                            ((uint32_t)0x08000000U)            /* Bit[27] The flash ECC double detection error as SHRTIM system fault input enable */
+#define SHRTIM_FALTIN2_SFALTSMPAREN                            ((uint32_t)0x04000000U)            /* Bit[26] The sram parity error as SHRTIM system fault input enable */
+
 #define SHRTIM_FALTIN2_FALTSCD                                 ((uint32_t)0x03000000U)            /* Bit[25:24] Fault sampling clock division */
 #define SHRTIM_FALTIN2_FALTSCD_0                               ((uint32_t)0x01000000U)            /* Bit24 */
 #define SHRTIM_FALTIN2_FALTSCD_1                               ((uint32_t)0x02000000U)            /* Bit25 */

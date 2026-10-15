@@ -205,10 +205,10 @@ void SPI_Init(SPI_Module* SPIx,const SPI_InitType* SPI_InitStruct)
 
 /**
 *\*\name    I2S_Init.
-*\*\fun     Initializes the SPIx peripheral according to the specified parameters in the I2S_InitStruct.
-*\*\param   SPIx :
-*\*\          - SPI2
-*\*\          - SPI3
+*\*\fun     Initializes the I2Sx peripheral according to the specified parameters in the I2S_InitStruct.
+*\*\param   I2Sx :
+*\*\          - I2S2
+*\*\          - I2S3
 *\*\param   I2S_InitStruct :
 *\*\          - I2sMode
 *\*\           - I2S_MODE_SlAVE_TX 
@@ -440,10 +440,10 @@ void SPI_Enable(SPI_Module* SPIx, FunctionalState Cmd)
 
 /**
 *\*\name    I2S_Enable.
-*\*\fun     Enables or disables the specified SPI peripheral (in I2S mode).
-*\*\param   SPIx :
-*\*\          - SPI2
-*\*\          - SPI3
+*\*\fun     Enables or disables the specified I2S peripheral (in I2S mode).
+*\*\param   I2Sx :
+*\*\          - I2S2
+*\*\          - I2S3
 *\*\param   Cmd :
 *\*\          - ENABLE
 *\*\          - DISABLE
@@ -1369,6 +1369,29 @@ INTStatus I2S_EXT_GetIntStatus(const I2S_EXT_Module* I2Sx, uint8_t I2S_EXT_IT)
 		
 }
 
+/**
+*\*\name    SPI_NSSFailCRCEnable.
+*\*\fun     NSS failure, CRC calculation stops or continues.
+*\*\param   SPIx (The input parameters must be the following values):
+*\*\				 - 1, 2, 3, 4, 5 or 6 in SPI mode
+*\*\param   Cmd (The input parameters must be the following values):
+*\*\          - ENABLE
+*\*\          - DISABLE
+*\*\return  none
+**/
+void SPI_NSSFailCRCEnable(SPI_Module* SPIx,FunctionalState Cmd)
+{
+    if (Cmd != DISABLE)
+    {
+        /* NSS failure, CRC calculation continues. */
+        SPIx->CTRL2 |= SPI_CTRL2_CRCNMISEN;
+    }
+    else
+    {
+        /* NSS failure, CRC calculation stops. */
+        SPIx->CTRL2 &= ~SPI_CTRL2_CRCNMISEN;
+    }
+}
 
 
 

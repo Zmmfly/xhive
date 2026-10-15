@@ -53,9 +53,8 @@
 **/
 
 /*
- Only the N32H487 series supports ETH
+ Only the N32H487/N32H488 series supports ETH
  */
-#ifdef N32H487
 
 #include "n32h47x_48x_eth.h"
 
@@ -4736,5 +4735,4 @@ void ETH_ConfigDMACh0Interrupt(ETH_Module* ETHx, uint32_t Interrupt, FunctionalS
     }
 }
 
-#endif /* N32H487 */
 

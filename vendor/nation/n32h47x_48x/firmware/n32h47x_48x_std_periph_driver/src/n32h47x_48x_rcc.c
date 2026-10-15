@@ -215,7 +215,7 @@ void RCC_EnableHSEClockSecuritySystem(FunctionalState Cmd)
 *\*\name    RCC_EnableHSECSSChktype.
 *\*\fun     Enable different HSE CSS detection type .
 *\*\param   Chk_type :
-*\*\         - RCC_CSSEN_HSEPOEN     HSE phase shift out of range enable
+*\*\         - RCC_CSSEN_HSEPOEN     HSE frequency change rate out of range enable
 *\*\         - RCC_CSSEN_HSEFHEN     HSE frequency out of high limit enable
 *\*\         - RCC_CSSEN_HSEFLEN     HSE frequency out of low limit enable
 *\*\param   Cmd: 
@@ -237,14 +237,14 @@ void RCC_EnableHSECSSChk(uint32_t Chk_type, FunctionalState Cmd)
 }
 
 /**
-*\*\name    RCC_SetHSECSSPhaseOffsetLimit.
-*\*\fun     Adjusts HSE Phase Offset Limit value.
+*\*\name    RCC_SetHSECSSFrequencyChangeLimit.
+*\*\fun     Adjusts HSE frequency change rate Limit value.
 *\*\param   limit_value(the Limit value):
 *\*\        This parameter must be a number between 0x0 and 0xF
 *\*\return  none
-*\*\note    Error when phase offset Δt is greater than (tHSI*limit_value/32)us
+*\*\note    Error when the difference between the cycle values of adjacent HSE cycles exceeds (tHSI × (limit_value-2)/32)us
 **/ 
-void RCC_SetHSECSSPhaseOffsetLimit(uint8_t limit_value) 
+void RCC_SetHSECSSFrequencyChangeLimit(uint8_t limit_value) 
 {
     uint32_t temp_value;
 
@@ -284,7 +284,7 @@ void RCC_SetHSECSSFrequencyHighLimit(uint8_t limit_value)
 *\*\param   limit_value(the Limit value):
 *\*\        This parameter must be a number between 0x0 and 0xF
 *\*\return  none
-*\*\note    Error when the frequency is less than (32/limit_value)MHz
+*\*\note    Error when the frequency is less than (32/(limit_value+1))MHz
 **/ 
 void RCC_SetHSECSSFrequencyLowLimit(uint8_t limit_value) 
 {
@@ -303,7 +303,7 @@ void RCC_SetHSECSSFrequencyLowLimit(uint8_t limit_value)
 *\*\name    RCC_GetHSECSSStatus.
 *\*\fun     Checks whether the specified HSE CSS flag has occurred or not.
 *\*\param   interrupt_flag(RCC interrupt source to check):
-*\*\         - RCC_CSSFLAG_HSEPOF     HSE phase shift out of range flag
+*\*\         - RCC_CSSFLAG_HSEPOF     HSE frequency change rate out of range flag
 *\*\         - RCC_CSSFLAG_HSEFHF     HSE frequency out of high limit flag
 *\*\         - RCC_CSSFLAG_HSEFLF     HSE frequency out of low limit flag
 *\*\return  FlagStatus:    
@@ -634,8 +634,8 @@ ErrorStatus RCC_ConfigSHRTPll(uint32_t SHRTPLL_source, uint64_t fin, uint64_t fo
         
         if(status == SUCCESS)
         {
-            /* Enable SHRTPLL module power */
-            RCC->SHRTPLLCTRL3 |= RCC_SHRTPLL_ENABLE;
+            /* Enable SHRTPLL module power and lose lock bypass */
+            RCC->SHRTPLLCTRL3 |= (RCC_SHRTPLL_ENABLE | RCC_SHRTPLL_LCK_BYPASS);
             /* Select Clock Source */
             temp_value3 = RCC->SHRTPLLCTRL3;
             temp_value3 &= RCC_SHRTPLL_SRC_MASK;
@@ -800,6 +800,7 @@ void RCC_ConfigPclk1(uint32_t hclk_div)
 *\*\         - RCC_HCLK_DIV8     APB2 clock = HCLK/8
 *\*\         - RCC_HCLK_DIV16    APB2 clock = HCLK/16
 *\*\return  none
+*\*\note  Avoid configuring APB2 frequency to be the same as AHB frequency.
 **/
 void RCC_ConfigPclk2(uint32_t hclk_div)
 {
@@ -1210,6 +1211,8 @@ void RCC_ConfigTraceClk(uint32_t TRACE_prescaler)
 *\*\         - RCC_USBPLLCLK_DIV14
 *\*\         - RCC_USBPLLCLK_DIV15
 *\*\return  none
+*\*\note When used as a USBFS clock source, the input frequency must be greater than or equal to 96M 
+*\*\     and the output frequency must be equal to 48M
 **/
 void RCC_ConfigUSBPLLPresClk(uint32_t USBPLL_clksrc, uint32_t USBPLL_prescaler)
 {
@@ -2472,7 +2475,7 @@ void RCC_ConfigRemapMode(uint32_t Remap_mode)
 *\*\	      - RCC_FLAG_LSERDF        LSE oscillator clock ready
 *\*\	      - RCC_FLAG_HSEFLF        HSE frequency out of low limit flag
 *\*\	      - RCC_FLAG_HSEFHF        HSE frequency out of high limit flag
-*\*\	      - RCC_FLAG_HSEPOF        HSE phase shift out of range flag
+*\*\	      - RCC_FLAG_HSEPOF        HSE frequency change rate out of range flag
 *\*\	      - RCC_FLAG_SHRTPLLRDF    SHRTPLL clock ready
 *\*\return  FlagStatus:    
 *\*\      	  - SET 

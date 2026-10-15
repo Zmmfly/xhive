@@ -288,6 +288,7 @@ void TIM_InitTimeBase(TIM_Module* TIMx, TIM_TimeBaseInitType* TIM_TimeBaseInitSt
     }
     else
     {    
+        /* No process */
     }
     
     /* Channel 2 select capture in */
@@ -313,6 +314,7 @@ void TIM_InitTimeBase(TIM_Module* TIMx, TIM_TimeBaseInitType* TIM_TimeBaseInitSt
     }
     else
     {   
+        /* No process */
     }
 
     /* Channel 3 select capture in */
@@ -338,6 +340,7 @@ void TIM_InitTimeBase(TIM_Module* TIMx, TIM_TimeBaseInitType* TIM_TimeBaseInitSt
     }
     else
     {   
+        /* No process */
     }
 
     /* Channel 4 select capture in */
@@ -363,6 +366,7 @@ void TIM_InitTimeBase(TIM_Module* TIMx, TIM_TimeBaseInitType* TIM_TimeBaseInitSt
     }
     else
     {   
+        /* No process */
     }
 
     /* CLR or ETR select capture in */
@@ -872,14 +876,14 @@ void TIM_InitOc4(TIM_Module* TIMx, OCInitType* TIM_OCInitStruct)
         /* Set the Output Idle state */
         tmpctrl2 |= (uint32_t)(TIM_OCInitStruct->OCIdleState << 6);
         /* Set the Output N Idle state */
-        tmpctrl2 |= (uint32_t)(TIM_OCInitStruct->OCNIdleState << 6);	        
+        tmpctrl2 |= (uint32_t)(TIM_OCInitStruct->OCNIdleState << 6);            
     }
     if (IS_GTIM8_10_DEVICE(TIMx)) 
     {
         /* Reset the Output Compare and Output Compare N IDLE State */
         tmpctrl2 &= (uint32_t)(~TIM_CTRL2_OI4);       
         /* Set the Output Idle state */
-        tmpctrl2 |= (uint32_t)(TIM_OCInitStruct->OCIdleState << 6);	
+        tmpctrl2 |= (uint32_t)(TIM_OCInitStruct->OCIdleState << 6);    
     }  
 
     /* Write to TIMx_CTRL2 */
@@ -1447,8 +1451,8 @@ void TIM_BreakInputSourceEnable(TIM_Module* TIMx, uint32_t Source, uint32_t Pola
             /* Enable break input source */ 
             tempaf1 |= (uint32_t)(Source); 
             /* Set break input source polarity */
-            tempaf1 &= (uint32_t)(~((Source & 0x1F) << 9));
-            tempaf1 |= (uint32_t)(Polarity & ((Source & 0x1F) << 9));            
+            tempaf1 &= (uint32_t)(~((Source & 0x1FU) << 9));
+            tempaf1 |= (uint32_t)(Polarity & ((Source & 0x1FU) << 9));            
         }
 
     }
@@ -1463,8 +1467,8 @@ void TIM_BreakInputSourceEnable(TIM_Module* TIMx, uint32_t Source, uint32_t Pola
             /* Disable break input source */             
             tempaf1 &= (uint32_t)(~Source);    
             /* Set break input source polarity */
-            tempaf1 &= (uint32_t)(~((Source & 0x1F) << 9));
-            tempaf1 |= (uint32_t)(Polarity & ((Source & 0x1F) << 9));                 
+            tempaf1 &= (uint32_t)(~((Source & 0x1FU) << 9));
+            tempaf1 |= (uint32_t)(Polarity & ((Source & 0x1FU) << 9));                 
         }        
     }
     TIMx->CTRL1 = tempctrl1;
@@ -1505,16 +1509,16 @@ void TIM_Break2InputSourceEnable(TIM_Module* TIMx, uint32_t Source, uint32_t Pol
         /* Enable break2 input source */ 
         tempaf2 |= (uint32_t)(Source); 
         /* Set break2 input source polarity */ 
-        tempaf2 &= (uint32_t)(~((Source & 0x1F) << 9));
-        tempaf2 |= (uint32_t)(Polarity & ((Source & 0x1F) << 9));   
+        tempaf2 &= (uint32_t)(~((Source & 0x1FU) << 9));
+        tempaf2 |= (uint32_t)(Polarity & ((Source & 0x1FU) << 9));   
     }
     else
     {
         /* Disable break2 input source */             
         tempaf2 &= (uint32_t)(~Source);    
         /* Set break2 input source polarity */
-        tempaf2 &= (uint32_t)(~((Source & 0x1F) << 9));
-        tempaf2 |= (uint32_t)(Polarity & ((Source & 0x1F) << 9));             
+        tempaf2 &= (uint32_t)(~((Source & 0x1FU) << 9));
+        tempaf2 |= (uint32_t)(Polarity & ((Source & 0x1FU) << 9));             
     }
     TIMx->AF2 = tempaf2;      
 } 
@@ -3457,7 +3461,7 @@ void TIM_ClrOcRefInputSource(TIM_Module* TIMx, uint32_t OCRefClearInputSelect,ui
     tmpinsel &= (uint32_t)(~TIM_INSEL_ETRS);  
     tmpinsel &= (uint32_t)(~TIM_INSEL_CLRS); 
     
-    if (OCRefClearInputSelect)
+    if (OCRefClearInputSelect == TIM_CLRSEL)
     {
         /* CLR select capture in */
         tmpctrl1 |= (uint32_t)TIM_OCCLRSEL_COMP;            
@@ -3887,7 +3891,7 @@ void TIM_SelectOcMode(TIM_Module* TIMx, uint32_t Channel, uint32_t OcMode)
         *(__IO uint32_t*)tmp &= (uint32_t)(~((uint32_t)(TIM_CCMOD1_OC2MD | TIM_CCMOD1_OC2MD_3)));
 
         /* Configure the OCxMD bits in the CCMRx register */
-        *(__IO uint32_t*)tmp |= (uint32_t)(((OcMode << 8)&(0x0000E000)) | ((OcMode << 1)&(0x00040000)));
+        *(__IO uint32_t*)tmp |= (uint32_t)(((OcMode << 8)&(0x0000E000U)) | ((OcMode << 1)&(0x00040000U)));
     }
 }
 

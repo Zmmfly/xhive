@@ -70,7 +70,7 @@ typedef struct
     uint32_t Pclk2Freq;     /* returns PCLK2 clock frequency expressed in Hz */
     uint32_t AdcPllClkFreq; /* returns ADCPLLCLK clock frequency expressed in Hz */
     uint32_t AdcHclkFreq;   /* returns ADCHCLK clock frequency expressed in Hz */
-    uint32_t ShrtpllFreq;   /* returns ADCHCLK clock frequency expressed in Hz */
+    uint32_t ShrtpllFreq;   /* returns Shrtpll clock frequency expressed in Hz */
 } RCC_ClocksType;
 
 typedef enum
@@ -90,19 +90,20 @@ typedef enum
 #define NF_MIN   2
 #define NF_MAX   4095
 
-#define RCC_HSI_ENABLE        (RCC_CTRL_HSIEN) 
-#define RCC_HSECSS_ENABLE     (RCC_CTRL_HSECSSEN)
-#define RCC_PLL_ENABLE        (RCC_CTRL_PLLEN)
-#define RCC_SHRTPLL_ENABLE    (RCC_SHRTPLLCTRL3_SHRTPLLEN)
-#define RCC_SHRTPLLMODE_PD    (RCC_SHRTPLLCTRL1_SHRTPLLMODE)
-#define RCC_SHRTPLL_SATEN     (RCC_SHRTPLLCTRL1_SATEN)
-#define RCC_SHRTPLL_FRACEN    (RCC_SHRTPLLCTRL1_FRACEN)
-#define RCC_LSI_ENABLE        (RCC_CTRLSTS_LSIEN)
-#define RCC_RTC_ENABLE        (RCC_BDCTRL_RTCEN)
-#define RCC_LSECSS_ENABLE     (RCC_BDCTRL_LSECSSEN)
-#define RCC_HSICSS_ENABLE     (RCC_CSSCTRL_HSICSSEN)
-#define RCC_TRNG1M_ENABLE     (RCC_CFG3_TRNG1MEN)
-#define RCC_BOR_ENABLE        (RCC_CFG3_BORRSTEN)
+#define RCC_HSI_ENABLE            (RCC_CTRL_HSIEN) 
+#define RCC_HSECSS_ENABLE         (RCC_CTRL_HSECSSEN)
+#define RCC_PLL_ENABLE            (RCC_CTRL_PLLEN)
+#define RCC_SHRTPLL_ENABLE        (RCC_SHRTPLLCTRL3_SHRTPLLEN)
+#define RCC_SHRTPLL_LCK_BYPASS    (RCC_SHRTPLLCTRL3_SHRTPLLLCK)
+#define RCC_SHRTPLLMODE_PD        (RCC_SHRTPLLCTRL1_SHRTPLLMODE)
+#define RCC_SHRTPLL_SATEN         (RCC_SHRTPLLCTRL1_SATEN)
+#define RCC_SHRTPLL_FRACEN        (RCC_SHRTPLLCTRL1_FRACEN)
+#define RCC_LSI_ENABLE            (RCC_CTRLSTS_LSIEN)
+#define RCC_RTC_ENABLE            (RCC_BDCTRL_RTCEN)
+#define RCC_LSECSS_ENABLE         (RCC_BDCTRL_LSECSSEN)
+#define RCC_HSICSS_ENABLE         (RCC_CSSCTRL_HSICSSEN)
+#define RCC_TRNG1M_ENABLE         (RCC_CFG3_TRNG1MEN)
+#define RCC_BOR_ENABLE            (RCC_CFG3_BORRSTEN)
 
 
 
@@ -704,7 +705,7 @@ void RCC_DeInit(void);
 void RCC_ConfigHse(uint32_t RCC_HSE);
 void RCC_EnableHSEClockSecuritySystem(FunctionalState Cmd);
 void RCC_EnableHSECSSChk(uint32_t Chk_type, FunctionalState Cmd);
-void RCC_SetHSECSSPhaseOffsetLimit(uint8_t limit_value);
+void RCC_SetHSECSSFrequencyChangeLimit(uint8_t limit_value);
 void RCC_SetHSECSSFrequencyHighLimit(uint8_t limit_value);
 void RCC_SetHSECSSFrequencyLowLimit(uint8_t limit_value);
 void RCC_SetHsiCalibValue(uint8_t calibration_value);

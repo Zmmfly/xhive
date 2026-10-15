@@ -84,9 +84,11 @@
 
 #ifndef SYSCLK_FREQ
 #if defined (N32H473) || defined (N32H474)
-#define SYSCLK_FREQ    200000000
+#define SYSCLK_FREQ    240000000
 #elif defined (N32H475) || defined (N32H481) || defined (N32H482) || defined (N32H487) || defined (N32H488)     
 #define SYSCLK_FREQ    240000000
+#elif defined (N32H480)    
+#define SYSCLK_FREQ    176000000
 #else
 #error wrong macro definition
 #endif  
@@ -116,15 +118,15 @@
 
 #elif SYSCLK_SRC == SYSCLK_USE_HSI_PLL
 
-#if (SYSCLK_FREQ % HSI_VALUE == 0) && (SYSCLK_FREQ / HSI_VALUE >= 8) && (SYSCLK_FREQ / HSI_VALUE <= 76)           \
+#if (SYSCLK_FREQ % HSI_VALUE == 0) && (SYSCLK_FREQ / HSI_VALUE >= 8) && (SYSCLK_FREQ / HSI_VALUE <= 76)       \
        && ((SYSCLK_FREQ / HSI_VALUE) % 2 ==0)
 #define PLLSRC_DIV   1
 #define PLL_MUL     (SYSCLK_FREQ / HSI_VALUE)
 #define PLL_INPRE    1
 #define PLL_OUTPRE   1
 
-#elif ((SYSCLK_FREQ % (HSI_VALUE / 2)) == 0) && (SYSCLK_FREQ / (HSI_VALUE / 2) >= 8)                                     \
-    && (SYSCLK_FREQ / (HSI_VALUE / 2) <= 76)
+#elif ((SYSCLK_FREQ % (HSI_VALUE / 2)) == 0) && (SYSCLK_FREQ / (HSI_VALUE / 2) >= 8)                         \
+    && (SYSCLK_FREQ / (HSI_VALUE / 2) <= 76) && ((SYSCLK_FREQ / (HSI_VALUE / 2)) % 2 ==0)
 
 #define PLLSRC_DIV   2
 #define PLL_MUL     (SYSCLK_FREQ / (HSI_VALUE / 2))
@@ -142,7 +144,7 @@
 #error HSE_VALUE must be defined!
 #endif
 
-#if (SYSCLK_FREQ % HSE_VALUE == 0) && (SYSCLK_FREQ / HSE_VALUE >= 8) && (SYSCLK_FREQ / HSE_VALUE <= 76)        \
+#if (SYSCLK_FREQ % HSE_VALUE == 0) && (SYSCLK_FREQ / HSE_VALUE >= 8) && (SYSCLK_FREQ / HSE_VALUE <= 76)       \
         && ((SYSCLK_FREQ / HSE_VALUE) % 2 ==0)
 
 #define PLLSRC_DIV   1
@@ -150,7 +152,7 @@
 #define PLL_INPRE    1
 #define PLL_OUTPRE   1
           
-#elif ((SYSCLK_FREQ % (HSE_VALUE / 2)) == 0) && (SYSCLK_FREQ / (HSE_VALUE / 2) >= 8)                                     \
+#elif ((SYSCLK_FREQ % (HSE_VALUE / 2)) == 0) && (SYSCLK_FREQ / (HSE_VALUE / 2) >= 8)                        \
     && (SYSCLK_FREQ / (HSE_VALUE / 2) <= 76) && ((SYSCLK_FREQ / (HSE_VALUE / 2)) % 2 ==0)
 
 #define PLLSRC_DIV   2
@@ -158,12 +160,21 @@
 #define PLL_INPRE    1
 #define PLL_OUTPRE   1
 
-#elif ((SYSCLK_FREQ % (HSE_VALUE / 3)) == 0) && (SYSCLK_FREQ / (HSE_VALUE / 3) >= 8) 
+#elif ((SYSCLK_FREQ % (HSE_VALUE / 3)) == 0) && (SYSCLK_FREQ / (HSE_VALUE / 3) >= 8)                       \
+      && (SYSCLK_FREQ / (HSE_VALUE / 3) <= 76) && ((SYSCLK_FREQ / (HSE_VALUE / 3)) % 2 ==0)
 
 #define PLLSRC_DIV   1
 #define PLL_MUL     (SYSCLK_FREQ / (HSE_VALUE / 6))
 #define PLL_INPRE    3
 #define PLL_OUTPRE   2
+
+#elif ((SYSCLK_FREQ % (HSE_VALUE / 8)) == 0) && (SYSCLK_FREQ / (HSE_VALUE / 8) >= 8)                        \
+    && (SYSCLK_FREQ / (HSE_VALUE / 8) <= 76) && ((SYSCLK_FREQ / (HSE_VALUE / 8)) % 2 ==0)
+
+#define PLLSRC_DIV   2
+#define PLL_MUL     (SYSCLK_FREQ / (HSE_VALUE / 8))
+#define PLL_INPRE    4
+#define PLL_OUTPRE   1
 
 #else
 #error Cannot make a PLL multiply factor to SYSCLK_FREQ.
@@ -284,8 +295,8 @@ void SystemInit(void)
     SetSysClock();
 
 #ifdef VECT_TAB_SRAM
-    #ifdef CONFIG_FLASH_START
-    SCB->VTOR = CONFIG_FLASH_START | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal SRAM. */
+    #ifdef CONFIG_RAM_START
+    SCB->VTOR = CONFIG_RAM_START | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal SRAM. */
     #else
     SCB->VTOR = SRAM_BASE | VECT_TAB_OFFSET; /* Vector Table Relocation in Internal SRAM. */
     #endif
@@ -436,16 +447,15 @@ static void SetSysClock(void)
     
     /* HCLK = SYSCLK */
     RCC->CFG |= (uint32_t)RCC_CFG_AHBPRES_DIV1;
-
-    /* PCLK2/PCLK1 max 180M */
+    /* PCLK2 = HCLK/2 */
+    RCC->CFG |= (uint32_t)RCC_CFG_APB2PRES_DIV2;
+    /* PCLK1 max 180M */
     if (SYSCLK_FREQ > 180000000)
     {
-        RCC->CFG |= (uint32_t)RCC_CFG_APB2PRES_DIV2;
         RCC->CFG |= (uint32_t)RCC_CFG_APB1PRES_DIV2;
     }
     else
-    {
-        RCC->CFG |= (uint32_t)RCC_CFG_APB2PRES_DIV1;
+    { 
         RCC->CFG |= (uint32_t)RCC_CFG_APB1PRES_DIV1;
     }
 
@@ -528,11 +538,21 @@ static void SetSysClock(void)
 
 static void SetStartupVolt(uint32_t start_volt)
 {
-    uint32_t temp_value,i;
+    uint32_t temp_value,temp_value1,i;
 
     /* Enable PWR clock */
     RCC->APB1PCLKEN |= RCC_APB1PCLKEN_PWREN;
 
+    /* config NRST digital filter */
+    temp_value1 = PWR->NRSTCTRL;
+    /* Clear NRSTDFW[7:0] bits */
+    temp_value1 &= (~PWR_NRSTCTRL_NRSTDFW);
+    /* Set NRSTDFW[7:0] bits according to NRST_dfw value */
+    temp_value1 |= (0x9 << 4);
+    /* Store the new value */
+    PWR->NRSTCTRL = temp_value1;
+
+    /* config PVD detect */
     temp_value = PWR->CTRL;
     /* Clear MSB and PLS[2:0] bits bit */
     temp_value &= (0xFFFFFD1F);

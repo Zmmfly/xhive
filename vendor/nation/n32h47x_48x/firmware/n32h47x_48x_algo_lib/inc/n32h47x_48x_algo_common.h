@@ -59,22 +59,33 @@
 
 
 enum{
-    Cpy_OK      = 0,   //copy success
-    SetZero_OK  = 0,   //set zero success
-    XOR_OK      = 0,   //XOR success
-    Reverse_OK  = 0,   //Reverse success
-    Cmp_EQUAL   = 0,   //Two big number are equal
-    Cmp_UNEQUAL = 1,   //Two big number are not equal
-    Time_Out    = 2
+    Cpy_OK=0,//copy success
+	SetZero_OK = 0,//set zero success
+	XOR_OK = 0,   //XOR success
+	Reverse_OK = 0, //Reverse success
+	Cmp_EQUAL = 0, //Two big number are equal
+	Cmp_UNEQUAL = 1, //Two big number are not equal
+	Time_Out = 2
 };
 extern uint32_t Alg_TimeOut_Counter;
 
 /**
- * @brief Clear ARAM completion check and acknowledge
- * @return SetZero_OK: operation completed successfully; Time_Out: timeout occurred
- * @note This function polls the cryptographic accelerator status register to wait
- *       for ARAM (Access RAM) clear operations to complete, then acknowledges
- *       the completion by setting the control register's clear done flag.
+ * @brief Wait for ARAM clearing to finish and acknowledge completion.
+ *
+ * @return uint32_t Completion status.
+ * @retval SetZero_OK The busy flag cleared and completion was acknowledged.
+ * @retval Time_Out The polling count exceeded Alg_TimeOut_Counter; no
+ *                  acknowledgement was written and hardware may remain busy.
+ *
+ * @pre Enable the cryptographic accelerator clock before calling.
+ * @pre Keep Alg_TimeOut_Counter below UINT32_MAX to avoid counter wraparound.
+ * @note Blocks while polling. Alg_TimeOut_Counter is a busy-poll count, not a
+ *       time duration; zero permits one busy observation before timing out.
+ * @note Reads the accelerator status register and, on success, sets the
+ *       control register's clear-done bit with a read-modify-write operation.
+ * @warning Callers must serialize access to the accelerator and timeout
+ *          configuration, including interrupt handlers. On timeout, callers
+ *          must recover the accelerator before starting another operation.
  */
 uint32_t CLEAR_ARAM_DONE_CHECK(void);
 
