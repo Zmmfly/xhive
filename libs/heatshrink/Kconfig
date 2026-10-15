@@ -12,6 +12,14 @@ choice
         bool "Static Memory Allocation"
         help
           Use static memory allocation for HeatsShrink buffers.
+
+    config HEATSHRINK_EXTERNAL_ALLOC
+        bool "External Buffer Allocation"
+        help
+          Use caller-provided buffers for HeatsShrink encoders and decoders.
+          The window and lookahead sizes are selected at runtime through
+          heatshrink_encoder_init() / heatshrink_decoder_init(), and the
+          required buffers are supplied by the caller.
 endchoice
 
 config HEATSHRINK_STATIC_INPUT_BUFFER_SIZE

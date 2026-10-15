@@ -10,6 +10,15 @@
 #define HEATSHRINK_DYNAMIC_ALLOC 1
 #endif
 
+/* Should caller-provided buffers be used instead? This third mode is
+ * mutually exclusive with dynamic allocation: set
+ * HEATSHRINK_DYNAMIC_ALLOC to 0 and this to 1, then configure
+ * instances with heatshrink_encoder_init()/heatshrink_decoder_init()
+ * and caller-owned buffers. */
+#ifndef HEATSHRINK_EXTERNAL_BUFFERS
+#define HEATSHRINK_EXTERNAL_BUFFERS 0
+#endif
+
 #if HEATSHRINK_DYNAMIC_ALLOC
     /* Optional replacement of malloc/free */
     #define HEATSHRINK_MALLOC(SZ) malloc(SZ)

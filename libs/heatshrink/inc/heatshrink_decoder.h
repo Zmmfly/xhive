@@ -25,7 +25,13 @@ typedef enum {
     HSDR_FINISH_ERROR_NULL=-1,  /* NULL arguments */
 } HSD_finish_res;
 
-#if HEATSHRINK_DYNAMIC_ALLOC
+typedef enum {
+    HSDR_INIT_OK,               /* decoder configured and reset */
+    HSDR_INIT_ERROR_NULL=-1,    /* NULL argument */
+    HSDR_INIT_ERROR_MISUSE=-2,  /* invalid size or undersized buffer */
+} HSD_init_res;
+
+#if HEATSHRINK_DYNAMIC_ALLOC || HEATSHRINK_EXTERNAL_BUFFERS
 #define HEATSHRINK_DECODER_INPUT_BUFFER_SIZE(BUF) \
     ((BUF)->input_buffer_size)
 #define HEATSHRINK_DECODER_WINDOW_BITS(BUF) \
@@ -39,6 +45,21 @@ typedef enum {
     (HEATSHRINK_STATIC_WINDOW_BITS)
 #define HEATSHRINK_DECODER_LOOKAHEAD_BITS(BUF) \
     (HEATSHRINK_STATIC_LOOKAHEAD_BITS)
+#endif
+
+/* Direct access to the input and expansion window buffers. Dynamic and
+ * static builds share one buffer where the window follows the input;
+ * external-buffer builds keep two caller-provided pointers. */
+#if HEATSHRINK_EXTERNAL_BUFFERS
+#define HEATSHRINK_DECODER_INPUT_BUFFER(HSD) \
+    ((HSD)->input_buffer)
+#define HEATSHRINK_DECODER_WINDOW_BUFFER(HSD) \
+    ((HSD)->window_buffer)
+#else
+#define HEATSHRINK_DECODER_INPUT_BUFFER(HSD) \
+    ((HSD)->buffers)
+#define HEATSHRINK_DECODER_WINDOW_BUFFER(HSD) \
+    (&((HSD)->buffers[HEATSHRINK_DECODER_INPUT_BUFFER_SIZE(HSD)]))
 #endif
 
 typedef struct {
@@ -59,6 +80,15 @@ typedef struct {
 
     /* Input buffer, then expansion window buffer */
     uint8_t buffers[];
+#elif HEATSHRINK_EXTERNAL_BUFFERS
+    uint8_t window_sz2;         /* window buffer bits */
+    uint8_t lookahead_sz2;      /* lookahead bits */
+    uint16_t input_buffer_size; /* input buffer size */
+
+    /* Caller-provided input buffer and expansion window buffer,
+     * bound via heatshrink_decoder_init() */
+    uint8_t *input_buffer;
+    uint8_t *window_buffer;
 #else
     /* Input buffer, then expansion window buffer */
     uint8_t buffers[(1 << HEATSHRINK_DECODER_WINDOW_BITS(_))
@@ -77,6 +107,61 @@ heatshrink_decoder *heatshrink_decoder_alloc(uint16_t input_buffer_size,
 
 /* Free a decoder. */
 void heatshrink_decoder_free(heatshrink_decoder *hsd);
+#elif HEATSHRINK_EXTERNAL_BUFFERS
+/* Expansion window buffer capacity required by a decoder with the given
+ * window size in bits: 2^WINDOW_SZ2 bytes. */
+#define HEATSHRINK_DECODER_WINDOW_BUFFER_SIZE(WINDOW_SZ2) \
+    ((size_t)1U << (WINDOW_SZ2))
+
+/**
+ * @brief Initialize a decoder with caller-provided buffers.
+ *
+ * Configures a decoder instance whose state is allocated by the caller,
+ * binding it to externally owned input and expansion window buffers.
+ * The input buffer size and the window and lookahead sizes are runtime
+ * selections; the caller must provide buffers large enough for the
+ * requested sizes.
+ *
+ * @param[in,out] hsd Decoder instance to configure. Must not be NULL.
+ * @param[in] input_buffer_size Input buffer capacity to use, in bytes;
+ *                             the decoder sinks at most this many bytes
+ *                             before polling. Range [1, 65535].
+ * @param[in] window_sz2 Window size in bits; the window covers
+ *                      2^window_sz2 bytes. In range
+ *                      [HEATSHRINK_MIN_WINDOW_BITS,
+ *                      HEATSHRINK_MAX_WINDOW_BITS].
+ * @param[in] lookahead_sz2 Back-reference length field size in bits,
+ *                          decoding match lengths up to 2^lookahead_sz2
+ *                          bytes. In range [HEATSHRINK_MIN_LOOKAHEAD_BITS,
+ *                          window_sz2), i.e. strictly less than
+ *                          window_sz2.
+ * @param[in] input_buffer Caller-provided input buffer with capacity for
+ *                         at least input_buffer_size bytes. Must not be
+ *                         NULL. Its lifetime must cover all uses of the
+ *                         decoder until re-initialization.
+ * @param[in] window_buffer Caller-provided expansion window buffer with
+ *                         capacity for at least
+ *                         HEATSHRINK_DECODER_WINDOW_BUFFER_SIZE(window_sz2)
+ *                         bytes. Must not be NULL.
+ * @param[in] window_buffer_size Capacity of window_buffer in bytes.
+ * @return HSD_init_res Initialization status.
+ * @retval HSDR_INIT_OK The decoder is configured and reset for use.
+ * @retval HSDR_INIT_ERROR_NULL hsd is NULL.
+ * @retval HSDR_INIT_ERROR_MISUSE A size parameter is out of range, a
+ *                                required buffer is NULL, or
+ *                                window_buffer_size is too small.
+ *
+ * @pre The instance must not be in use; call this before any other
+ *      decoder function on the instance.
+ * @note The window and lookahead sizes must match the settings used to
+ *       compress the data.
+ * @note The buffer contents need not be initialized by the caller; the
+ *       decoder clears both buffers itself.
+ */
+HSD_init_res heatshrink_decoder_init(heatshrink_decoder *hsd,
+    uint16_t input_buffer_size, uint8_t window_sz2,
+    uint8_t lookahead_sz2, uint8_t *input_buffer,
+    uint8_t *window_buffer, size_t window_buffer_size);
 #endif
 
 /* Reset a decoder. */

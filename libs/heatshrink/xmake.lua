@@ -31,9 +31,76 @@ target("heatshrink")
     set_default(false)
     add_files("src/*.c")
     add_includedirs("inc", {public = true})
+    local library_scope = interp_get_scopename()
+target_end()
 
 target("heatshrink_cmd")
     set_kind("binary")
     set_default(false)
     add_deps("heatshrink")
     add_files("heatshrink.c")
+
+-- Host-only test support: the same sources are also built in
+-- external-buffer mode so the runtime-configurable window/lookahead
+-- path (heatshrink_encoder_init / heatshrink_decoder_init) is covered.
+local standalone = path.normalize(os.projectdir()) == path.normalize(os.scriptdir())
+if is_plat("linux", "windows", "macosx") and
+   ((standalone and library_scope == "heatshrink") or
+    (library_scope == "xhive_host::heatshrink" and has_config("xhive_tests"))) then
+    -- With the search index (default) and without, covering both
+    -- HEATSHRINK_USE_INDEX settings of the new init path.
+    target("heatshrink_external")
+        set_kind("object")
+        set_default(false)
+        add_files("src/*.c")
+        add_includedirs("inc", {public = true})
+        add_defines("HEATSHRINK_DYNAMIC_ALLOC=0",
+            "HEATSHRINK_EXTERNAL_BUFFERS=1", {public = true})
+    target_end()
+
+    target("heatshrink_external_noindex")
+        set_kind("object")
+        set_default(false)
+        add_files("src/*.c")
+        add_includedirs("inc", {public = true})
+        add_defines("HEATSHRINK_DYNAMIC_ALLOC=0",
+            "HEATSHRINK_EXTERNAL_BUFFERS=1", "HEATSHRINK_USE_INDEX=0",
+            {public = true})
+    target_end()
+
+    add_requires("gtest")
+    for _, file in ipairs(os.files("test/**.cc")) do
+        local relative = path.relative(file, "test")
+        if relative ~= "main.cc" then
+            local suffix = relative:gsub("%.cc$", ""):gsub("[/\\]", "_")
+            target("heatshrink_test_" .. suffix)
+                set_kind("binary")
+                set_default(false)
+                set_languages("c++17")
+                add_files(file, "test/main.cc")
+                add_deps("heatshrink_external")
+                add_packages("gtest")
+                add_tests(path.basename(file), {
+                    group = "xhive",
+                    realtime_output = false,
+                    run_timeout = 120 * 1000
+                })
+            target_end()
+        end
+    end
+
+    -- Checked-in C consumer verifies the USE_INDEX=0 build of the new
+    -- init path without GoogleTest.
+    target("heatshrink_test_noindex_roundtrip")
+        set_kind("binary")
+        set_default(false)
+        set_languages("c99")
+        add_files("test/compile/noindex_roundtrip.c")
+        add_deps("heatshrink_external_noindex")
+        add_tests("noindex_roundtrip", {
+            group = "xhive",
+            realtime_output = false,
+            run_timeout = 120 * 1000
+        })
+    target_end()
+end

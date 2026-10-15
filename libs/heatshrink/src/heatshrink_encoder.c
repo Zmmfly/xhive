@@ -113,6 +113,47 @@ void heatshrink_encoder_free(heatshrink_encoder *hse) {
     HEATSHRINK_FREE(hse, sizeof(heatshrink_encoder) + buf_sz);
     (void)buf_sz;
 }
+#elif HEATSHRINK_EXTERNAL_BUFFERS
+HSE_init_res heatshrink_encoder_init(heatshrink_encoder *hse,
+        uint8_t window_sz2, uint8_t lookahead_sz2,
+        uint8_t *window_buffer, size_t window_buffer_size,
+        void *index_buffer, size_t index_buffer_size) {
+    if (hse == NULL) { return HSER_INIT_ERROR_NULL; }
+    if ((window_sz2 < HEATSHRINK_MIN_WINDOW_BITS) ||
+        (window_sz2 > HEATSHRINK_MAX_WINDOW_BITS) ||
+        (lookahead_sz2 < HEATSHRINK_MIN_LOOKAHEAD_BITS) ||
+        (lookahead_sz2 >= window_sz2) ||
+        (window_buffer == NULL) ||
+        (window_buffer_size <
+            HEATSHRINK_ENCODER_WINDOW_BUFFER_SIZE(window_sz2))) {
+        return HSER_INIT_ERROR_MISUSE;
+    }
+#if HEATSHRINK_USE_INDEX
+    if ((index_buffer == NULL) ||
+        (index_buffer_size <
+            HEATSHRINK_ENCODER_INDEX_BUFFER_SIZE(window_sz2))) {
+        return HSER_INIT_ERROR_MISUSE;
+    }
+#endif
+    hse->window_sz2 = window_sz2;
+    hse->lookahead_sz2 = lookahead_sz2;
+    hse->buffer = window_buffer;
+#if HEATSHRINK_USE_INDEX
+    hse->search_index = (struct hs_index *)index_buffer;
+    /* Record the index size the same way heatshrink_encoder_alloc()
+     * does; the value is informational and never freed here. */
+    hse->search_index->size = (uint16_t)
+        (HEATSHRINK_ENCODER_WINDOW_BUFFER_SIZE(window_sz2)
+            * sizeof(int16_t));
+#else
+    (void)index_buffer;
+    (void)index_buffer_size;
+#endif
+    heatshrink_encoder_reset(hse);
+    LOG("-- initialized encoder with window 2^%u, lookahead 2^%u\n",
+        window_sz2, lookahead_sz2);
+    return HSER_INIT_OK;
+}
 #endif
 
 void heatshrink_encoder_reset(heatshrink_encoder *hse) {

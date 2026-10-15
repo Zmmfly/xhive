@@ -75,12 +75,40 @@ void heatshrink_decoder_free(heatshrink_decoder *hsd) {
     HEATSHRINK_FREE(hsd, sz);
     (void)sz;   /* may not be used by free */
 }
+#elif HEATSHRINK_EXTERNAL_BUFFERS
+HSD_init_res heatshrink_decoder_init(heatshrink_decoder *hsd,
+        uint16_t input_buffer_size, uint8_t window_sz2,
+        uint8_t lookahead_sz2, uint8_t *input_buffer,
+        uint8_t *window_buffer, size_t window_buffer_size) {
+    if (hsd == NULL) { return HSDR_INIT_ERROR_NULL; }
+    if ((window_sz2 < HEATSHRINK_MIN_WINDOW_BITS) ||
+        (window_sz2 > HEATSHRINK_MAX_WINDOW_BITS) ||
+        (input_buffer_size == 0) ||
+        (lookahead_sz2 < HEATSHRINK_MIN_LOOKAHEAD_BITS) ||
+        (lookahead_sz2 >= window_sz2) ||
+        (input_buffer == NULL) ||
+        (window_buffer == NULL) ||
+        (window_buffer_size <
+            HEATSHRINK_DECODER_WINDOW_BUFFER_SIZE(window_sz2))) {
+        return HSDR_INIT_ERROR_MISUSE;
+    }
+    hsd->input_buffer_size = input_buffer_size;
+    hsd->window_sz2 = window_sz2;
+    hsd->lookahead_sz2 = lookahead_sz2;
+    hsd->input_buffer = input_buffer;
+    hsd->window_buffer = window_buffer;
+    heatshrink_decoder_reset(hsd);
+    LOG("-- initialized decoder with window 2^%u, lookahead 2^%u, "
+        "input buffer %u\n", window_sz2, lookahead_sz2, input_buffer_size);
+    return HSDR_INIT_OK;
+}
 #endif
 
 void heatshrink_decoder_reset(heatshrink_decoder *hsd) {
     size_t buf_sz = 1 << HEATSHRINK_DECODER_WINDOW_BITS(hsd);
     size_t input_sz = HEATSHRINK_DECODER_INPUT_BUFFER_SIZE(hsd);
-    memset(hsd->buffers, 0, buf_sz + input_sz);
+    memset(HEATSHRINK_DECODER_INPUT_BUFFER(hsd), 0, input_sz);
+    memset(HEATSHRINK_DECODER_WINDOW_BUFFER(hsd), 0, buf_sz);
     hsd->state = HSDS_TAG_BIT;
     hsd->input_size = 0;
     hsd->input_index = 0;
@@ -107,7 +135,7 @@ HSD_sink_res heatshrink_decoder_sink(heatshrink_decoder *hsd,
     size = rem < size ? rem : size;
     LOG("-- sinking %zd bytes\n", size);
     /* copy into input buffer (at head of buffers) */
-    memcpy(&hsd->buffers[hsd->input_size], in_buf, size);
+    memcpy(&HEATSHRINK_DECODER_INPUT_BUFFER(hsd)[hsd->input_size], in_buf, size);
     hsd->input_size += (uint16_t)size;
     *input_size = size;
     return HSDR_SINK_OK;
@@ -192,8 +220,10 @@ static HSD_state st_tag_bit(heatshrink_decoder *hsd) {
     } else if (bits > 0) {
         return HSDS_YIELD_LITERAL;
 /* This suppresses a warning for unreachable code in non-dynamic
- * builds where the window bits is always <= 8. */
-#if HEATSHRINK_DYNAMIC_ALLOC || HEATSHRINK_STATIC_WINDOW_BITS > 8
+ * builds where the window bits is always <= 8. Dynamic and
+ * external-buffer builds select the window size at runtime. */
+#if HEATSHRINK_DYNAMIC_ALLOC || HEATSHRINK_EXTERNAL_BUFFERS \
+    || HEATSHRINK_STATIC_WINDOW_BITS > 8
     } else if (HEATSHRINK_DECODER_WINDOW_BITS(hsd) > 8) {
         return HSDS_BACKREF_INDEX_MSB;
 #endif
@@ -211,7 +241,7 @@ static HSD_state st_yield_literal(heatshrink_decoder *hsd,
     if (*oi->output_size < oi->buf_size) {
         uint16_t byte = get_bits(hsd, 8);
         if (byte == NO_BITS) { return HSDS_YIELD_LITERAL; } /* out of input */
-        uint8_t *buf = &hsd->buffers[HEATSHRINK_DECODER_INPUT_BUFFER_SIZE(hsd)];
+        uint8_t *buf = HEATSHRINK_DECODER_WINDOW_BUFFER(hsd);
         uint16_t mask = (uint16_t)(1 << HEATSHRINK_DECODER_WINDOW_BITS(hsd))  - 1;
         uint8_t c = byte & 0xFF;
         LOG("-- emitting literal byte 0x%02x ('%c')\n", c, isprint(c) ? c : '.');
@@ -271,7 +301,7 @@ static HSD_state st_yield_backref(heatshrink_decoder *hsd,
     if (count > 0) {
         size_t i = 0;
         if (hsd->output_count < count) count = hsd->output_count;
-        uint8_t *buf = &hsd->buffers[HEATSHRINK_DECODER_INPUT_BUFFER_SIZE(hsd)];
+        uint8_t *buf = HEATSHRINK_DECODER_WINDOW_BUFFER(hsd);
         uint16_t mask = (uint16_t)((1 << HEATSHRINK_DECODER_WINDOW_BITS(hsd)) - 1);
         uint16_t neg_offset = hsd->output_index;
         LOG("-- emitting %zu bytes from -%u bytes back\n", count, neg_offset);
@@ -312,7 +342,7 @@ static uint16_t get_bits(heatshrink_decoder *hsd, uint8_t count) {
                     accumulator, accumulator);
                 return NO_BITS;
             }
-            hsd->current_byte = hsd->buffers[hsd->input_index++];
+            hsd->current_byte = HEATSHRINK_DECODER_INPUT_BUFFER(hsd)[hsd->input_index++];
             LOG("  -- pulled byte 0x%02x\n", hsd->current_byte);
             if (hsd->input_index == hsd->input_size) {
                 hsd->input_index = 0; /* input is exhausted */
