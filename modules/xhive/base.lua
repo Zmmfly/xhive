@@ -69,6 +69,17 @@ function load_dirs()
     return load_paths()
 end
 
+-- Test lexical directory containment, including the root itself. Accept both
+-- separator styles; this does not resolve filesystem links.
+function is_path_within(directory, rootdir)
+    local normalized_dir = path.normalize(directory:gsub("\\", "/"))
+    local normalized_root = path.normalize(rootdir:gsub("\\", "/"))
+    local relative = path.relative(normalized_dir, normalized_root):gsub("\\", "/")
+    -- A different Windows drive remains absolute rather than using "..".
+    return not path.is_absolute(relative) and relative ~= ".." and
+           not relative:startswith("../")
+end
+
 -- Find the specific path where multiple folders or any files first appear in a directory
 function find_deep_root(dir_path)
     if not os.isdir(dir_path) then

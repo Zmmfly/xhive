@@ -26,10 +26,35 @@ end
 function main()
     local sdkdir = path.absolute(path.directory(os.scriptdir()))
     import("xhive.testing", {rootdir = path.join(sdkdir, "modules")})
+    import("xhive.base", {rootdir = path.join(sdkdir, "modules")})
     local work = os.tmpfile() .. "-xhive-sdk-entry"
     os.mkdir(work)
     try {
         function ()
+            -- Pure path checks cover both separator styles without creating
+            -- platform-specific directories or requiring a Windows host.
+            local path_cases = {
+                {"/prjs/xhive", "/prjs/xhive/", true},
+                {"/prjs/xhive/vendor/nation", "/prjs/xhive", true},
+                {"/prjs/xhive/./vendor/../libs", "/prjs/xhive", true},
+                {"/prjs/xhive_testspace/demo", "/prjs/xhive", false},
+                {"/prjs/xhive/../xhive2/demo", "/prjs/xhive", false},
+                {"/prjs", "/prjs/xhive", false},
+                {[[C:\prjs\xhive]], [[C:\prjs\xhive\]], true},
+                {[[C:\prjs\xhive\vendor\nation]], "C:/prjs/xhive", true},
+                {"C:/prjs/xhive/vendor/nation", [[C:\prjs\xhive]], true},
+                {[[C:\prjs\xhive\.\vendor\..\libs]], "C:/prjs/xhive", true},
+                {[[C:\prjs\xhive_testspace\demo]], [[C:\prjs\xhive]], false},
+                {[[C:\prjs\xhive\..\xhive2\demo]], "C:/prjs/xhive", false},
+                {[[C:\prjs]], [[C:\prjs\xhive]], false},
+                {[[D:\prjs\xhive\demo]], [[C:\prjs\xhive]], false}
+            }
+            for _, case in ipairs(path_cases) do
+                assert(base.is_path_within(case[1], case[2]) == case[3],
+                       "Wrong path containment: " .. case[1] .. " under " .. case[2])
+            end
+            print("PASS: path containment handles slash, backslash, mixed separators and different drives")
+
             -- All cleanup fixtures are disposable data under this workspace.
             -- Never link a test fixture to the SDK or any pre-existing directory.
             local disposable = path.join(work, "owned-xhive-cleanup")
@@ -257,6 +282,69 @@ CONFIG_LIBS_ADD_BASE64=y
             assert(not os.isfile(path.join(appdir, "build", "xhive_config.h")))
             print("PASS: external includes retain application config and isolate host/embed tests")
 
+            -- Use disposable SDK-shaped data to exercise the real embed rule.
+            -- Same-prefix siblings must be external, while root and nested SDK
+            -- targets must not acquire a dependency back to the aggregate.
+            local layout = path.join(work, "embed-paths")
+            local fixture_sdk = path.join(layout, "xhive")
+            os.mkdir(path.join(fixture_sdk, "driver"))
+            io.writefile(path.join(fixture_sdk, "Kconfig"), "# Path regression fixture\n")
+            io.writefile(path.join(fixture_sdk, "xmake.lua"), [[
+namespace("xhive_embed", function()
+    add_rules("xhive.embed")
+    target("deps")
+        set_kind("object")
+        add_deps("driver")
+    target_end()
+    includes("driver")
+end)
+]])
+            io.writefile(path.join(fixture_sdk, "driver", "xmake.lua"), [[
+target("driver")
+    set_kind("object")
+target_end()
+]])
+            for index, relative in ipairs({"xhive_testspace/demo", "xhive2/demo", "application", "."}) do
+                local fixture_app = path.join(layout, relative)
+                os.mkdir(fixture_app)
+                io.writefile(path.join(fixture_app, ".config"), io.readfile(path.join(appdir, ".config")))
+                io.writefile(path.join(fixture_app, "xmake.lua"), string.format([[
+add_moduledirs(%q)
+includes(%q)
+includes(%q)
+target("firmware")
+    set_kind("binary")
+    add_rules("xhive.embed")
+target_end()
+]], path.join(sdkdir, "modules"), path.join(sdkdir, "rules"), fixture_sdk))
+                _probe(path.join(work, "embed-cache-" .. index), fixture_app, string.format([[
+    import("core.cache.memcache")
+    import("xhive.base", {rootdir = %q})
+    local dirs = base.load_paths()
+    dirs.sdkdir = %q
+    memcache.set("xhive", "header_on_load_" .. os.projectdir(), true)
+    memcache.set("xhive", "header_before_build_" .. os.projectdir(), true)
+    local targets = project.targets()
+    local app = targets.firmware
+    local deps = table.wrap(app:get("deps"))
+    assert(#deps == 1 and deps[1] == "xhive_embed::deps",
+           "External application lost automatic SDK dependency: " .. os.projectdir())
+    local aggregate = targets["xhive_embed::deps"]
+    local internal_deps = table.wrap(aggregate:get("deps"))
+    assert(#internal_deps == 1 and internal_deps[1] == "driver",
+           "SDK-root target acquired an automatic SDK dependency")
+    assert(#table.wrap(targets["xhive_embed::driver"]:get("deps")) == 0,
+           "Nested SDK target acquired an automatic SDK dependency")
+    local ordered = {}
+    for _, dep in ipairs(app:orderdeps()) do
+        ordered[dep:fullname()] = true
+    end
+    assert(ordered["xhive_embed::deps"] and ordered["xhive_embed::driver"],
+           "Application lost transitive SDK dependencies")
+]], path.join(sdkdir, "modules"), fixture_sdk))
+            end
+            print("PASS: embed dependencies respect SDK directory boundaries, including same-prefix siblings")
+
             -- Exercise the real Kconfig entry generator without writing in the
             -- SDK or needing a parser. Change only the cached paths in this process.
             import("xhive.base", {rootdir = path.join(sdkdir, "modules")})
@@ -285,6 +373,7 @@ CONFIG_LIBS_ADD_BASE64=y
             }
             print("PASS: Kconfig entry includes the SDK once and an optional application once")
         end,
+        catch {function (errors) raise(errors) end},
         finally {function () testing.remove_workdir(work) end}
     }
 end

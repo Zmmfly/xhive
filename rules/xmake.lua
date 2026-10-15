@@ -130,9 +130,9 @@ rule("xhive.embed")
             target:set("extension", ".elf")
         end
 
-        -- Add xhive_embed::deps if target scriptdir not under sdkdir
-        local target_scriptdir = path.normalize(target:scriptdir())
-        if not target_scriptdir:startswith(dirs.sdkdir) then
+        -- Compare directory boundaries, not string prefixes: xhive_testspace
+        -- is a sibling of xhive, not an SDK subdirectory.
+        if not base.is_path_within(target:scriptdir(), dirs.sdkdir) then
             target:add("deps", "xhive_embed::deps")
         end
 
