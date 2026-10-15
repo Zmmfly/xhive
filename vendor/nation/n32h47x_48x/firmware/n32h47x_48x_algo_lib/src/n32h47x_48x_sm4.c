@@ -3,273 +3,228 @@
 
 #include <stddef.h>
 
-// Hardware register base addresses
-#define SM4_CRYP_BASE          0x4002A000
-#define SM4_RCC_AHB2ENR_BASE   0x40021000
+/*
+ * Reconstruction of the vendor closed-source SM4 driver, aligned with the
+ * binary library v1.2.0 (lib/n32h47x_48x_sm4.a, arm-none-eabi-gcc 10.2.1 -Os,
+ * cross-checked against the armclang .lib build).
+ *
+ * Register names below come from the DWARF debug info of the vendor archive
+ * (SAC_TypeDef / RCC_Module members). The SDK CMSIS header only provides
+ * SAC_BASE and RCC_AHB1PCLKEN_SACEN; it does not document the SAC register
+ * layout. See docs/registers_sm4.md for the full register map, bit fields
+ * and disassembly evidence offsets.
+ */
 
-// Hardware register offsets
-#define SM4_CR                  0x00    // Control register
-#define SM4_SR                  0x04    // Status register  
-#define SM4_DIN                 0x08    // Data input register
-#define SM4_DOUT                0x10    // Data output register
-#define SM4_KEY0_7              0x20    // Key registers 0-7
-#define SM4_IV0_3               0x40    // Initialization vector registers 0-3
-#define SM4_CSGCMCCM0R          0x50    // Context swap GCM/GMAC or CCM registers
-#define SM4_CSGCM0R             0x60    // Context swap GCM registers
-#define SM4_CR_ALGO_OFFSET      0x30    // Algorithm selection offset
-#define SM4_CR_DATATYPE_OFFSET  0x34    // Data type selection offset
-#define SM4_CR_KEYSIZE_OFFSET   0x38    // Key size selection offset
+/* Algorithm accelerator peripheral (SAC), shared by SM4/AES/DES/HASH/RNG. */
+#define SAC_BASE                 0x4002A000UL
 
-// RCC AHB2 peripheral clock enable register offset
-#define RCC_AHB2ENR_OFFSET      0x3C
+/* RCC: the SAC clock enable bit lives in AHB1PCLKEN. */
+#define RCC_BASE                 0x40021000UL
+#define RCC_AHB1PCLKEN_OFFSET    0x3C
+#define RCC_AHB1PCLKEN_SACEN     0x00008000UL
 
-// Control register bit definitions
-#define SM4_CR_ALGO_MASK        0x80000080  // Algorithm selection mask
-#define SM4_CR_ALGO_SM4         0x80000000  // SM4 algorithm selection
-#define SM4_CR_DATATYPE_MASK    0x00000C00  // Data type mask
-#define SM4_CR_DATATYPE_NONE    0x00000000  // No data type swap
-#define SM4_CR_KEYSIZE_MASK     0x00000080  // Key size mask
+/* SAC register offsets. */
+#define SAC_SACCR_OFFSET         0x00    /* Control register */
+#define SAC_SACSR_OFFSET         0x04    /* Status register */
+#define SAC_SACSFR1_OFFSET       0x0C    /* Function reg 1: direction/mode/start */
+#define SAC_SACSFR2_OFFSET       0x10    /* Function reg 2: algorithm select */
+#define SAC_P1ADR_OFFSET         0x30    /* Parameter FIFO 1: IV (CBC only) */
+#define SAC_P2ADR_OFFSET         0x34    /* Parameter FIFO 2: FK constants */
+#define SAC_P3ADR_OFFSET         0x38    /* Parameter FIFO 3: user key */
+#define SAC_KADR_OFFSET          0x3C    /* Parameter FIFO: CK constants */
+#define SAC_IADR_OFFSET          0x40    /* Data input FIFO */
+#define SAC_OADR_OFFSET          0x44    /* Data output FIFO */
 
-// Status register bit definitions
-#define SM4_SR_BUSY             0x00000010  // Busy flag
-#define SM4_SR_OFFE             0x00000020  // Output FIFO empty flag
+/* SACCR values observed in the vendor driver (field split per the common/AES
+ * library conclusions): 0xD4 = ALGO_SEL=SM4(0x04) | ENABLE(0x10) | 0x40 |
+ * ARAM_CLEAR(0x80). */
+#define SAC_SACCR_CFG            0xD4
 
-// RCC clock enable bit
-#define RCC_AHB2ENR_CRYPEN      0x00008000  // Crypto module clock enable
+/* Readiness mask used by SM4_Crypto/SM4_Close: ENABLE(bit4) plus the SM4
+ * algorithm-select bit(bit2) inside the low nibble. */
+#define SAC_SACCR_SM4_READY      0x14
 
-// SM4 algorithm configuration constants
-#define SM4_CFG_VALUE           0xD4        // Configuration register value
-#define SM4_SM4_ALGO_VAL        0x7E        // SM4 algorithm register value
-#define SM4_CONTROL_INIT        0x40        // Initial control register value
+/* Bit 8: set by SM4_Close before waiting for the ARAM clear. */
+#define SAC_SACCR_ARAM_CLR       0x100
 
-// SM4 FK constants (System parameters for key expansion)
-const uint32_t SM4_FK[4] = {
-    0xC6BAB1A3,  // FK[0]
-    0x5033AA56,  // FK[1]
-    0x97917D67,  // FK[2]
-    0xDC2270B2   // FK[3]
+/* SACSR bits. */
+#define SAC_SACSR_DONE           0x20        /* Bit 5: operation done flag */
+
+/* SACSFR1 bits. */
+#define SAC_SACSFR1_DEC          0x01        /* Bit 0: 1 = decrypt, 0 = encrypt */
+#define SAC_SACSFR1_CBC          0x02        /* Bit 1: 1 = CBC, 0 = ECB */
+#define SAC_SACSFR1_KEYEXP_BASE  0x40        /* Base value before key expansion start */
+#define SAC_SACSFR1_START        0x80        /* Bit 7: start key expansion / block op */
+
+/* SACSFR2: SM4 algorithm select value. */
+#define SAC_SACSFR2_ALGO_SM4     0x7E
+
+/* Vendor keeps both tables in writable .data as externally visible symbols
+ * (sections .data.SM4_FK / .data.SM4_CK), not in .rodata. The values below
+ * are the exact little-endian memory image of the vendor .data sections:
+ * each 32-bit word is the byte-reversed form of the GB/T 32907-2016
+ * notation, i.e. the hardware consumes the FIFO word's memory bytes in
+ * ascending order as the big-endian SM4 constant (byte-level board evidence:
+ * roundtrip passed with swapped tables while standard vectors failed).
+ * Do NOT "normalise" these to the GB/T printed order. */
+uint32_t SM4_FK[4] = {
+    0xC6BAB1A3,
+    0x5033AA56,
+    0x97917D67,
+    0xDC2270B2
 };
 
-// SM4 CK constants (Round constants)
-const uint32_t SM4_CK[32] = {
-    0x15121619,  // CK[0]
-    0x31323334,  // CK[1]
-    0x4D4E4F50,  // CK[2]
-    0x696A6B6C,  // CK[3]
-    0x85868788,  // CK[4]
-    0xA1A2A3A4,  // CK[5]
-    0xBDBEBFC0,  // CK[6]
-    0xD9DADBDC,  // CK[7]
-    0x11121314,  // CK[8]
-    0x2D2E2F30,  // CK[9]
-    0x494A4B4C,  // CK[10]
-    0x65666768,  // CK[11]
-    0x81828384,  // CK[12]
-    0x9D9E9FA0,  // CK[13]
-    0xB9BABBBC,  // CK[14]
-    0xD5D6D7D8,  // CK[15]
-    0x0D0E0F10,  // CK[16]
-    0x292A2B2C,  // CK[17]
-    0x45464748,  // CK[18]
-    0x61626364,  // CK[19]
-    0x7D7E7F80,  // CK[20]
-    0x999A9B9C,  // CK[21]
-    0xB5B6B7B8,  // CK[22]
-    0xD1D2D3D4,  // CK[23]
-    0x0A0B0C0D,  // CK[24]
-    0x26272829,  // CK[25]
-    0x42434445,  // CK[26]
-    0x5E5F6061,  // CK[27]
-    0x7A7B7C7D,  // CK[28]
-    0x96979899,  // CK[29]
-    0xB2B3B4B5,  // CK[30]
-    0xCECFD0D1   // CK[31]
+uint32_t SM4_CK[32] = {
+    0x150E0700, 0x312A231C, 0x4D463F38, 0x69625B54,
+    0x857E7770, 0xA19A938C, 0xBDB6AFA8, 0xD9D2CBC4,
+    0xF5EEE7E0, 0x110A03FC, 0x2D261F18, 0x49423B34,
+    0x655E5750, 0x817A736C, 0x9D968F88, 0xB9B2ABA4,
+    0xD5CEC7C0, 0xF1EAE3DC, 0x0D06FFF8, 0x29221B14,
+    0x453E3730, 0x615A534C, 0x7D766F68, 0x99928B84,
+    0xB5AEA7A0, 0xD1CAC3BC, 0xEDE6DFD8, 0x0902FBF4,
+    0x251E1710, 0x413A332C, 0x5D564F48, 0x79726B64
 };
 
 /**
- * @brief Buffer to FIFO transfer function
- * @param[in] fifo_address FIFO address offset
- * @param[in] buffer Pointer to data buffer
- * @param[in] word_count Number of words to transfer
- * @note Internal function used to write data to hardware FIFO
+ * @brief Write a word buffer to a SAC parameter FIFO port.
+ * @param[in] fifo_offset Register offset of the FIFO write port.
+ * @param[in] buffer Word-aligned source buffer (uint32_t pointers per API contract).
+ * @param[in] word_count Number of 32-bit words to push.
+ * @note Thin wrapper over the common-library BufToFIFO helper, matching the
+ *       vendor binary call structure; its length unit is 32-bit words.
  */
-static void BufferToFIFO_Write(uint32_t fifo_offset, const uint32_t* buffer, uint32_t word_count)
+static void BufferToFIFO_Write(uint32_t fifo_offset, const uint32_t *buffer, uint32_t word_count)
 {
-    volatile uint32_t* fifo_reg = (volatile uint32_t*)(SM4_CRYP_BASE + fifo_offset);
-    
-    for (uint32_t i = 0; i < word_count; i++) {
-        *fifo_reg = buffer[i];
-    }
+    extern uint32_t BufToFIFO(volatile uint32_t *fifo_addr, const void *src,
+                              uint32_t wordLen);
+
+    BufToFIFO((volatile uint32_t *)(SAC_BASE + fifo_offset), buffer, word_count);
 }
 
 /**
- * @brief Hardware register access helper functions
+ * @brief Hardware register access helper functions.
  */
-static inline void WriteHardwareRegister(uint32_t offset, uint32_t value)
+static inline void WriteSACRegister(uint32_t offset, uint32_t value)
 {
-    *((volatile uint32_t*)(SM4_CRYP_BASE + offset)) = value;
+    *((volatile uint32_t *)(SAC_BASE + offset)) = value;
 }
 
-static inline uint32_t ReadHardwareRegister(uint32_t offset)
+static inline uint32_t ReadSACRegister(uint32_t offset)
 {
-    return *((volatile uint32_t*)(SM4_CRYP_BASE + offset));
+    return *((volatile uint32_t *)(SAC_BASE + offset));
 }
 
 static inline void WriteRCCRegister(uint32_t offset, uint32_t value)
 {
-    *((volatile uint32_t*)(SM4_RCC_AHB2ENR_BASE + offset)) = value;
+    *((volatile uint32_t *)(RCC_BASE + offset)) = value;
 }
 
 static inline uint32_t ReadRCCRegister(uint32_t offset)
 {
-    return *((volatile uint32_t*)(SM4_RCC_AHB2ENR_BASE + offset));
+    return *((volatile uint32_t *)(RCC_BASE + offset));
 }
 
 /**
- * @brief Enable SM4 hardware clock
- * @note Enable RCC AHB2 clock for crypto module
+ * @brief Poll the SAC operation-done flag with the shared timeout budget.
+ * @param[in,out] counter Running poll counter; callers keep one counter per
+ *                        logical operation so the Alg_TimeOut_Counter budget
+ *                        accumulates across data blocks like the vendor code.
+ * @return Poll result.
+ * @retval 0 SACSR bit5 was observed set and has been cleared again.
+ * @retval 1 Poll count exceeded Alg_TimeOut_Counter (flag not cleared).
+ * @note The done flag is cleared by a read-modify-write of 0x20, matching the
+ *       vendor sequence of clear-then-read-OADR.
  */
-static void EnableSM4HardwareClock(void)
+static uint32_t WaitSM4DoneFlag(uint32_t *counter)
 {
-    uint32_t rcc_value = ReadRCCRegister(RCC_AHB2ENR_OFFSET);
-    WriteRCCRegister(RCC_AHB2ENR_OFFSET, rcc_value | RCC_AHB2ENR_CRYPEN);
-}
-
-/**
- * @brief Disable SM4 hardware clock  
- * @note Disable RCC AHB2 clock for crypto module
- */
-static void DisableSM4HardwareClock(void)
-{
-    uint32_t rcc_value = ReadRCCRegister(RCC_AHB2ENR_OFFSET);
-    WriteRCCRegister(RCC_AHB2ENR_OFFSET, rcc_value & ~RCC_AHB2ENR_CRYPEN);
-}
-
-/**
- * @brief Check if SM4 hardware is properly initialized
- * @return 1 if ready, 0 if not ready
- */
-static uint32_t IsSM4HardwareReady(void)
-{
-    uint32_t rcc_clock_enabled = (ReadRCCRegister(RCC_AHB2ENR_OFFSET) & RCC_AHB2ENR_CRYPEN) == RCC_AHB2ENR_CRYPEN;
-    uint32_t crypto_config = (ReadHardwareRegister(SM4_CR) & 0x14) == 0x14;
-    return rcc_clock_enabled && crypto_config;
-}
-
-/**
- * @brief Wait for SM4 hardware operation completion
- * @param[in] timeout_counter Timeout counter value
- * @return Time_Out if timeout, SM4_Crypto_OK if success
- */
-static uint32_t WaitForSM4OperationComplete(uint32_t timeout_counter)
-{
-    uint32_t timeout = 0;
-    
-    while ((ReadHardwareRegister(SM4_SR) & SM4_SR_OFFE) == 0) {
-        timeout++;
-        if (timeout > timeout_counter) {
-            return SM4_TimeOutError;
+    while ((ReadSACRegister(SAC_SACSR_OFFSET) & SAC_SACSR_DONE) == 0) {
+        (*counter)++;
+        if (*counter > Alg_TimeOut_Counter) {
+            return 1;
         }
     }
-    
-    // Clear the output FIFO empty flag
-    uint32_t status = ReadHardwareRegister(SM4_SR);
-    WriteHardwareRegister(SM4_SR, status | SM4_SR_OFFE);
-    
-    return SM4_Crypto_OK;
+
+    WriteSACRegister(SAC_SACSR_OFFSET,
+                     ReadSACRegister(SAC_SACSR_OFFSET) | SAC_SACSR_DONE);
+    return 0;
 }
 
 /**
  * @brief Initialize SM4 algorithm with parameters
  * @param[in] param Pointer to SM4 parameter structure
  * @return SM4_Init_OK if success, other error codes if fail
+ * @note param itself is not NULL-checked, matching the vendor library.
  */
-uint32_t SM4_Init(SM4_PARM* param)
+uint32_t SM4_Init(SM4_PARM *param)
 {
-    uint32_t  timeout_counter = 0;
-    uint32_t* iv_ptr          = param->iv;
-    
-    // Enable hardware clock
-    EnableSM4HardwareClock();
-    
-    // Configure crypto module
-    WriteHardwareRegister(SM4_CR, SM4_CFG_VALUE);
-    
-    // Wait for ARAM clear operation to complete
+    uint32_t counter = 0;
+    uint32_t *iv_ptr = param->iv;
+
+    // Enable the SAC clock (RCC AHB1PCLKEN, bit 15).
+    uint32_t rcc_value = ReadRCCRegister(RCC_AHB1PCLKEN_OFFSET);
+    WriteRCCRegister(RCC_AHB1PCLKEN_OFFSET, rcc_value | RCC_AHB1PCLKEN_SACEN);
+
+    // Select SM4, enable the accelerator, trigger the ARAM clear and wait
+    // for it to finish.
+    WriteSACRegister(SAC_SACCR_OFFSET, SAC_SACCR_CFG);
     if (CLEAR_ARAM_DONE_CHECK() == Time_Out) {
         return SM4_TimeOutError;
     }
-    
-    // Validate working mode (ECB or CBC)
+
+    // Validate working mode (ECB or CBC).
     if (param->workingMode != SM4_ECB && param->workingMode != SM4_CBC) {
         return SM4_ModeErr;
     }
-    
-    // Validate encryption/decryption mode
+
+    // Validate encryption/decryption mode.
     if (param->EnDeMode != SM4_ENC && param->EnDeMode != SM4_DEC) {
         return SM4_EnDeErr;
     }
-    
-    // Validate key pointer
+
+    // Validate key pointer.
     if (param->key == NULL) {
         return SM4_ADRNULL;
     }
-    
-    // For CBC mode, validate IV pointer
+
+    // For CBC mode, validate IV pointer.
     if (param->workingMode == SM4_CBC && iv_ptr == NULL) {
         return SM4_ADRNULL;
     }
-    
-    // Load encryption key to hardware FIFO
-    BufferToFIFO_Write(0x38, param->key, 4);
-    
-    // Load SM4 CK constants to hardware FIFO
-    BufferToFIFO_Write(0x3C, SM4_CK, 32);
-    
-    // Load SM4 FK constants to hardware FIFO
-    BufferToFIFO_Write(0x34, SM4_FK, 4);
-    
-    // Configure SM4 algorithm
-    WriteHardwareRegister(SM4_CR_ALGO_OFFSET, SM4_SM4_ALGO_VAL);
-    WriteHardwareRegister(SM4_CR, SM4_CONTROL_INIT);
-    
-    // Start key expansion process
-    uint32_t control = ReadHardwareRegister(SM4_CR);
-    WriteHardwareRegister(SM4_CR, control | 0x80);
-    
-    // Wait for key expansion to complete
-    while ((ReadHardwareRegister(SM4_SR) & SM4_SR_OFFE) == 0) {
-        timeout_counter++;
-        if (timeout_counter > Alg_TimeOut_Counter) {
-            return SM4_TimeOutError;
-        }
+
+    // Load key, CK round constants, then FK system parameters.
+    BufferToFIFO_Write(SAC_P3ADR_OFFSET, param->key, 4);
+    BufferToFIFO_Write(SAC_KADR_OFFSET, SM4_CK, 32);
+    BufferToFIFO_Write(SAC_P2ADR_OFFSET, SM4_FK, 4);
+
+    // Select the SM4 algorithm and start the key expansion.
+    WriteSACRegister(SAC_SACSFR2_OFFSET, SAC_SACSFR2_ALGO_SM4);
+    WriteSACRegister(SAC_SACSFR1_OFFSET, SAC_SACSFR1_KEYEXP_BASE);
+    WriteSACRegister(SAC_SACSFR1_OFFSET,
+                     ReadSACRegister(SAC_SACSFR1_OFFSET) | SAC_SACSFR1_START);
+
+    if (WaitSM4DoneFlag(&counter) != 0) {
+        return SM4_TimeOutError;
     }
-    
-    // Clear the output FIFO empty flag
-    uint32_t status = ReadHardwareRegister(SM4_SR);
-    WriteHardwareRegister(SM4_SR, status | SM4_SR_OFFE);
-    
-    // Configure encryption/decryption mode
+
+    // Configure encryption/decryption direction (bit 0).
     if (param->EnDeMode == SM4_ENC) {
-        uint32_t control_reg = ReadHardwareRegister(SM4_CR);
-        WriteHardwareRegister(SM4_CR, control_reg & 0xFFFFFFFE);
+        WriteSACRegister(SAC_SACSFR1_OFFSET,
+                         ReadSACRegister(SAC_SACSFR1_OFFSET) & ~SAC_SACSFR1_DEC);
     } else if (param->EnDeMode == SM4_DEC) {
-        uint32_t control_reg = ReadHardwareRegister(SM4_CR);
-        WriteHardwareRegister(SM4_CR, (control_reg & 0xFFFFFFFE) | 0x01);
+        WriteSACRegister(SAC_SACSFR1_OFFSET,
+                         (ReadSACRegister(SAC_SACSFR1_OFFSET) & 0xFFu) | SAC_SACSFR1_DEC);
     }
-    
-    // Configure working mode
+
+    // Configure block mode (bit 1); CBC additionally loads the IV.
     if (param->workingMode == SM4_ECB) {
-        uint32_t control_reg = ReadHardwareRegister(SM4_CR);
-        WriteHardwareRegister(SM4_CR, control_reg & 0xFFFFFFFD);
+        WriteSACRegister(SAC_SACSFR1_OFFSET,
+                         ReadSACRegister(SAC_SACSFR1_OFFSET) & ~SAC_SACSFR1_CBC);
     } else if (param->workingMode == SM4_CBC) {
-        uint32_t control_reg = ReadHardwareRegister(SM4_CR);
-        WriteHardwareRegister(SM4_CR, (control_reg & 0xFFFFFFFD) | 0x02);
-        
-        // Load IV for CBC mode
-        BufferToFIFO_Write(0x30, (const uint32_t*)iv_ptr, 4);
+        WriteSACRegister(SAC_SACSFR1_OFFSET,
+                         (ReadSACRegister(SAC_SACSFR1_OFFSET) & 0xFFu) | SAC_SACSFR1_CBC);
+        BufferToFIFO_Write(SAC_P1ADR_OFFSET, iv_ptr, 4);
     }
-    
+
     return SM4_Init_OK;
 }
 
@@ -277,59 +232,65 @@ uint32_t SM4_Init(SM4_PARM* param)
  * @brief Perform SM4 encryption/decryption
  * @param[in] param Pointer to SM4 parameter structure
  * @return SM4_Crypto_OK if success, other error codes if fail
+ * @note The timeout counter accumulates across all blocks of one call, like
+ *       the vendor driver; on timeout the blocks already finished stay in the
+ *       output buffer (partial completion).
  */
-uint32_t SM4_Crypto(SM4_PARM* param)
+uint32_t SM4_Crypto(SM4_PARM *param)
 {
-    uint32_t timeout_counter = 0;
-    uint32_t* input_ptr = param->in;
-    uint32_t* output_ptr = param->out;
+    uint32_t counter = 0;
+    uint32_t *input_ptr = param->in;
+    uint32_t *output_ptr = param->out;
     uint32_t remaining_words = param->inWordLen;
-    
-    // Validate pointers
+
+    // Validate pointers.
     if (output_ptr == NULL || input_ptr == NULL) {
         return SM4_ADRNULL;
     }
-    
-    // Validate input length
+
+    // Validate input length.
     if (remaining_words == 0 || (remaining_words & 0x03) != 0) {
         return SM4_LengthErr;
     }
-    
-    // Check if hardware is properly initialized
-    if (!IsSM4HardwareReady()) {
+
+    // Check that the accelerator is clocked and SM4-selected.
+    if ((ReadRCCRegister(RCC_AHB1PCLKEN_OFFSET) & RCC_AHB1PCLKEN_SACEN) == 0) {
         return SM4_UnInitError;
     }
-    
-    // Process data in blocks of 4 words (16 bytes)
+    if ((ReadSACRegister(SAC_SACCR_OFFSET) & SAC_SACCR_SM4_READY) !=
+        SAC_SACCR_SM4_READY) {
+        return SM4_UnInitError;
+    }
+
+    // Process data in blocks of 4 words (16 bytes).
     while (remaining_words > 0) {
-        // Write 4 words to input FIFO
-        WriteHardwareRegister(SM4_DIN, input_ptr[0]);
-        WriteHardwareRegister(SM4_DIN, input_ptr[1]);
-        WriteHardwareRegister(SM4_DIN, input_ptr[2]);
-        WriteHardwareRegister(SM4_DIN, input_ptr[3]);
-        
-        // Start encryption/decryption process
-        uint32_t control = ReadHardwareRegister(SM4_CR);
-        WriteHardwareRegister(SM4_CR, (control & 0x7F) | 0x80);
-        
-        // Wait for operation to complete
-        uint32_t result = WaitForSM4OperationComplete(timeout_counter);
-        if (result != SM4_Crypto_OK) {
-            return result;
+        // Write 4 words to the input FIFO.
+        WriteSACRegister(SAC_IADR_OFFSET, input_ptr[0]);
+        WriteSACRegister(SAC_IADR_OFFSET, input_ptr[1]);
+        WriteSACRegister(SAC_IADR_OFFSET, input_ptr[2]);
+        WriteSACRegister(SAC_IADR_OFFSET, input_ptr[3]);
+
+        // Start the block operation (keep only the low byte, set the start bit).
+        WriteSACRegister(SAC_SACSFR1_OFFSET,
+                         (ReadSACRegister(SAC_SACSFR1_OFFSET) & 0xFFu) | SAC_SACSFR1_START);
+
+        // Wait for the block to complete.
+        if (WaitSM4DoneFlag(&counter) != 0) {
+            return SM4_TimeOutError;
         }
-        
-        // Read 4 words from output FIFO
-        output_ptr[0] = ReadHardwareRegister(SM4_DOUT);
-        output_ptr[1] = ReadHardwareRegister(SM4_DOUT);
-        output_ptr[2] = ReadHardwareRegister(SM4_DOUT);
-        output_ptr[3] = ReadHardwareRegister(SM4_DOUT);
-        
-        // Move to next block
+
+        // Read 4 words from the output FIFO.
+        output_ptr[0] = ReadSACRegister(SAC_OADR_OFFSET);
+        output_ptr[1] = ReadSACRegister(SAC_OADR_OFFSET);
+        output_ptr[2] = ReadSACRegister(SAC_OADR_OFFSET);
+        output_ptr[3] = ReadSACRegister(SAC_OADR_OFFSET);
+
+        // Move to next block.
         input_ptr += 4;
         output_ptr += 4;
         remaining_words -= 4;
     }
-    
+
     return SM4_Crypto_OK;
 }
 
@@ -339,22 +300,27 @@ uint32_t SM4_Crypto(SM4_PARM* param)
  */
 void SM4_Close(void)
 {
-    uint32_t rcc_clock_enabled = (ReadRCCRegister(RCC_AHB2ENR_OFFSET) & RCC_AHB2ENR_CRYPEN) == RCC_AHB2ENR_CRYPEN;
-    
-    if (rcc_clock_enabled) {
-        uint32_t crypto_config = ReadHardwareRegister(SM4_CR);
-        if ((crypto_config & 0x14) == 0x14) {
-            // Disable crypto operations
-            WriteHardwareRegister(SM4_CR, crypto_config | 0x100);
-            WriteHardwareRegister(SM4_CR, crypto_config & 0xFFFFFFEB);
-            
-            // Wait for ARAM clear to complete
-            CLEAR_ARAM_DONE_CHECK();
-            
-            // Disable hardware clock
-            DisableSM4HardwareClock();
-        }
+    if ((ReadRCCRegister(RCC_AHB1PCLKEN_OFFSET) & RCC_AHB1PCLKEN_SACEN) == 0) {
+        return;
     }
+
+    uint32_t crypto_config = ReadSACRegister(SAC_SACCR_OFFSET);
+    if ((crypto_config & SAC_SACCR_SM4_READY) != SAC_SACCR_SM4_READY) {
+        return;
+    }
+
+    // Trigger the ARAM clear, then drop ENABLE and the SM4 algorithm-select
+    // bit. The register is re-read between writes, like the vendor code.
+    WriteSACRegister(SAC_SACCR_OFFSET, crypto_config | SAC_SACCR_ARAM_CLR);
+    WriteSACRegister(SAC_SACCR_OFFSET,
+                     ReadSACRegister(SAC_SACCR_OFFSET) & ~SAC_SACCR_SM4_READY);
+
+    // Wait for the ARAM clear to finish (result ignored by the vendor code).
+    (void)CLEAR_ARAM_DONE_CHECK();
+
+    // Disable the SAC clock.
+    WriteRCCRegister(RCC_AHB1PCLKEN_OFFSET,
+                     ReadRCCRegister(RCC_AHB1PCLKEN_OFFSET) & ~RCC_AHB1PCLKEN_SACEN);
 }
 
 /**
@@ -363,15 +329,17 @@ void SM4_Close(void)
  * @param[out] customer Customer information
  * @param[out] date Library date (3 bytes: day, month, year)
  * @param[out] version Library version information
+ * @note Values match the v1.2.0 binary image: the vendor never bumped the
+ *       version bytes (still 1.0, dated 2019-03-25) in either toolchain build.
  */
-void SM4_Version(uint8_t* type, uint8_t* customer, uint8_t date[3], uint8_t* version)
+void SM4_Version(uint8_t *type, uint8_t *customer, uint8_t date[3], uint8_t *version)
 {
     *type = 0x01;        // Commercial version
     *customer = 0x00;    // Standard version
-    
+
     date[0] = 0x19;      // Day: 25
     date[1] = 0x03;      // Month: 3
     date[2] = 0x13;      // Year: 19 (2019)
-    
+
     *version = 0x10;     // Version 1.0
 }

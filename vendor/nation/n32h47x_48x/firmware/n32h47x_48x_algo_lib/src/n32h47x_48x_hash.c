@@ -1,338 +1,479 @@
+/**
+ * Reconstruction of the vendor closed-source library
+ * n32h47x_48x_algo_lib v1.2.0, module n32h47x_48x_hash.c.
+ *
+ * Behavior is aligned with the shipped binary
+ * lib/n32h47x_48x_hash.a (GNU Arm Embedded 10.2.1, -Os, DWARF-2) and
+ * cross-checked against the armclang build (.lib member
+ * n32h47x_48x_hash_1.o). Evidence tags below cite "function+offset"
+ * inside those objects; register names come from the vendor-private
+ * SAC_Common.h SAC_TypeDef layout recovered from DWARF.
+ *
+ * Confirmed facts from the binary:
+ * - Exported symbols (11 functions + 7 HASH_ALG tables): HASH_Init,
+ *   HASH_Start, HASH_Update, HASH_Complete, HASH_Close, SHA1_Hash,
+ *   SHA224_Hash, SHA256_Hash, MD5_Hash, SM3_Hash, HASH_Version; tables
+ *   HASH_ALG_{SHA1,SHA224,SHA256,MD5,SM3} plus undocumented
+ *   HASH_ALG_SM3_160 / HASH_ALG_SM3_192 (truncated-digest SM3 variants
+ *   that no public function references). Internal statics:
+ *   HASH_ByteLenPlus1, HASH_ProcMsgBuf, HASH_PadMsg1.
+ * - Vendor source line numbers from DWARF: ByteLenPlus1@186,
+ *   ProcMsgBuf@208, PadMsg1@234, Init@322, Start@361, Update@401,
+ *   Complete@526, Close@568, SM3_Hash@594, SHA1_Hash@616,
+ *   SHA224_Hash@637, SHA256_Hash@658, MD5_Hash@679, Version@702.
+ * - Register map (base 0x4002A000): SACCR@+0x00, SACSR@+0x04,
+ *   SACSFR1@+0x0C, P1ADR@+0x30, P2ADR@+0x34, KADR@+0x3C, IADR@+0x40,
+ *   OADR@+0x44. HASH uses P1ADR for the IV/state upload, P2ADR only
+ *   for the MD5 rotation table, KADR for round constants, IADR for
+ *   message words, OADR for digest/state readout.
+ * - HASH_Init writes SACCR = HASH_SACCR|0x80 (0xD2 for SHA1/SHA224/
+ *   SHA256/SM3, 0x92 for MD5), then CLEAR_ARAM_DONE_CHECK(), then
+ *   SACSFR1 = HASH_HASHCTRL (SHA1 0x00, SHA224/SHA256 0x02, MD5 0x10,
+ *   SM3 0x0F), then uploads K via KADR and, for MD5, MD5_S via P2ADR
+ *   (GCC HASH_Init+0x28..+0x62).
+ * - Every block compression is kicked by SACSFR1 |= 0x80 and completed
+ *   when SACSR bit3 reads 1; bit3 is then set again through a
+ *   read-modify-write (write-1-to-clear), with Alg_TimeOut_Counter as
+ *   the polling budget (GCC HASH_ProcMsgBuf+0x14..+0x3c).
+ * - The 64-bit message length is kept as msgByteLen[0]=high word,
+ *   msgByteLen[1]=low word (HASH_ByteLenPlus1 adds at [1] and carries
+ *   into [0]); PadMsg1 pushes [0] first, then [1].
+ * - Word-lane convention (see docs/registers_hash.md): SHA1/SHA224/
+ *   SHA256/SM3 tables are stored byte-swapped relative to the standard
+ *   constants and the length words are byte-reversed before the push;
+ *   MD5 tables are stored standard and its length words are pushed
+ *   low-word first. The vendor .data bytes are replicated exactly.
+ * - Vendor quirks kept on purpose (suspected defects, documented only):
+ *   HASH_Update returns OK for in==NULL with byteLen>0; HASH_Complete
+ *   ignores the PadMsg return value; one-shot wrappers discard every
+ *   step result and always return 0; HASH_Complete never returns
+ *   HASH_Complete_ERROR (it uses HASH_Update_ERROR / HASH_Init_ERROR).
+ */
+
+#include <stddef.h>
+#include <string.h>
 #include "n32h47x_48x_hash.h"
 #include "n32h47x_48x_algo_common.h"
 
-#include <stddef.h>
+/*
+ * FIFO helpers are exported by the common module but not declared in
+ * its public header; signatures follow the DWARF of
+ * n32h47x_48x_common.a (vendor source lines 680/742). The third
+ * parameter of both helpers is a 32-bit word count.
+ */
+extern uint32_t BufToFIFO(volatile uint32_t *fifo_addr, const void *buffer, uint32_t wordLen);
+extern uint32_t FIFOToBuf(void *buffer, volatile uint32_t *fifo_addr, uint32_t wordLen);
 
-// Hardware register addresses for HASH peripheral
-#define HASH_RCC_BASE           (0x40021000UL)    // RCC base address
-#define HASH_RCC_AHBENR         (0x0000003CUL)    // AHB enable register offset
-#define HASH_AHBENR_HASHEN      (0x00008000UL)    // HASH peripheral enable bit
-#define HASH_BASE               (0x4002A000UL)    // HASH peripheral base address
-#define HASH_CR                 (0x00000000UL)    // HASH control register
-#define HASH_DIN                (0x00000004UL)    // HASH data input register
-#define HASH_STR                (0x00000008UL)    // HASH start register
-#define HASH_IMR                (0x0000000CUL)    // HASH interrupt mask register
-#define HASH_SR                 (0x00000010UL)    // HASH status register
-#define HASH_SR_BUSY            (0x00000001UL)    // HASH busy flag
-#define HASH_SR_DINIS           (0x00000008UL)    // HASH data input interrupt status
-#define HASH_SR_DCIS            (0x00000100UL)    // HASH digest calculation interrupt status
-#define HASH_CSR                (0x0000000FUL)    // HASH context swap registers
-#define HASH_HR0                (0x0000010CUL)    // HASH hash result registers
-#define HASH_HR1                (0x00000110UL)
-#define HASH_HR2                (0x00000114UL)
-#define HASH_HR3                (0x00000118UL)
-#define HASH_HR4                (0x0000011CUL)
-#define HASH_HR5                (0x00000120UL)
-#define HASH_HR6                (0x00000124UL)
-#define HASH_HR7                (0x00000128UL)
-#define HASH_FIFO_DEPTH         (0x00000044UL)    // HASH FIFO depth register
+/* SAC (Security Algorithm Coprocessor) register block at 0x4002A000.
+ * Names follow the vendor-private SAC_TypeDef recovered from DWARF. */
+#define SAC_REG_BASE           0x4002A000U
+#define SAC_SACCR_REG          (*(volatile uint32_t *)(SAC_REG_BASE + 0x00U))
+#define SAC_SACSR_REG          (*(volatile uint32_t *)(SAC_REG_BASE + 0x04U))
+#define SAC_SACSFR1_REG        (*(volatile uint32_t *)(SAC_REG_BASE + 0x0CU))
+#define SAC_P1ADR_REG          (*(volatile uint32_t *)(SAC_REG_BASE + 0x30U))
+#define SAC_P2ADR_REG          (*(volatile uint32_t *)(SAC_REG_BASE + 0x34U))
+#define SAC_KADR_REG           (*(volatile uint32_t *)(SAC_REG_BASE + 0x3CU))
+#define SAC_IADR_REG           (*(volatile uint32_t *)(SAC_REG_BASE + 0x40U))
+#define SAC_OADR_REG           (*(volatile uint32_t *)(SAC_REG_BASE + 0x44U))
 
-// Control register bits
-#define HASH_CR_INIT            (0x00000001UL)    // HASH initialization
-#define HASH_CR_DMAE            (0x00000002UL)    // DMA enable
-#define HASH_CR_DATATYPE        (0x00000008UL)    // Data type
-#define HASH_CR_MODE            (0x00000010UL)    // Mode selection
-#define HASH_CR_ALGO            (0x00000020UL)    // Algorithm selection
-#define HASH_CR_NBW             (0x00010000UL)    // Number of bits already written
-#define HASH_CR_DINNE           (0x00000080UL)    // DIN not empty
+/* SAC clock gate: RCC AHB1PCLKEN (0x40021000+0x3C) bit15. */
+#define RCC_AHB1PCLKEN_REG     (*(volatile uint32_t *)0x4002103CU)
+#define RCC_AHB1PCLKEN_SACEN   0x00008000U
 
-// MD5-specific constants (S rotation schedule)
-static const uint32_t MD5_S[64] = {
-    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-    5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20,
-    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+/* Observed SACCR bits (see docs/registers_hash.md section 4.1). */
+#define SAC_SACCR_HASH_READY   0x12U   /* bits 1|4: hash configured signature */
+#define SAC_SACCR_ARAM_CLR     0x80U   /* bit 7: ARAM clear start, self-clearing */
+#define SAC_SACCR_CLOSE        0x100U  /* bit 8: set by HASH_Close before deconfig */
+
+/* Observed SACSR bit (see docs/registers_hash.md section 4.2). */
+#define SAC_SACSR_HASH_DONE    0x08U   /* bit 3: block done, write-1-to-clear */
+
+/* Observed SACSFR1 bit (see docs/registers_hash.md section 4.3). */
+#define SAC_SACSFR1_START      0x80U   /* bit 7: start one block compression */
+
+/*
+ * Constant tables below replicate the vendor .data bytes exactly.
+ * SHA/SM3 tables are stored byte-swapped relative to the textbook
+ * constants (big-endian word lanes); MD5 tables are stored standard.
+ * MD5_K = standard T table; MD5_V = standard MD5 IV.
+ */
+static const uint32_t MD5_K[64] = {
+    0xD76AA478, 0xE8C7B756, 0x242070DB, 0xC1BDCEEE, 0xF57C0FAF, 0x4787C62A,
+    0xA8304613, 0xFD469501, 0x698098D8, 0x8B44F7AF, 0xFFFF5BB1, 0x895CD7BE,
+    0x6B901122, 0xFD987193, 0xA679438E, 0x49B40821, 0xF61E2562, 0xC040B340,
+    0x265E5A51, 0xE9B6C7AA, 0xD62F105D, 0x02441453, 0xD8A1E681, 0xE7D3FBC8,
+    0x21E1CDE6, 0xC33707D6, 0xF4D50D87, 0x455A14ED, 0xA9E3E905, 0xFCEFA3F8,
+    0x676F02D9, 0x8D2A4C8A, 0xFFFA3942, 0x8771F681, 0x6D9D6122, 0xFDE5380C,
+    0xA4BEEA44, 0x4BDECFA9, 0xF6BB4B60, 0xBEBFBC70, 0x289B7EC6, 0xEAA127FA,
+    0xD4EF3085, 0x04881D05, 0xD9D4D039, 0xE6DB99E5, 0x1FA27CF8, 0xC4AC5665,
+    0xF4292244, 0x432AFF97, 0xAB9423A7, 0xFC93A039, 0x655B59C3, 0x8F0CCC92,
+    0xFFEFF47D, 0x85845DD1, 0x6FA87E4F, 0xFE2CE6E0, 0xA3014314, 0x4E0811A1,
+    0xF7537E82, 0xBD3AF235, 0x2AD7D2BB, 0xEB86D391
 };
 
-// SHA-1 Initial Vector
+/* MD5 rotation schedule (first 16 standard shifts; rounds repeat). */
+static const uint32_t MD5_S[16] = {
+    0x00000007, 0x0000000C, 0x00000011, 0x00000016,
+    0x00000005, 0x00000009, 0x0000000E, 0x00000014,
+    0x00000004, 0x0000000B, 0x00000010, 0x00000017,
+    0x00000006, 0x0000000A, 0x0000000F, 0x00000015
+};
+
+static const uint32_t MD5_V[4] = {
+    0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476
+};
+
+/* bswap() of the standard SHA-1 IV. */
 static const uint32_t SHA1_IV[5] = {
-    0x67452301UL, 0xEFCDAB89UL, 0x98BADCFEUL, 0x10325476UL, 0xC3D2E1F0UL
+    0x01234567, 0x89ABCDEF, 0xFEDCBA98, 0x76543210, 0xF0E1D2C3
 };
 
-// MD5 Initial Vector
-static const uint32_t MD5_IV[4] = {
-    0x67452301UL, 0xEFCDAB89UL, 0x98BADCFEUL, 0x10325476UL
+/* bswap() of the standard SHA-1 round constants. */
+static const uint32_t SHA1_K[4] = {
+    0x9979825A, 0xA1EBD96E, 0xDCBC1B8F, 0xD6C162CA
 };
 
-// SHA-256 Initial Vector (First 8 words from extracted data at 0x948)
-static const uint32_t SHA256_IV[8] = {
-    0x5A827999UL, 0x6ED9EBA1UL, 0x8F1BBCDCUL, 0xCA62C1D6UL,
-    0x67452301UL, 0xEFCDAB89UL, 0x98BADCFEUL, 0x10325476UL
-};
-
-// SM3 Initial Vector (Next 8 words from extracted data at 0x948)  
-static const uint32_t SM3_IV[8] = {
-    0xC3D2E1F0UL, 0x428A2F98UL, 0x71374491UL, 0xB5C0FBCFUL,
-    0xE9B5DBA5UL, 0x3956C25BUL, 0x59F111F1UL, 0x923F82A4UL
-};
-
-// SHA-224 Initial Vector (Extracted from data at 0x998)
+/* bswap() of the standard SHA-224 IV. */
 static const uint32_t SHA224_IV[8] = {
-    0xC1059ED8UL, 0x367CD507UL, 0x3070DD17UL, 0xF70E5939UL,
-    0xFFC00B31UL, 0x68581511UL, 0x64F98FA7UL, 0xBEFA4FA4UL
+    0xD89E05C1, 0x07D57C36, 0x17DD7030, 0x39590EF7,
+    0x310BC0FF, 0x11155868, 0xA78FF964, 0xA44FFABE
 };
 
-// SHA-256 Round Constants (K) - Extracted from data section
+/* bswap() of the standard SHA-256 IV. */
+static const uint32_t SHA256_IV[8] = {
+    0x67E6096A, 0x85AE67BB, 0x72F36E3C, 0x3AF54FA5,
+    0x7F520E51, 0x8C68059B, 0xABD9831F, 0x19CDE05B
+};
+
+/* bswap() of the standard SHA-256 round constants. */
 static const uint32_t SHA256_K[64] = {
-    0x428A2F98UL, 0x71374491UL, 0xB5C0FBCFUL, 0xE9B5DBA5UL,
-    0x3956C25BUL, 0x59F111F1UL, 0x923F82A4UL, 0xAB1C5ED5UL,
-    0xD807AA98UL, 0x12835B01UL, 0x243185BEUL, 0x550C7DC3UL,
-    0x72BE5D74UL, 0x80DEB1FEUL, 0x9BDC06A7UL, 0xC19BF174UL,
-    0xE49B69C1UL, 0xEFBE4786UL, 0x0FC19DC6UL, 0x240CA1CCUL,
-    0x2DE92C6FUL, 0x4A7484AAUL, 0x5CB0A9DCUL, 0x76F988DAUL,
-    0x983E5152UL, 0xA831C66DUL, 0xB00327C8UL, 0xBF597FC7UL,
-    0xC6E00BF3UL, 0xD5A79147UL, 0x06CA6351UL, 0x14292967UL,
-    0x27B70A85UL, 0x2E1B2138UL, 0x4D2C6DFCUL, 0x53380D13UL,
-    0x650A7354UL, 0x766A0ABBUL, 0x81C2C92EUL, 0x92722C85UL,
-    0xA2BFE8A1UL, 0xA81A664BUL, 0xC24B8B70UL, 0xC76C51A3UL,
-    0xD192E819UL, 0xD6990624UL, 0xF40E3585UL, 0x106AA070UL,
-    0x19A4C116UL, 0x1E376C08UL, 0x2748774CUL, 0x34B0BCB5UL,
-    0x391C0CB3UL, 0x4ED8AA4AUL, 0x5B9CCA4FUL, 0x682E6FF3UL,
-    0x748F82EEUL, 0x78A5636FUL, 0x84C87814UL, 0x8CC70208UL,
-    0x90BEFFFAUL, 0xA4506CEBUL, 0xBEF9A3F7UL, 0xC67178F2UL
+    0x982F8A42, 0x91443771, 0xCFFBC0B5, 0xA5DBB5E9, 0x5BC25639, 0xF111F159,
+    0xA4823F92, 0xD55E1CAB, 0x98AA07D8, 0x015B8312, 0xBE853124, 0xC37D0C55,
+    0x745DBE72, 0xFEB1DE80, 0xA706DC9B, 0x74F19BC1, 0xC1699BE4, 0x8647BEEF,
+    0xC69DC10F, 0xCCA10C24, 0x6F2CE92D, 0xAA84744A, 0xDCA9B05C, 0xDA88F976,
+    0x52513E98, 0x6DC631A8, 0xC82703B0, 0xC77F59BF, 0xF30BE0C6, 0x4791A7D5,
+    0x5163CA06, 0x67292914, 0x850AB727, 0x38211B2E, 0xFC6D2C4D, 0x130D3853,
+    0x54730A65, 0xBB0A6A76, 0x2EC9C281, 0x852C7292, 0xA1E8BFA2, 0x4B661AA8,
+    0x708B4BC2, 0xA3516CC7, 0x19E892D1, 0x240699D6, 0x85350EF4, 0x70A06A10,
+    0x16C1A419, 0x086C371E, 0x4C774827, 0xB5BCB034, 0xB30C1C39, 0x4AAAD84E,
+    0x4FCA9C5B, 0xF36F2E68, 0xEE828F74, 0x6F63A578, 0x1478C884, 0x0802C78C,
+    0xFAFFBE90, 0xEB6C50A4, 0xF7A3F9BE, 0xF27871C6
 };
 
-// Function prototypes for hash operations
-static uint32_t HASH_ByteLenPlus1(uint32_t* msgByteLen, uint32_t byteLen);
-static uint32_t HASH_PadMsg1(HASH_CTX* ctx);
-static void BufToFIFO(uint32_t addr, const uint32_t* src, uint32_t wordLen);
-static void FIFOToBuf(uint32_t* dst, uint32_t addr, uint32_t wordLen);
+/* bswap() of the standard SM3 T constants. */
+static const uint32_t SM3_K[2] = {
+    0x1945CC79, 0x8A9D877A
+};
 
-// Complete algorithm structure definitions (extracted from reverse engineering)
+/* bswap() of the standard SM3 IV. */
+static const uint32_t SM3_V[8] = {
+    0x6F168073, 0xB9B21449, 0xD7422417, 0x00068ADA,
+    0xBC306FA9, 0xAA383116, 0x4DEE8DE3, 0x4E0EFBB0
+};
+
+static uint32_t HASH_ByteLenPlus1(uint32_t *msgByteLen, uint32_t byteLen);
+static uint32_t HASH_ProcMsgBuf(HASH_CTX *ctx);
+static uint32_t HASH_PadMsg1(HASH_CTX *ctx);
+
+/*
+ * Cycle is 6 = log2(BlockByteLen): HASH_Update uses it as a shift to
+ * compute the number of complete blocks (GCC HASH_Update+0xae), not as
+ * a round count. All supported algorithms use 64-byte blocks.
+ */
 const HASH_ALG HASH_ALG_SHA1[1] = {{
-    .HashAlgID     = ALG_SHA1,                                              // 0x0004
-    .K             = NULL,                                                  // No K array for SHA1 in hardware
-    .KLen          = 0,
-    .IV            = SHA1_IV,                                               // Points to SHA1_IV[0] 
-    .IVLen         = 5,                                                     // 5 words (20 bytes)
-    .HASH_SACCR    = 0x948,                                                 // SHA1 accelerator control register
-    .HASH_HASHCTRL = 0x000000D2UL,                                          // HASH control register value
-    .BlockByteLen  = 64,                                                    // 64 bytes per block
-    .BlockWordLen  = 16,                                                    // 16 words per block  
-    .DigestByteLen = 20,                                                    // 20 bytes digest
-    .DigestWordLen = 5,                                                     // 5 words digest
-    .Cycle         = 80,                                                    // 80 rounds
-    .ByteLenPlus   = (uint32_t(*)(uint32_t*, uint32_t))HASH_ByteLenPlus1,
-    .PadMsg        = (uint32_t(*)(HASH_CTX*))HASH_PadMsg1
+    ALG_SHA1,
+    SHA1_K,   4,
+    SHA1_IV,  5,
+    0x000000D2UL, 0x00000000UL,
+    64U, 16U, 20U, 5U, 6U,
+    HASH_ByteLenPlus1, HASH_PadMsg1
 }};
 
 const HASH_ALG HASH_ALG_SHA224[1] = {{
-    .HashAlgID     = ALG_SHA224,                                            // 0x000A
-    .K             = SHA256_K,                                              // Uses same K as SHA256
-    .KLen          = 64,                                                    // 64 round constants
-    .IV            = SHA224_IV,                                             // Points to SHA224_IV[0]
-    .IVLen         = 8,                                                     // 8 words (32 bytes)
-    .HASH_SACCR    = 0x96C,                                                 // SHA224 accelerator control register
-    .HASH_HASHCTRL = 0x00000040UL,                                          // HASH control register value
-    .BlockByteLen  = 64,                                                    // 64 bytes per block
-    .BlockWordLen  = 16,                                                    // 16 words per block
-    .DigestByteLen = 28,                                                    // 28 bytes digest
-    .DigestWordLen = 7,                                                     // 7 words digest
-    .Cycle         = 64,                                                    // 64 rounds
-    .ByteLenPlus   = (uint32_t(*)(uint32_t*, uint32_t))HASH_ByteLenPlus1,
-    .PadMsg        = (uint32_t(*)(HASH_CTX*))HASH_PadMsg1
+    ALG_SHA224,
+    SHA256_K, 64,
+    SHA224_IV, 8,
+    0x000000D2UL, 0x00000002UL,
+    64U, 16U, 28U, 7U, 6U,
+    HASH_ByteLenPlus1, HASH_PadMsg1
 }};
 
 const HASH_ALG HASH_ALG_SHA256[1] = {{
-    .HashAlgID     = ALG_SHA256,                                            // 0x000B
-    .K             = SHA256_K,                                              // SHA256 round constants
-    .KLen          = 64,                                                    // 64 round constants
-    .IV            = SHA256_IV,                                             // Points to SHA256_IV[0]
-    .IVLen         = 8,                                                     // 8 words (32 bytes)
-    .HASH_SACCR    = 0x9E4,                                                 // SHA256 accelerator control register
-    .HASH_HASHCTRL = 0x00000040UL,                                          // HASH control register value
-    .BlockByteLen  = 64,                                                    // 64 bytes per block
-    .BlockWordLen  = 16,                                                    // 16 words per block
-    .DigestByteLen = 32,                                                    // 32 bytes digest
-    .DigestWordLen = 8,                                                     // 8 words digest
-    .Cycle         = 64,                                                    // 64 rounds
-    .ByteLenPlus   = (uint32_t(*)(uint32_t*, uint32_t))HASH_ByteLenPlus1,
-    .PadMsg        = (uint32_t(*)(HASH_CTX*))HASH_PadMsg1
+    ALG_SHA256,
+    SHA256_K, 64,
+    SHA256_IV, 8,
+    0x000000D2UL, 0x00000002UL,
+    64U, 16U, 32U, 8U, 6U,
+    HASH_ByteLenPlus1, HASH_PadMsg1
 }};
 
 const HASH_ALG HASH_ALG_MD5[1] = {{
-    .HashAlgID     = ALG_MD5,                                               // 0x000C
-    .K             = NULL,                                                  // No K array for MD5 in hardware
-    .KLen          = 0,
-    .IV            = MD5_IV,                                                // Points to MD5_IV[0]
-    .IVLen         = 4,                                                     // 4 words (16 bytes)
-    .HASH_SACCR    = 0x9D4,                                                 // MD5 accelerator control register
-    .HASH_HASHCTRL = 0x00000092UL,                                          // HASH control register value
-    .BlockByteLen  = 64,                                                    // 64 bytes per block
-    .BlockWordLen  = 16,                                                    // 16 words per block
-    .DigestByteLen = 16,                                                    // 16 bytes digest
-    .DigestWordLen = 4,                                                     // 4 words digest
-    .Cycle         = 64,                                                    // 64 rounds
-    .ByteLenPlus   = (uint32_t(*)(uint32_t*, uint32_t))HASH_ByteLenPlus1,
-    .PadMsg        = (uint32_t(*)(HASH_CTX*))HASH_PadMsg1
+    ALG_MD5,
+    MD5_K,    64,
+    MD5_V,    4,
+    0x00000092UL, 0x00000010UL,
+    64U, 16U, 16U, 4U, 6U,
+    HASH_ByteLenPlus1, HASH_PadMsg1
 }};
 
 const HASH_ALG HASH_ALG_SM3[1] = {{
-    .HashAlgID     = ALG_SM3,                                               // 0x0012
-    .K             = NULL,                                                  // No K array for SM3 in hardware
-    .KLen          = 0,
-    .IV            = SM3_IV,                                                // Points to SM3_IV[0]
-    .IVLen         = 8,                                                     // 8 words (32 bytes)
-    .HASH_SACCR    = 0x9AC,                                                 // SM3 accelerator control register
-    .HASH_HASHCTRL = 0x00000002UL,                                          // HASH control register value
-    .BlockByteLen  = 64,                                                    // 64 bytes per block
-    .BlockWordLen  = 16,                                                    // 16 words per block
-    .DigestByteLen = 32,                                                    // 32 bytes digest
-    .DigestWordLen = 8,                                                     // 8 words digest
-    .Cycle         = 64,                                                    // 64 rounds
-    .ByteLenPlus   = (uint32_t(*)(uint32_t*, uint32_t))HASH_ByteLenPlus1,
-    .PadMsg        = (uint32_t(*)(HASH_CTX*))HASH_PadMsg1
+    ALG_SM3,
+    SM3_K,    2,
+    SM3_V,    8,
+    0x000000D2UL, 0x0000000FUL,
+    64U, 16U, 32U, 8U, 6U,
+    HASH_ByteLenPlus1, HASH_PadMsg1
+}};
+
+/*
+ * Undocumented truncated-digest SM3 variants exported by the vendor
+ * binary (digest truncated to 160/192 bits). They are not declared in
+ * the public header and are rejected by the ctx->hashAlg validity
+ * checks, which compare against the five public tables only.
+ */
+const HASH_ALG HASH_ALG_SM3_160[1] = {{
+    ALG_SM3,
+    SM3_K,    2,
+    SM3_V,    8,
+    0x000000D2UL, 0x0000000FUL,
+    64U, 16U, 20U, 5U, 6U,
+    HASH_ByteLenPlus1, HASH_PadMsg1
+}};
+
+const HASH_ALG HASH_ALG_SM3_192[1] = {{
+    ALG_SM3,
+    SM3_K,    2,
+    SM3_V,    8,
+    0x000000D2UL, 0x0000000FUL,
+    64U, 16U, 24U, 6U, 6U,
+    HASH_ByteLenPlus1, HASH_PadMsg1
 }};
 
 /**
- * @brief Copy data from buffer to HASH FIFO
- * @param[in] addr FIFO register address
- * @param[in] src pointer to source data
- * @param[in] wordLen length in words
- * @note Hardware-specific function for data transfer to HASH accelerator
+ * @brief Check whether hashAlg points to one of the five public tables.
+ * @param[in] hashAlg Algorithm table pointer to validate.
+ * @return Nonzero when the pointer is one of HASH_ALG_{SHA1,SHA224,
+ *         SHA256,SM3,MD5}; zero otherwise.
+ * @discovery GCC HASH_Init+0x08..+0x26 inlines this five-way compare
+ *            chain; SM3_160/SM3_192 are deliberately not accepted.
  */
-static void BufToFIFO(uint32_t addr, const uint32_t* src, uint32_t wordLen)
+static int HASH_IsKnownAlg(const HASH_ALG *hashAlg)
 {
-    volatile uint32_t* fifo_reg = (volatile uint32_t*)addr;
-    
-    for (uint32_t i = 0; i < wordLen; i++) {
-        *fifo_reg = src[i];
-    }
+    return (hashAlg == &HASH_ALG_SHA1[0]) ||
+           (hashAlg == &HASH_ALG_SHA224[0]) ||
+           (hashAlg == &HASH_ALG_SHA256[0]) ||
+           (hashAlg == &HASH_ALG_SM3[0]) ||
+           (hashAlg == &HASH_ALG_MD5[0]);
 }
 
 /**
- * @brief Copy data from HASH FIFO to buffer
- * @param[in] dst pointer to destination buffer
- * @param[in] addr FIFO register address
- * @param[in] wordLen length in words
- * @note Hardware-specific function for data transfer from HASH accelerator
+ * @brief Wait for one block compression and acknowledge it.
+ * @return 0 on success; HASH_TimeOut_ERROR after the polling budget.
+ * @discovery Poll loop shape from GCC HASH_ProcMsgBuf+0x1c..+0x3c:
+ *            counter increments after each failed poll and the loop
+ *            continues while Alg_TimeOut_Counter >= counter. On
+ *            success SACSR bit3 is set through read-modify-write
+ *            (write-1-to-clear acknowledge).
  */
-static void FIFOToBuf(uint32_t* dst, uint32_t addr, uint32_t wordLen)
+static uint32_t HASH_WaitHashDone(void)
 {
-    volatile uint32_t* fifo_reg = (volatile uint32_t*)addr;
-    
-    for (uint32_t i = 0; i < wordLen; i++) {
-        dst[i] = *fifo_reg;
-    }
-}
+    uint32_t counter = 0U;
 
-
-/**
- * @brief Process message buffer through hardware
- * @param[in] ctx pointer to HASH_CTX struct
- * @return HASH_ProcMsgBuf_OK, success; others: fail
- * @note Internal function used by HASH_Update
- */
-uint32_t HASH_ProcMsgBuf(HASH_CTX* ctx)
-{
-    // Send message to hardware
-    BufToFIFO(HASH_BASE + HASH_DIN, (uint32_t*)ctx->msgBuf, ctx->hashAlg->BlockWordLen);
-    
-    // Start processing
-    *(volatile uint32_t*)(HASH_BASE + HASH_IMR) |= 0x80;
-    
-    // Wait for completion
-    uint32_t timeout = 0;
-    while ((*(volatile uint32_t*)(HASH_BASE + HASH_SR) & HASH_SR_DINIS) == 0) {
-        if (timeout++ > Alg_TimeOut_Counter) {
+    while ((SAC_SACSR_REG & SAC_SACSR_HASH_DONE) == 0U) {
+        counter++;
+        if (Alg_TimeOut_Counter < counter) {
             return HASH_TimeOut_ERROR;
         }
     }
-    
-    // Clear interrupt
-    *(volatile uint32_t*)(HASH_BASE + HASH_SR) |= HASH_SR_DINIS;
-    
-    // Reset message buffer index
-    ctx->msgIdx = 0;
-    
+    SAC_SACSR_REG |= SAC_SACSR_HASH_DONE;
+    return 0U;
+}
+
+/**
+ * @brief Add a byte count to the 64-bit message length counter.
+ * @param[in,out] msgByteLen Counter words: [0]=high 32 bits, [1]=low
+ *                           32 bits.
+ * @param[in] byteLen Number of bytes to add.
+ * @return HASH_ByteLenPlus_OK on success; HASH_ByteLenPlus_ERROR when
+ *         the high word reached 0x20000000 (message >= 2^61 bytes).
+ * @discovery GCC HASH_ByteLenPlus1+0x00..+0x1a: adds at [1], carries
+ *            into [0], rejects when [0] >= 0x20000000 (SHA-2 message
+ *            limit).
+ */
+static uint32_t HASH_ByteLenPlus1(uint32_t *msgByteLen, uint32_t byteLen)
+{
+    msgByteLen[1] += byteLen;
+    if (msgByteLen[1] < byteLen) {
+        msgByteLen[0]++;
+    }
+    if (msgByteLen[0] < 0x20000000UL) {
+        return HASH_ByteLenPlus_OK;
+    }
+    return HASH_ByteLenPlus_ERROR;
+}
+
+/**
+ * @brief Push one complete message block to the accelerator.
+ * @param[in,out] ctx Hash context whose msgBuf holds one full block.
+ * @return HASH_ProcMsgBuf_OK on success; HASH_TimeOut_ERROR when the
+ *         accelerator does not finish in time.
+ * @post On success ctx->msgIdx is reset to 0 (not on timeout).
+ * @discovery GCC HASH_ProcMsgBuf+0x04..+0x3c: BufToFIFO(IADR, msgBuf,
+ *            BlockWordLen), SACSFR1 |= 0x80, wait for SACSR bit3,
+ *            acknowledge bit3, msgIdx = 0.
+ */
+static uint32_t HASH_ProcMsgBuf(HASH_CTX *ctx)
+{
+    BufToFIFO(&SAC_IADR_REG, (const uint32_t *)(const void *)ctx->msgBuf,
+              ctx->hashAlg->BlockWordLen);
+
+    SAC_SACSFR1_REG |= SAC_SACSFR1_START;
+
+    if (HASH_WaitHashDone() != 0U) {
+        return HASH_TimeOut_ERROR;
+    }
+
+    ctx->msgIdx = 0U;
     return HASH_ProcMsgBuf_OK;
+}
+
+/**
+ * @brief Append hash padding and the 64-bit bit length, then process
+ *        the final block(s).
+ * @param[in,out] ctx Hash context; msgBuf/msgIdx/msgByteLen are
+ *                   consumed and modified.
+ * @return HASH_PadMsg_OK on success; HASH_TimeOut_ERROR on timeout.
+ * @discovery GCC HASH_PadMsg1+0x00..+0xe4 and armclang
+ *            HASH_PadMsg1+0x00..+0x114. Writes 0x80 plus three zero
+ *            bytes at msgBuf[msgIdx] (the slack in msgBuf[128+4]
+ *            absorbs msgIdx up to 63+3); converts the byte length to
+ *            a bit length kept as msgByteLen[0]=high/[1]=low; for
+ *            MD5 the words are swapped to low-first order, otherwise
+ *            both words are byte-reversed for a big-endian length;
+ *            msgIdx > 55 forces a first block padded with zeros;
+ *            the final block is padded to 14 words and followed by
+ *            the two length words, then compressed.
+ */
+static uint32_t HASH_PadMsg1(HASH_CTX *ctx)
+{
+    uint32_t wordLen = (ctx->msgIdx + 4U) >> 2U;
+    uint32_t i;
+    uint32_t tmp;
+
+    ctx->msgBuf[ctx->msgIdx] = 0x80U;
+    ctx->msgBuf[ctx->msgIdx + 1U] = 0U;
+    ctx->msgBuf[ctx->msgIdx + 2U] = 0U;
+    ctx->msgBuf[ctx->msgIdx + 3U] = 0U;
+
+    /* 64-bit bit length: new high = (high<<3)|(low>>29), new low =
+     * low<<3, stored as msgByteLen[0]=high, [1]=low. */
+    tmp = ctx->msgByteLen[1];
+    ctx->msgByteLen[0] = (ctx->msgByteLen[0] << 3) | (tmp >> 29);
+    ctx->msgByteLen[1] = tmp << 3;
+
+    if (ctx->hashAlg->HashAlgID == ALG_MD5) {
+        /* Little-endian length field: low word pushed first. */
+        tmp = ctx->msgByteLen[0];
+        ctx->msgByteLen[0] = ctx->msgByteLen[1];
+        ctx->msgByteLen[1] = tmp;
+    } else {
+        /* Big-endian length field: byte-swap both words in place. */
+        (void)ReverseBytesInWord_U32(ctx->msgByteLen, ctx->msgByteLen, 2U);
+    }
+
+    if (ctx->msgIdx > 55U) {
+        /* The 0x80 word leaves no room for the length: compress this
+         * block first (zero-filled to 16 words). */
+        BufToFIFO(&SAC_IADR_REG, (const uint32_t *)(const void *)ctx->msgBuf, wordLen);
+        for (i = wordLen; i < 16U; i++) {
+            SAC_IADR_REG = 0U;
+        }
+        SAC_SACSFR1_REG |= SAC_SACSFR1_START;
+        if (HASH_WaitHashDone() != 0U) {
+            return HASH_TimeOut_ERROR;
+        }
+        wordLen = 0U;
+    }
+
+    BufToFIFO(&SAC_IADR_REG, (const uint32_t *)(const void *)ctx->msgBuf, wordLen);
+    for (i = wordLen; i < 14U; i++) {
+        SAC_IADR_REG = 0U;
+    }
+    SAC_IADR_REG = ctx->msgByteLen[0];
+    SAC_IADR_REG = ctx->msgByteLen[1];
+
+    SAC_SACSFR1_REG |= SAC_SACSFR1_START;
+    if (HASH_WaitHashDone() != 0U) {
+        return HASH_TimeOut_ERROR;
+    }
+    return HASH_PadMsg_OK;
 }
 
 /**
  * @brief Hash init
  * @param[in] ctx pointer to HASH_CTX struct
- * @return HASH_Init_OK, Hash init success; others: Hash init fail
- * @note 1.Please refer to the demo in user guidance before using this function 
+ * @return HASH_Init_OK,  Hash init success; othets:  Hash init fail
+ * @note   1.Please refer to the demo in user guidance before using this function
+ * @discovery GCC HASH_Init+0x28..+0x62: RCC_AHB1PCLKEN |= SACEN;
+ *            SACCR = HASH_SACCR | 0x80; CLEAR_ARAM_DONE_CHECK();
+ *            SACSFR1 = HASH_HASHCTRL; K constants uploaded to KADR;
+ *            MD5 additionally uploads MD5_S (16 words) to P2ADR. The
+ *            IV is NOT uploaded here (HASH_Start does that) and no
+ *            context counter is reset.
  */
-uint32_t HASH_Init(HASH_CTX* ctx)
+uint32_t HASH_Init(HASH_CTX *ctx)
 {
-    if (!ctx) {
+    if ((ctx == NULL) || !HASH_IsKnownAlg(ctx->hashAlg)) {
         return HASH_Init_ERROR;
     }
-    
-    // Validate algorithm
-    if (ctx->hashAlg != &HASH_ALG_SHA1[0] &&
-        ctx->hashAlg != &HASH_ALG_SHA224[0] &&
-        ctx->hashAlg != &HASH_ALG_SHA256[0] &&
-        ctx->hashAlg != &HASH_ALG_SM3[0] &&
-        ctx->hashAlg != &HASH_ALG_MD5[0]) {
-        return HASH_Init_ERROR;
-    }
-    
-    // Enable HASH peripheral clock
-    *(volatile uint32_t*)(HASH_RCC_BASE + HASH_RCC_AHBENR) |= HASH_AHBENR_HASHEN;
-    
-    // Initialize HASH control register
-    uint32_t ctrl_value = ctx->hashAlg->HASH_HASHCTRL | HASH_CR_INIT;
-    *(volatile uint32_t*)(HASH_BASE + HASH_CR) = ctrl_value;
-    
-    // Wait for initialization to complete
+
+    RCC_AHB1PCLKEN_REG |= RCC_AHB1PCLKEN_SACEN;
+
+    SAC_SACCR_REG = ctx->hashAlg->HASH_SACCR | SAC_SACCR_ARAM_CLR;
     if (CLEAR_ARAM_DONE_CHECK() == Time_Out) {
         return HASH_TimeOut_ERROR;
     }
-    
-    // Set algorithm-specific configuration
-    *(volatile uint32_t*)(HASH_BASE + HASH_IMR) = ctx->hashAlg->HASH_SACCR;
-    
-    // Load initial values
-    BufToFIFO(HASH_BASE + HASH_CSR + 0x3C, ctx->hashAlg->IV, ctx->hashAlg->IVLen);
-    
-    // Special handling for MD5 algorithm
+
+    SAC_SACSFR1_REG = ctx->hashAlg->HASH_HASHCTRL;
+
+    BufToFIFO(&SAC_KADR_REG, ctx->hashAlg->K, ctx->hashAlg->KLen);
+
     if (ctx->hashAlg->HashAlgID == ALG_MD5) {
-        BufToFIFO(HASH_BASE + HASH_CSR + 0x34, MD5_S, 16);
+        BufToFIFO(&SAC_P2ADR_REG, MD5_S, 16U);
     }
-    
+
     return HASH_Init_OK;
 }
 
 /**
  * @brief Hash start
  * @param[in] ctx pointer to HASH_CTX struct
- * @return HASH_Start_OK, Hash start success; others: Hash start fail
- * @note 1.Please refer to the demo in user guidance before using this function 
- *         2.HASH_Init() should be recalled before use this function 
+ * @return HASH_Start_OK,  Hash start success; othets:  Hash start fail
+ * @note   1.Please refer to the demo in user guidance before using this function
+ *         2.HASH_Init() should be recalled before use this function
+ * @discovery GCC HASH_Start+0x2a..+0x62: zeroes msgByteLen[4], sets
+ *            msgIdx = 0; HASH_SEQUENCE_TRUE copies the table IV into
+ *            ctx->IV (context-save mode); HASH_SEQUENCE_FALSE pushes
+ *            the table IV to P1ADR (hardware-only state); any other
+ *            sequence value fails with HASH_Start_ERROR.
  */
-uint32_t HASH_Start(HASH_CTX* ctx)
+uint32_t HASH_Start(HASH_CTX *ctx)
 {
-    if (!ctx) {
+    if ((ctx == NULL) || !HASH_IsKnownAlg(ctx->hashAlg)) {
         return HASH_Start_ERROR;
     }
-    
-    // Validate algorithm
-    if (ctx->hashAlg != &HASH_ALG_SHA1[0] &&
-        ctx->hashAlg != &HASH_ALG_SHA224[0] &&
-        ctx->hashAlg != &HASH_ALG_SHA256[0] &&
-        ctx->hashAlg != &HASH_ALG_SM3[0] &&
-        ctx->hashAlg != &HASH_ALG_MD5[0]) {
-        return HASH_Start_ERROR;
-    }
-    
-    // Clear message length
-    SetZero_U32(ctx->msgByteLen, 4);
-    ctx->msgIdx = 0;
-    
-    // Initialize IV based on sequence type
+
+    (void)SetZero_U32(ctx->msgByteLen, 4U);
+    ctx->msgIdx = 0U;
+
     if (ctx->sequence == HASH_SEQUENCE_TRUE) {
-        // Save IV in context
-        Cpy_U32(ctx->IV, ctx->hashAlg->IV, ctx->hashAlg->IVLen);
+        (void)Cpy_U32(ctx->IV, ctx->hashAlg->IV, ctx->hashAlg->IVLen);
     } else if (ctx->sequence == HASH_SEQUENCE_FALSE) {
-        // Load IV to hardware
-        BufToFIFO(HASH_BASE + HASH_CSR + 0x30, 
-                 ctx->hashAlg->IV, ctx->hashAlg->IVLen);
+        (void)BufToFIFO(&SAC_P1ADR_REG, ctx->hashAlg->IV, ctx->hashAlg->IVLen);
     } else {
         return HASH_Start_ERROR;
     }
-    
+
     return HASH_Start_OK;
 }
 
@@ -340,516 +481,308 @@ uint32_t HASH_Start(HASH_CTX* ctx)
  * @brief Hash update
  * @param[in] ctx pointer to HASH_CTX struct
  * @param[in] in pointer to message
- * @param[in] byteLen length of message in bytes
- * @return HASH_Update_OK, Hash update success; others: Hash update fail
- * @note 1.Please refer to the demo in user guidance before using this function 
- *         2.HASH_Init() and HASH_Start() should be recalled before use this function 
+ * @param[out] out pointer tohash result,digest
+ * @return HASH_Update_OK,  Hash update success; othets:  Hash update fail
+ * @note   1.Please refer to the demo in user guidance before using this function
+ *         2.HASH_Init() and HASH_Start() should be recalled before use this function
+ * @discovery GCC HASH_Update+0x0a..+0x1bc. Validation order: ctx NULL
+ *            and unknown table -> HASH_Update_ERROR; byteLen == 0 ->
+ *            success; in == NULL -> success (silent drop, suspected
+ *            vendor defect); clock off or SACCR & 0x12 != 0x12 ->
+ *            HASH_Init_ERROR. ByteLenPlus failure returns its own
+ *            code (HASH_ByteLenPlus_ERROR). Inputs not spanning a
+ *            block are buffered; otherwise, in context-save mode the
+ *            saved IV is pushed to P1ADR first, a partial block is
+ *            filled and compressed, remaining complete blocks are
+ *            pushed either directly (4-byte aligned input) or through
+ *            msgBuf, the tail is rebuffered, and in context-save mode
+ *            the resulting state is read back from OADR into ctx->IV.
  */
-uint32_t HASH_Update(HASH_CTX* ctx, uint8_t* in, uint32_t byteLen)
+uint32_t HASH_Update(HASH_CTX *ctx, uint8_t *in, uint32_t byteLen)
 {
-    if (!ctx || !in || !byteLen) {
-        return (!ctx || !in) ? HASH_Update_ERROR : HASH_Update_OK;
-    }
-    
-    // Validate algorithm
-    if (ctx->hashAlg != &HASH_ALG_SHA1[0] &&
-        ctx->hashAlg != &HASH_ALG_SHA224[0] &&
-        ctx->hashAlg != &HASH_ALG_SHA256[0] &&
-        ctx->hashAlg != &HASH_ALG_SM3[0] &&
-        ctx->hashAlg != &HASH_ALG_MD5[0]) {
+    const HASH_ALG *alg;
+    uint32_t cycle;
+    uint32_t begin;
+    uint32_t remainder;
+    uint32_t BlockByteLen;
+    uint32_t i;
+    uint32_t ret;
+
+    if ((ctx == NULL) || !HASH_IsKnownAlg(ctx->hashAlg)) {
         return HASH_Update_ERROR;
     }
-    
-    // Check hardware status
-    if ((*(volatile uint32_t*)(HASH_RCC_BASE + HASH_RCC_AHBENR) & HASH_AHBENR_HASHEN) != HASH_AHBENR_HASHEN ||
-        (*(volatile uint32_t*)(HASH_BASE + HASH_CR) & 0x12) != 0x12) {
-        return HASH_Update_ERROR;
-    }
-    
-    uint32_t newMsgIdx = ctx->msgIdx + byteLen;
-    uint32_t fullBlocks = newMsgIdx >> ctx->hashAlg->BlockByteLen;
-    uint32_t blockSize = ctx->hashAlg->BlockWordLen;
-    uint32_t msgBlockSize = ctx->hashAlg->BlockByteLen;
-    
-    // Update byte length counter
-    uint32_t result = ctx->hashAlg->ByteLenPlus(ctx->msgByteLen, byteLen);
-    if (result != HASH_ByteLenPlus_OK) {
-        return HASH_Update_ERROR;
-    }
-    
-    // If we don't have a full block yet
-    if (newMsgIdx < msgBlockSize) {
-        Cpy_U8(&ctx->msgBuf[ctx->msgIdx], in, byteLen);
-        ctx->msgIdx = newMsgIdx;
+
+    if (byteLen == 0U) {
         return HASH_Update_OK;
     }
-    
-    // Save current IV if in sequence mode
+    if (in == NULL) {
+        /* v1.2.0 returns success without hashing the data. */
+        return HASH_Update_OK;
+    }
+
+    if (((RCC_AHB1PCLKEN_REG & RCC_AHB1PCLKEN_SACEN) == 0U) ||
+        ((SAC_SACCR_REG & SAC_SACCR_HASH_READY) != SAC_SACCR_HASH_READY)) {
+        return HASH_Init_ERROR;
+    }
+
+    alg = ctx->hashAlg;
+    BlockByteLen = alg->BlockByteLen;
+
+    ret = alg->ByteLenPlus(ctx->msgByteLen, byteLen);
+    if (ret != HASH_ByteLenPlus_OK) {
+        return ret;
+    }
+
+    begin = ctx->msgIdx + byteLen;
+    if (begin < BlockByteLen) {
+        (void)Cpy_U8(&ctx->msgBuf[ctx->msgIdx], in, byteLen);
+        ctx->msgIdx = begin;
+        return HASH_Update_OK;
+    }
+
     if (ctx->sequence == HASH_SEQUENCE_TRUE) {
-        BufToFIFO(HASH_BASE + HASH_CSR + 0x30, ctx->IV, ctx->hashAlg->IVLen);
+        (void)BufToFIFO(&SAC_P1ADR_REG, ctx->IV, alg->IVLen);
     }
-    
-    // Process partial block first
-    if (ctx->msgIdx > 0) {
-        uint32_t remaining = msgBlockSize - ctx->msgIdx;
-        Cpy_U8(&ctx->msgBuf[ctx->msgIdx], in, remaining);
-        
-        uint32_t procResult = HASH_ProcMsgBuf(ctx);
-        if (procResult != HASH_ProcMsgBuf_OK) {
-            return procResult;
+
+    cycle = begin >> alg->Cycle; /* complete blocks in this update */
+
+    if (ctx->msgIdx != 0U) {
+        remainder = BlockByteLen - ctx->msgIdx;
+        (void)Cpy_U8(&ctx->msgBuf[ctx->msgIdx], in, remainder);
+        ret = HASH_ProcMsgBuf(ctx);
+        if (ret == HASH_TimeOut_ERROR) {
+            return HASH_TimeOut_ERROR;
         }
-        
-        in += remaining;
-        byteLen -= remaining;
-        fullBlocks--;
+        cycle--;
+        in += remainder;
     }
-    
-    // Process full blocks
-    for (uint32_t i = 0; i < fullBlocks; i++) {
-        if (((uint32_t)in & 0x3) != 0) {
-            // Unaligned access - copy to buffer first
-            Cpy_U8(ctx->msgBuf, in, msgBlockSize);
-            uint32_t procResult = HASH_ProcMsgBuf(ctx);
-            if (procResult != HASH_ProcMsgBuf_OK) {
-                return procResult;
+
+    for (i = 0U; i < cycle; i++) {
+        if (((uint32_t)(uintptr_t)in & 3U) != 0U) {
+            (void)Cpy_U8(ctx->msgBuf, in, BlockByteLen);
+            ret = HASH_ProcMsgBuf(ctx);
+            if (ret == HASH_TimeOut_ERROR) {
+                return HASH_TimeOut_ERROR;
             }
         } else {
-            // Aligned access - direct to FIFO
-            BufToFIFO(HASH_BASE + HASH_DIN, (uint32_t*)in, blockSize);
-            
-            // Start processing
-            *(volatile uint32_t*)(HASH_BASE + HASH_IMR) |= 0x80;
-            
-            // Wait for completion
-            uint32_t timeout = 0;
-            while ((*(volatile uint32_t*)(HASH_BASE + HASH_SR) & HASH_SR_DINIS) == 0) {
-                if (timeout++ > Alg_TimeOut_Counter) {
-                    return HASH_TimeOut_ERROR;
-                }
+            (void)BufToFIFO(&SAC_IADR_REG, (const uint32_t *)(const void *)in,
+                            alg->BlockWordLen);
+            SAC_SACSFR1_REG |= SAC_SACSFR1_START;
+            if (HASH_WaitHashDone() != 0U) {
+                return HASH_TimeOut_ERROR;
             }
-            
-            // Clear interrupt
-            *(volatile uint32_t*)(HASH_BASE + HASH_SR) |= HASH_SR_DINIS;
         }
-        in += msgBlockSize;
+        in += BlockByteLen;
     }
-    
-    // Store remaining data in buffer
-    ctx->msgIdx = (msgBlockSize - 1) & newMsgIdx;
-    if (ctx->msgIdx > 0) {
-        Cpy_U8(ctx->msgBuf, in, ctx->msgIdx);
-    }
-    
-    // Restore IV if in sequence mode
+
+    ctx->msgIdx = (BlockByteLen - 1U) & begin;
+    (void)Cpy_U8(ctx->msgBuf, in, ctx->msgIdx);
+
     if (ctx->sequence == HASH_SEQUENCE_TRUE) {
-        FIFOToBuf(ctx->IV, HASH_BASE + HASH_CSR + 0x44, ctx->hashAlg->IVLen);
+        (void)FIFOToBuf(ctx->IV, &SAC_OADR_REG, alg->IVLen);
     }
-    
+
     return HASH_Update_OK;
 }
 
 /**
  * @brief Hash complete
  * @param[in] ctx pointer to HASH_CTX struct
- * @param[out] out pointer to hash result, digest
- * @return HASH_Complete_OK, Hash complete success; others: Hash complete fail
- * @note 1.Please refer to the demo in user guidance before using this function 
- *         2.HASH_Init(), HASH_Start() and HASH_Update() should be recalled before use this function 
+ * @param[out] out pointer tohash result,digest
+ * @return HASH_Complete_OK,  Hash complete success; othets:  Hash complete fail
+ * @note   1.Please refer to the demo in user guidance before using this function
+ *         2.HASH_Init(), HASH_Start() and HASH_Update() should be recalled before use this function
+ * @discovery GCC HASH_Complete+0x08..+0x90. Zeroes a 64-byte stack
+ *            digest buffer first, then dereferences ctx without a
+ *            NULL check (vendor behavior). out NULL or unknown table
+ *            -> HASH_Update_ERROR; hardware not ready ->
+ *            HASH_Init_ERROR (HASH_Complete_ERROR is never returned).
+ *            In context-save mode the saved IV is pushed to P1ADR
+ *            before padding. The PadMsg return value is ignored
+ *            (suspected vendor defect): the digest is read even if
+ *            padding timed out. Aligned out goes through the temp
+ *            buffer plus Cpy_U8; unaligned out is filled directly by
+ *            FIFOToBuf.
  */
-uint32_t HASH_Complete(HASH_CTX* ctx, uint8_t* out)
+uint32_t HASH_Complete(HASH_CTX *ctx, uint8_t *out)
 {
-    uint8_t tempDigest[64];
-    uint32_t digestSize = ctx->hashAlg->DigestWordLen;
-    
-    if (!ctx || !out) {
-        return HASH_Complete_ERROR;
+    uint8_t tmpBuf[64];
+    uint32_t wordLen;
+
+    (void)memset(tmpBuf, 0, sizeof(tmpBuf));
+
+    if ((out == NULL) || !HASH_IsKnownAlg(ctx->hashAlg)) {
+        return HASH_Update_ERROR;
     }
-    
-    // Validate algorithm
-    if (ctx->hashAlg != &HASH_ALG_SHA1[0] &&
-        ctx->hashAlg != &HASH_ALG_SHA224[0] &&
-        ctx->hashAlg != &HASH_ALG_SHA256[0] &&
-        ctx->hashAlg != &HASH_ALG_SM3[0] &&
-        ctx->hashAlg != &HASH_ALG_MD5[0]) {
-        return HASH_Complete_ERROR;
+
+    if (((RCC_AHB1PCLKEN_REG & RCC_AHB1PCLKEN_SACEN) == 0U) ||
+        ((SAC_SACCR_REG & SAC_SACCR_HASH_READY) != SAC_SACCR_HASH_READY)) {
+        return HASH_Init_ERROR;
     }
-    
-    // Check hardware status
-    if ((*(volatile uint32_t*)(HASH_RCC_BASE + HASH_RCC_AHBENR) & HASH_AHBENR_HASHEN) != HASH_AHBENR_HASHEN ||
-        (*(volatile uint32_t*)(HASH_BASE + HASH_CR) & 0x12) != 0x12) {
-        return HASH_Complete_ERROR;
-    }
-    
-    // Save current IV if in sequence mode
+
+    wordLen = ctx->hashAlg->DigestWordLen;
+
     if (ctx->sequence == HASH_SEQUENCE_TRUE) {
-        BufToFIFO(HASH_BASE + HASH_CSR + 0x30, ctx->IV, ctx->hashAlg->IVLen);
+        (void)BufToFIFO(&SAC_P1ADR_REG, ctx->IV, ctx->hashAlg->IVLen);
     }
-    
-    // Perform message padding
-    uint32_t result = ctx->hashAlg->PadMsg(ctx);
-    if (result != HASH_PadMsg_OK) {
-        return result;
-    }
-    
-    // Read digest from hardware
-    if (((uint32_t)out & 0x3) != 0) {
-        // Unaligned output buffer
-        FIFOToBuf((uint32_t*)tempDigest, HASH_BASE + HASH_HR0, digestSize);
-        Cpy_U8(out, tempDigest, 4 * digestSize);
+
+    (void)ctx->hashAlg->PadMsg(ctx);
+
+    if (((uint32_t)(uintptr_t)out & 3U) == 0U) {
+        (void)FIFOToBuf(tmpBuf, &SAC_OADR_REG, wordLen);
+        (void)Cpy_U8(out, tmpBuf, wordLen * 4U);
     } else {
-        // Aligned output buffer
-        FIFOToBuf((uint32_t*)out, HASH_BASE + HASH_HR0, digestSize);
+        (void)FIFOToBuf(out, &SAC_OADR_REG, wordLen);
     }
-    
+
     return HASH_Complete_OK;
 }
 
 /**
  * @brief Hash close
- * @return HASH_Close_OK, Hash close success; others: Hash close fail
- * @note 1.Please refer to the demo in user guidance before using this function  
+ * @return HASH_Close_OK, Hash close success; othets: Hash close fail
+ * @note   1.Please refer to the demo in user guidance before using this function
+ * @discovery GCC HASH_Close+0x02..+0x3e: returns OK immediately when
+ *            the SAC clock is off or SACCR & 0x12 != 0x12; otherwise
+ *            sets SACCR bit8, clears the 0x12 configuration bits, runs
+ *            CLEAR_ARAM_DONE_CHECK (timeout -> HASH_TimeOut_ERROR,
+ *            not HASH_Close_ERROR) and finally gates the clock off.
  */
 uint32_t HASH_Close(void)
 {
-    // Check if HASH peripheral is enabled
-    if ((*(volatile uint32_t*)(HASH_RCC_BASE + HASH_RCC_AHBENR) & HASH_AHBENR_HASHEN) == HASH_AHBENR_HASHEN &&
-        (*(volatile uint32_t*)(HASH_BASE + HASH_CR) & 0x12) == 0x12) {
-        
-        // Disable HASH peripheral
-        *(volatile uint32_t*)(HASH_BASE + HASH_CR) |= 0x100;
-        *(volatile uint32_t*)(HASH_BASE + HASH_CR) &= 0xFFFFFFED;
-        
-        if (CLEAR_ARAM_DONE_CHECK() == Time_Out) {
-            return HASH_Close_ERROR;
-        }
-        
-        // Disable clock
-        *(volatile uint32_t*)(HASH_RCC_BASE + HASH_RCC_AHBENR) &= ~HASH_AHBENR_HASHEN;
+    if ((RCC_AHB1PCLKEN_REG & RCC_AHB1PCLKEN_SACEN) == 0U) {
+        return HASH_Close_OK;
     }
-    
+    if ((SAC_SACCR_REG & SAC_SACCR_HASH_READY) != SAC_SACCR_HASH_READY) {
+        return HASH_Close_OK;
+    }
+
+    SAC_SACCR_REG |= SAC_SACCR_CLOSE;
+    SAC_SACCR_REG &= ~SAC_SACCR_HASH_READY;
+
+    if (CLEAR_ARAM_DONE_CHECK() == Time_Out) {
+        return HASH_TimeOut_ERROR;
+    }
+
+    RCC_AHB1PCLKEN_REG &= ~RCC_AHB1PCLKEN_SACEN;
     return HASH_Close_OK;
 }
 
 /**
- * @brief Add byte length with carry handling
- * @param[in,out] msgByteLen pointer to message length array (4 words)
- * @param[in] byteLen bytes to add
- * @return HASH_ByteLenPlus_OK, success; HASH_ByteLenPlus_ERROR, overflow
- * @note Internal function used for 128-bit message length tracking
+ * @brief One-shot hash driver shared by all five wrappers.
+ * @param[in] alg Algorithm table.
+ * @param[in] in Message buffer.
+ * @param[in] byteLen Message length in bytes.
+ * @param[out] out Digest output buffer.
+ * @return Always 0; every step result is discarded, matching v1.2.0.
+ * @discovery GCC SM3_Hash/SHA1_Hash/SHA224_Hash/SHA256_Hash/MD5_Hash
+ *            are identical 0x44-byte wrappers over one 224-byte stack
+ *            HASH_CTX (relocations resolve to HASH_Init, HASH_Start,
+ *            HASH_Update, HASH_Complete, HASH_Close) with
+ *            sequence = HASH_SEQUENCE_FALSE and a hard-coded
+ *            "return 0".
  */
-static uint32_t HASH_ByteLenPlus1(uint32_t* msgByteLen, uint32_t byteLen)
+static uint32_t HASH_OneShot(const HASH_ALG *alg, uint8_t *in, uint32_t byteLen, uint8_t *out)
 {
-    msgByteLen[1] += byteLen;
-    if (msgByteLen[1] < byteLen) {
-        msgByteLen[0]++;
-    }
-    
-    // Check for overflow (max 2^29 bits supported by hardware)
-    if (msgByteLen[0] >= 0x20000000UL) {
-        return HASH_ByteLenPlus_ERROR;
-    }
-    
-    return HASH_ByteLenPlus_OK;
+    HASH_CTX ctx;
+
+    ctx.hashAlg = alg;
+    ctx.sequence = HASH_SEQUENCE_FALSE;
+
+    (void)HASH_Init(&ctx);
+    (void)HASH_Start(&ctx);
+    (void)HASH_Update(&ctx, in, byteLen);
+    (void)HASH_Complete(&ctx, out);
+    (void)HASH_Close();
+
+    return 0U;
 }
 
 /**
- * @brief Pad message for hash completion
- * @param[in,out] ctx pointer to HASH_CTX struct
- * @return HASH_PadMsg_OK, success; HASH_PadMsg_ERROR, error
- * @note Internal function implementing standard hash message padding
- */
-static uint32_t HASH_PadMsg1(HASH_CTX* ctx)
-{
-    uint32_t wordsToPad = (ctx->msgIdx + 4) >> 2;
-    
-    // Add padding bit
-    ctx->msgBuf[ctx->msgIdx] = 0x80;
-    ctx->msgBuf[ctx->msgIdx + 1] = 0;
-    ctx->msgBuf[ctx->msgIdx + 2] = 0;
-    ctx->msgBuf[ctx->msgIdx + 3] = 0;
-    
-    // Convert bit length from byte length
-    ctx->msgByteLen[2] = (ctx->msgByteLen[2] << 3) | (ctx->msgByteLen[3] >> 29);
-    ctx->msgByteLen[3] <<= 3;
-    
-    // Handle MD5 little-endian format
-    if (ctx->hashAlg->HashAlgID == ALG_MD5) {
-        uint32_t temp = ctx->msgByteLen[2];
-        ctx->msgByteLen[2] = ctx->msgByteLen[3];
-        ctx->msgByteLen[3] = temp;
-    } else {
-        // Big-endian format for other algorithms
-        ReverseBytesInWord_U32(&ctx->msgByteLen[2], &ctx->msgByteLen[2], 2);
-    }
-    
-    // Process current block if not enough space
-    if (ctx->msgIdx > 0x37) {
-        BufToFIFO(HASH_BASE + HASH_DIN, (uint32_t*)ctx->msgBuf, wordsToPad);
-        
-        // Fill rest of block
-        for (uint32_t i = wordsToPad; i < 0x10; i++) {
-            *(volatile uint32_t*)(HASH_BASE + HASH_DIN) = 0;
-        }
-        
-        // Start processing
-        *(volatile uint32_t*)(HASH_BASE + HASH_IMR) |= 0x80;
-        
-        uint32_t timeout = 0;
-        while ((*(volatile uint32_t*)(HASH_BASE + HASH_SR) & HASH_SR_DINIS) == 0) {
-            if (timeout++ > Alg_TimeOut_Counter) {
-                return HASH_TimeOut_ERROR;
-            }
-        }
-        
-        *(volatile uint32_t*)(HASH_BASE + HASH_SR) |= HASH_SR_DINIS;
-        wordsToPad = 0;
-    }
-    
-    // Final block with message length
-    BufToFIFO(HASH_BASE + HASH_DIN, (uint32_t*)ctx->msgBuf, wordsToPad);
-    
-    // Fill padding area
-    for (uint32_t i = wordsToPad; i < 0xE; i++) {
-        *(volatile uint32_t*)(HASH_BASE + HASH_DIN) = 0;
-    }
-    
-    // Add message length
-    *(volatile uint32_t*)(HASH_BASE + HASH_DIN) = ctx->msgByteLen[2];
-    *(volatile uint32_t*)(HASH_BASE + HASH_DIN) = ctx->msgByteLen[3];
-    
-    // Final processing
-    *(volatile uint32_t*)(HASH_BASE + HASH_IMR) |= 0x80;
-    
-    uint32_t timeout = 0;
-    while ((*(volatile uint32_t*)(HASH_BASE + HASH_SR) & HASH_SR_DINIS) == 0) {
-        if (timeout++ > Alg_TimeOut_Counter) {
-            return HASH_TimeOut_ERROR;
-        }
-    }
-    
-    *(volatile uint32_t*)(HASH_BASE + HASH_SR) |= HASH_SR_DINIS;
-    
-    return HASH_PadMsg_OK;
-}
-
-/**
- * @brief SM3 Hash for 256bits digest
+ * @brief  SM3 Hash for 256bits digest
  * @param[in] in pointer to message
- * @param[in] byteLen length of in
- * @param[out] out pointer to hash result, digest
- * @return SM3_Hash_OK, SM3 hash success; others: SM3 hash fail
- * @note 1.Please refer to the demo in user guidance before using this function  
+ * @param[in] byte length of in
+ * @param[out] out pointer tohash result,digest
+ * @return SM3_Hash_OK, SM3 hash success; othets: SM3 hash fail
+ * @note   1.Please refer to the demo in user guidance before using this function
  */
-uint32_t SM3_Hash(uint8_t* in, uint32_t byteLen, uint8_t* out)
+uint32_t SM3_Hash(uint8_t *in, uint32_t byteLen, uint8_t *out)
 {
-    HASH_CTX ctx[56];  // Ensure sufficient stack space
-    
-    // Initialize context
-    ctx[0].hashAlg = &HASH_ALG_SM3[0];
-    ctx[1].sequence = HASH_SEQUENCE_FALSE;
-    
-    // Process hash
-    if (HASH_Init((HASH_CTX*)ctx) != HASH_Init_OK) {
-        return SM3_Hash_ERROR;
-    }
-    
-    if (HASH_Start((HASH_CTX*)ctx) != HASH_Start_OK) {
-        return SM3_Hash_ERROR;
-    }
-    
-    if (HASH_Update((HASH_CTX*)ctx, in, byteLen) != HASH_Update_OK) {
-        return SM3_Hash_ERROR;
-    }
-    
-    if (HASH_Complete((HASH_CTX*)ctx, out) != HASH_Complete_OK) {
-        return SM3_Hash_ERROR;
-    }
-    
-    if (HASH_Close() != HASH_Close_OK) {
-        return SM3_Hash_ERROR;
-    }
-    
-    return SM3_Hash_OK;
+    return HASH_OneShot(&HASH_ALG_SM3[0], in, byteLen, out);
 }
 
 /**
- * @brief SHA1 Hash
+ * @brief  SHA1 Hash
  * @param[in] in pointer to message
- * @param[in] byteLen length of in
- * @param[out] out pointer to hash result, digest
- * @return SHA1_Hash_OK, SHA1 hash success; others: SHA1 hash fail
- * @note 1.Please refer to the demo in user guidance before using this function  
+ * @param[in] byte length of in
+ * @param[out] out pointer tohash result,digest
+ * @return SHA1_Hash_OK, SHA1 hash success; othets: SHA1 hash fail
+ * @note   1.Please refer to the demo in user guidance before using this function
  */
-uint32_t SHA1_Hash(uint8_t* in, uint32_t byteLen, uint8_t* out)
+uint32_t SHA1_Hash(uint8_t *in, uint32_t byteLen, uint8_t *out)
 {
-    HASH_CTX ctx[56];  // Ensure sufficient stack space
-    
-    // Initialize context
-    ctx[0].hashAlg = &HASH_ALG_SHA1[0];
-    ctx[1].sequence = HASH_SEQUENCE_FALSE;
-    
-    // Process hash
-    if (HASH_Init((HASH_CTX*)ctx) != HASH_Init_OK) {
-        return SHA1_Hash_ERROR;
-    }
-    
-    if (HASH_Start((HASH_CTX*)ctx) != HASH_Start_OK) {
-        return SHA1_Hash_ERROR;
-    }
-    
-    if (HASH_Update((HASH_CTX*)ctx, in, byteLen) != HASH_Update_OK) {
-        return SHA1_Hash_ERROR;
-    }
-    
-    if (HASH_Complete((HASH_CTX*)ctx, out) != HASH_Complete_OK) {
-        return SHA1_Hash_ERROR;
-    }
-    
-    if (HASH_Close() != HASH_Close_OK) {
-        return SHA1_Hash_ERROR;
-    }
-    
-    return SHA1_Hash_OK;
+    return HASH_OneShot(&HASH_ALG_SHA1[0], in, byteLen, out);
 }
 
 /**
- * @brief SHA224 Hash
+ * @brief  SHA224 Hash
  * @param[in] in pointer to message
- * @param[in] byteLen length of in
- * @param[out] out pointer to hash result, digest
- * @return SHA224_Hash_OK, SHA224 hash success; others: SHA224 hash fail
- * @note 1.Please refer to the demo in user guidance before using this function  
+ * @param[in] byte length of in
+ * @param[out] out pointer tohash result,digest
+ * @return SHA224_Hash_OK, SHA224 hash success; othets: SHA224 hash fail
+ * @note   1.Please refer to the demo in user guidance before using this function
  */
-uint32_t SHA224_Hash(uint8_t* in, uint32_t byteLen, uint8_t* out)
+uint32_t SHA224_Hash(uint8_t *in, uint32_t byteLen, uint8_t *out)
 {
-    HASH_CTX ctx[56];  // Ensure sufficient stack space
-    
-    // Initialize context
-    ctx[0].hashAlg = &HASH_ALG_SHA224[0];
-    ctx[1].sequence = HASH_SEQUENCE_FALSE;
-    
-    // Process hash
-    if (HASH_Init((HASH_CTX*)ctx) != HASH_Init_OK) {
-        return SHA224_Hash_ERROR;
-    }
-    
-    if (HASH_Start((HASH_CTX*)ctx) != HASH_Start_OK) {
-        return SHA224_Hash_ERROR;
-    }
-    
-    if (HASH_Update((HASH_CTX*)ctx, in, byteLen) != HASH_Update_OK) {
-        return SHA224_Hash_ERROR;
-    }
-    
-    if (HASH_Complete((HASH_CTX*)ctx, out) != HASH_Complete_OK) {
-        return SHA224_Hash_ERROR;
-    }
-    
-    if (HASH_Close() != HASH_Close_OK) {
-        return SHA224_Hash_ERROR;
-    }
-    
-    return SHA224_Hash_OK;
+    return HASH_OneShot(&HASH_ALG_SHA224[0], in, byteLen, out);
 }
 
 /**
- * @brief SHA256 Hash
+ * @brief  SHA256 Hash
  * @param[in] in pointer to message
- * @param[in] byteLen length of in
- * @param[out] out pointer to hash result, digest
- * @return SHA256_Hash_OK, SHA256 hash success; others: SHA256 hash fail
- * @note 1.Please refer to the demo in user guidance before using this function  
+ * @param[in] byte length of in
+ * @param[out] out pointer tohash result,digest
+ * @return SHA256_Hash_OK, SHA256 hash success; othets: SHA256 hash fail
+ * @note   1.Please refer to the demo in user guidance before using this function
  */
-uint32_t SHA256_Hash(uint8_t* in, uint32_t byteLen, uint8_t* out)
+uint32_t SHA256_Hash(uint8_t *in, uint32_t byteLen, uint8_t *out)
 {
-    HASH_CTX ctx[56];  // Ensure sufficient stack space
-    
-    // Initialize context
-    ctx[0].hashAlg = &HASH_ALG_SHA256[0];
-    ctx[1].sequence = HASH_SEQUENCE_FALSE;
-    
-    // Process hash
-    if (HASH_Init((HASH_CTX*)ctx) != HASH_Init_OK) {
-        return SHA256_Hash_ERROR;
-    }
-    
-    if (HASH_Start((HASH_CTX*)ctx) != HASH_Start_OK) {
-        return SHA256_Hash_ERROR;
-    }
-    
-    if (HASH_Update((HASH_CTX*)ctx, in, byteLen) != HASH_Update_OK) {
-        return SHA256_Hash_ERROR;
-    }
-    
-    if (HASH_Complete((HASH_CTX*)ctx, out) != HASH_Complete_OK) {
-        return SHA256_Hash_ERROR;
-    }
-    
-    if (HASH_Close() != HASH_Close_OK) {
-        return SHA256_Hash_ERROR;
-    }
-    
-    return SHA256_Hash_OK;
+    return HASH_OneShot(&HASH_ALG_SHA256[0], in, byteLen, out);
 }
 
 /**
- * @brief MD5 Hash
+ * @brief  MD5 Hash
  * @param[in] in pointer to message
- * @param[in] byteLen length of in
- * @param[in] out pointer to hash result, digest
- * @return MD5_Hash_OK, MD5 hash success; others: MD5 hash fail
- * @note 1.Please refer to the demo in user guidance before using this function  
+ * @param[in] byte length of in
+ * @param[in] out pointer tohash result,digest
+ * @return MD5_Hash_OK, MD5 hash success; othets: MD5 hash fail
+ * @note   1.Please refer to the demo in user guidance before using this function
  */
-uint32_t MD5_Hash(uint8_t* in, uint32_t byteLen, uint8_t* out)
+uint32_t MD5_Hash(uint8_t *in, uint32_t byteLen, uint8_t *out)
 {
-    HASH_CTX ctx[56];  // Ensure sufficient stack space
-    
-    // Initialize context
-    ctx[0].hashAlg = &HASH_ALG_MD5[0];
-    ctx[1].sequence = HASH_SEQUENCE_FALSE;
-    
-    // Process hash
-    if (HASH_Init((HASH_CTX*)ctx) != HASH_Init_OK) {
-        return MD5_Hash_ERROR;
-    }
-    
-    if (HASH_Start((HASH_CTX*)ctx) != HASH_Start_OK) {
-        return MD5_Hash_ERROR;
-    }
-    
-    if (HASH_Update((HASH_CTX*)ctx, in, byteLen) != HASH_Update_OK) {
-        return MD5_Hash_ERROR;
-    }
-    
-    if (HASH_Complete((HASH_CTX*)ctx, out) != HASH_Complete_OK) {
-        return MD5_Hash_ERROR;
-    }
-    
-    if (HASH_Close() != HASH_Close_OK) {
-        return MD5_Hash_ERROR;
-    }
-    
-    return MD5_Hash_OK;
+    return HASH_OneShot(&HASH_ALG_MD5[0], in, byteLen, out);
 }
 
 /**
  * @brief Get HASH lib version
- * @param[out] type pointer one byte type information represents the type of the lib, like Commercial version.
+ * @param[out] type pointer one byte type information represents the type of the lib, like Commercial version.\
  * @Bits 0~4 stands for Commercial (C), Security (S), Normal (N), Evaluation (E), Test (T), Bits 5~7 are reserved. e.g. 0x09 stands for CE version.
  * @param[out] customer pointer one byte customer information represents customer ID. for example, 0x00 stands for standard version, 0x01 is for Tianyu customized version...
- * @param[out] date pointer array which include three bytes date information. If the returned bytes are 18,9,13,this denotes September 13,2018 
+ * @param[out] date pointer array which include three bytes date information. If the returned bytes are 18,9,13,this denotes September 13,2018
  * @param[out] version pointer one byte version information represents develop version of the lib. e.g. 0x12 denotes version 1.2.
  * @return none
- * @1.You can recall this function to get HASH lib information
+ * @1.You can recall this function to get RSA lib information
+ * @discovery GCC/armclang HASH_Version+0x02..+0x18: writes 1, 0,
+ *            {25,3,19} (2025-03-19, yy/mm/dd) and 0x10 (version 1.0
+ *            by the header convention) without NULL checks. Note the
+ *            v1.2.0 library reports an internal version of 0x10.
  */
-void HASH_Version(uint8_t* type, uint8_t* customer, uint8_t date[3], uint8_t* version)
+void HASH_Version(uint8_t *type, uint8_t *customer, uint8_t date[3], uint8_t *version)
 {
-    if (type) *type = 1;        // Normal version
-    if (customer) *customer = 0; // Standard customer
-    if (date) {
-        date[0] = 25;  // Year 2025 (25 + 2000)
-        date[1] = 3;   // March
-        date[2] = 19;  // Day 19
-    }
-    if (version) *version = 16; // Version 1.6
+    *type = 1U;
+    *customer = 0U;
+    date[0] = 25U;
+    date[1] = 3U;
+    date[2] = 19U;
+    *version = 0x10U;
 }

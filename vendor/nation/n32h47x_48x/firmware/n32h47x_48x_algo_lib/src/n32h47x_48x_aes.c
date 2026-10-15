@@ -1,358 +1,304 @@
+#include <stddef.h>
+
 #include "n32h47x_48x_aes.h"
 #include "n32h47x_48x_algo_common.h"
 
-/* Hardware register definitions for AES accelerator */
-#define AES_CR_REG        (*((volatile uint32_t *)0x4002A000))  // AES Control Register
-#define AES_SR_REG        (*((volatile uint32_t *)0x4002A004))  // AES Status Register  
-#define AES_DINR_REG      (*((volatile uint32_t *)0x4002A040))  // AES Data Input Register
-#define AES_DOUTR_REG     (*((volatile uint32_t *)0x4002A044))  // AES Data Output Register
-#define AES_KEYR0_REG     (*((volatile uint32_t *)0x4002A030))  // AES Key Register 0-3
-#define AES_KEYR1_REG     (*((volatile uint32_t *)0x4002A034))  // AES Key Register 1-3
-#define AES_KEYR2_REG     (*((volatile uint32_t *)0x4002A038))  // AES Key Register 2-3
-#define AES_KEYR3_REG     (*((volatile uint32_t *)0x4002A03C))  // AES Key Register 3-3
-#define AES_IVR0_REG      (*((volatile uint32_t *)0x4002A048))  // AES IV Register 0-3
-#define AES_IVR1_REG      (*((volatile uint32_t *)0x4002A04C))  // AES IV Register 1-3
-#define AES_IVR2_REG      (*((volatile uint32_t *)0x4002A050))  // AES IV Register 2-3
-#define AES_IVR3_REG      (*((volatile uint32_t *)0x4002A054))  // AES IV Register 3-3
-
-/* RCC register definitions */
-#define RCC_AHB2ENR_REG   (*((volatile uint32_t *)0x4002103C))  // RCC AHB2 peripheral clock enable register
-
-/* AES Control Register bit definitions */
-#define AES_CR_EN         0x00000001U    // AES enable
-#define AES_CR_START      0x00000002U    // AES start processing
-#define AES_CR_DMAOUTEN   0x00000008U    // DMA output enable
-#define AES_CR_DMAINEN    0x00000010U    // DMA input enable
-#define AES_CR_CCFC       0x00000080U    // Computation Complete Flag Clear
-#define AES_CR_ERRC       0x00000100U    // Error Clear
-#define AES_CR_CCIE       0x00000200U    // Computation Complete Interrupt Enable
-#define AES_CR_ERRIE      0x00000400U    // Error Interrupt Enable
-#define AES_CR_DATATYPE   0x00000C00U    // Data type selection
-#define AES_CR_MODE       0x00006000U    // AES mode selection
-#define AES_CR_CHMOD      0x00070000U    // AES chaining mode
-#define AES_CR_KEYSIZE    0x00180000U    // AES key size selection
-#define AES_CR_KEYSEL     0x00600000U    // AES key selection
-#define AES_CR_NPBLB      0x0F000000U    // Number of padding bytes in last block
-
-/* AES Status Register bit definitions */
-#define AES_SR_CCF        0x00000001U    // Computation Complete Flag
-#define AES_SR_RDERR      0x00000002U    // Read Error Flag
-#define AES_SR_WRERR      0x00000004U    // Write Error Flag
-#define AES_SR_BUSY       0x00000008U    // Busy Flag
-#define AES_SR_KEYVALID   0x00000010U    // Key Valid Flag
-
-/* RCC AHB2ENR bit definitions */
-#define RCC_AHB2ENR_AESEN 0x00008000U    // AES clock enable
-
-/* External function declaration for buffer to FIFO transfer */
-extern uint32_t BufToFIFO(uint32_t addr, uint32_t *data, uint32_t length);
-
-/**
- * @brief Initialize AES hardware accelerator
- * @param[in] parm pointer to AES parameter structure
- * @return AES_Init_OK on success, error code on failure
- * @note This function initializes the AES hardware with specified key, mode, and parameters
+/*
+ * Reconstructed from n32h47x_48x_algo_lib v1.2.0 binary (n32h47x_48x_aes.a,
+ * GCC arm with DWARF). The AES engine lives in the shared Security Algorithm
+ * Controller (SAC) block at 0x4002A000; see docs/registers_aes.md for the
+ * register map and the disassembly evidence behind every access below.
+ *
+ * Register names follow the DWARF SAC_TypeDef layout:
+ *   SACCR@0x00 SACSR@0x04 SACSFR1@0x0C P1ADR@0x30 KADR@0x3C IADR@0x40 OADR@0x44
  */
-uint32_t AES_Init(AES_PARM *parm)
+
+#define SAC_BASE 0x4002A000UL
+
+#define SAC_CR_REG   (*(volatile uint32_t *)(SAC_BASE + 0x00)) /* Control */
+#define SAC_SR_REG   (*(volatile uint32_t *)(SAC_BASE + 0x04)) /* Status flags */
+#define SAC_SFR1_REG (*(volatile uint32_t *)(SAC_BASE + 0x0C)) /* AES config */
+
+/* Data ports: one 32-bit little-endian word per access, FIFO ordered. */
+#define SAC_P1_FIFO_REG (*(volatile uint32_t *)(SAC_BASE + 0x30)) /* IV in, 4 words */
+#define SAC_K_FIFO_REG  (*(volatile uint32_t *)(SAC_BASE + 0x3C)) /* key in, keyWordLen words */
+#define SAC_I_FIFO_REG  (*(volatile uint32_t *)(SAC_BASE + 0x40)) /* data in, 4 words per block */
+#define SAC_O_FIFO_REG  (*(volatile uint32_t *)(SAC_BASE + 0x44)) /* data out, 4 words per block */
+
+/* SACCR bits. */
+#define SAC_CR_ALGSEL_MSK 0x0000000FUL /* 0=AES, 1=DES, 4=SM4 (DES/SM4 seen in sibling libs) */
+#define SAC_CR_ENABLE     0x00000010UL /* algorithm enable; read back as "initialized" */
+#define SAC_CR_CFG_BIT6   0x00000040UL /* set by every algorithm Init; purpose unknown */
+#define SAC_CR_ARAM_CLR   0x00000080UL /* write 1 to start ARAM clear; self-clearing busy */
+#define SAC_CR_DEINIT     0x00000100UL /* set in AES_Close before clearing ENABLE (suspected) */
+
+/* SACSR bits; both flags are cleared by writing 1 (library uses RMW OR). */
+#define SAC_SR_ARAM_DONE 0x00000001UL
+#define SAC_SR_DONE      0x00000002UL
+
+/* SACSFR1 bits. */
+#define SAC_SFR1_ENCRYPT 0x00000001UL /* DIR = 01: encrypt (also forced for CTR) */
+#define SAC_SFR1_DECRYPT 0x00000002UL /* DIR = 10: decrypt */
+#define SAC_SFR1_KEY192  0x00000008UL
+#define SAC_SFR1_KEY256  0x00000010UL
+#define SAC_SFR1_CBC     0x00000020UL /* chaining mode: 1=CBC, 0=ECB/CTR */
+#define SAC_SFR1_START   0x00000080UL /* trigger key load / one block operation */
+
+/* SACCR value written by AES_Init: AES select, ENABLE, common bit6, ARAM clear. */
+#define SAC_CR_INIT_AES (SAC_CR_ARAM_CLR | SAC_CR_CFG_BIT6 | SAC_CR_ENABLE)
+
+/* RCC AHB1PCLKEN (RCC_Module.AHB1PCLKEN at 0x4002103C per DWARF), bit15 gates SAC. */
+#define RCC_AHB1PCLKEN_REG    (*(volatile uint32_t *)0x4002103CUL)
+#define RCC_AHB1PCLKEN_SACEN  0x00008000UL
+
+/*
+ * Copy length words (length * 4 bytes) into a SAC FIFO write port.
+ * Declared in the common library object; not exposed by its public header.
+ */
+extern uint32_t BufToFIFO(volatile uint32_t *fifo_addr, const void *buffer,
+                           uint32_t wordLen);
+
+/* Busy-wait until SACSR_DONE is set; budget is Alg_TimeOut_Counter polls. */
+static uint32_t SAC_WaitDone(void)
 {
-    uint32_t timeout_counter;
-    uint32_t key_length;
-    uint32_t mode;
-    uint32_t encrypt_decrypt;
-    uint32_t chaining_mode;
-    
-    /* Validate input parameters */
-    if (!parm || !parm->key || !parm->out) {
-        return AES_Crypto_ParaNull;
-    }
-    
-    /* Extract parameters from structure */
-    key_length      = parm->keyWordLen;
-    mode            = parm->Mode;
-    encrypt_decrypt = parm->En_De;
-    chaining_mode   = parm->Mode;
-    
-    /* Enable AES clock */
-    RCC_AHB2ENR_REG |= RCC_AHB2ENR_AESEN;
-    
-    /* Disable AES before configuration */
-    AES_CR_REG = 0xD0U;  // Reset value with disabled state
-    
-    /* Clear ARAM and wait for completion */
-    if (CLEAR_ARAM_DONE_CHECK() == Time_Out) {
-        return AES_TimeOutError;
-    }
-    
-    /* Configure key size based on key length */
-    switch (key_length) {
-        case 4:  // 128-bit key
-            AES_CR_REG = (AES_CR_REG & ~AES_CR_KEYSIZE) | 0x0U;
-            break;
-        case 6:  // 192-bit key  
-            AES_CR_REG = (AES_CR_REG & ~AES_CR_KEYSIZE) | 0x2U;
-            break;
-        case 8:  // 256-bit key
-            AES_CR_REG = (AES_CR_REG & ~AES_CR_KEYSIZE) | 0x4U;
-            break;
-        default:
-            return AES_Crypto_KeyLengthError;
-    }
-    
-    /* Validate input buffer and mode parameters */
-    if (!parm->in || (encrypt_decrypt == AES_ENC || encrypt_decrypt == AES_DEC) && !parm->iv) {
-        return AES_Crypto_ParaNull;
-    }
-    
-    /* Validate working mode */
-    if (mode != AES_ECB && mode != AES_CBC && mode != AES_CTR) {
-        return AES_Crypto_ModeError;
-    }
-    
-    /* Validate encryption/decryption mode */
-    if (encrypt_decrypt != AES_ENC && encrypt_decrypt != AES_DEC) {
-        return AES_Crypto_EnOrDeError;
-    }
-    
-    /* Load key into hardware */
-    BufToFIFO((uint32_t)AES_KEYR0_REG, parm->key, key_length);
-    
-    /* Enable key loading */
-    AES_CR_REG |= AES_CR_CCFC;
-    
-    /* Wait for key loading to complete */
-    timeout_counter = 0;
-    while ((AES_SR_REG & AES_SR_CCF) == 0) {
-        if (++timeout_counter > Alg_TimeOut_Counter) {
+    uint32_t i;
+
+    for (i = 0U; (SAC_SR_REG & SAC_SR_DONE) == 0U; i++)
+    {
+        if (i > Alg_TimeOut_Counter)
+        {
             return AES_TimeOutError;
         }
     }
-    
-    /* Clear computation complete flag */
-    AES_SR_REG |= AES_SR_CCF;
-    
-    /* Configure chaining mode */
-    if (mode == AES_ECB || encrypt_decrypt == AES_DEC) {
-        /* ECB mode or decryption mode */
-        AES_CR_REG = (AES_CR_REG & ~AES_CR_CHMOD) | 0x0U;
-    } else if (mode == AES_CBC && encrypt_decrypt != AES_DEC) {
-        /* CBC encryption mode */
-        AES_CR_REG = (AES_CR_REG & ~AES_CR_CHMOD) | 0x2U;
-    }
-    
-    /* Configure encryption/decryption */
-    if (mode == AES_ECB || encrypt_decrypt == AES_ENC) {
-        /* ECB mode or encryption */
-        AES_CR_REG &= ~AES_CR_MODE;
-    } else if (mode == AES_CBC && encrypt_decrypt != AES_ENC) {
-        /* CBC decryption */
-        AES_CR_REG = (AES_CR_REG & ~AES_CR_MODE) | 0x4U;
-    }
-    
-    /* Load IV for CBC or CTR mode */
-    if (mode == AES_CBC || mode == AES_CTR) {
-        if (parm->iv) {
-            BufToFIFO((uint32_t)AES_IVR0_REG, parm->iv, 4);
-        }
-    }
-    
-    /* Special handling for CTR mode */
-    if (mode == AES_CTR) {
-        AES_CR_REG &= ~AES_CR_CHMOD;  // Clear chaining mode bits
-        AES_CR_REG |= 0x4U;           // Set CTR mode
-        if (parm->iv) {
-            BufToFIFO((uint32_t)AES_IVR0_REG, parm->iv, 4);
-        }
-    }
-    
-    return AES_Init_OK;
-}
-
-/**
- * @brief Perform AES encryption/decryption operation
- * @param[in] parm pointer to AES parameter structure
- * @return AES_Crypto_OK on success, error code on failure
- * @note Processes input data in 128-bit blocks
- */
-uint32_t AES_Crypto(AES_PARM *parm)
-{
-    uint32_t *input_ptr;
-    uint32_t *output_ptr;
-    uint32_t blocks_remaining;
-    uint32_t remaining_bytes;
-    uint32_t timeout_counter;
-    uint32_t i;
-    uint32_t j;
-    uint32_t ctr_counter[4];
-    uint32_t *iv_ptr;
-    
-    /* Validate input parameters */
-    if (!parm || !parm->in || !parm->out) {
-        return AES_Crypto_ParaNull;
-    }
-    
-    /* Check input length */
-    if (!parm->inWordLen || ((parm->inWordLen % 4) != 0 && parm->Mode != AES_CTR)) {
-        return AES_Crypto_LengthError;
-    }
-    
-    /* Check if AES is initialized and enabled */
-    if ((RCC_AHB2ENR_REG & RCC_AHB2ENR_AESEN) != RCC_AHB2ENR_AESEN ||
-        (AES_SR_REG & AES_SR_KEYVALID) != AES_SR_KEYVALID) {
-        return AES_Crypto_UnInitError;
-    }
-    
-    /* Get pointers and calculate block count */
-    input_ptr        = parm->in;
-    output_ptr       = parm->out;
-    blocks_remaining = parm->inWordLen >> 2;   // Convert words to 128-bit blocks
-    remaining_bytes  = parm->inWordLen & 0x3;  // Get remaining bytes
-    
-    /* Special handling for CTR mode - copy IV for counter manipulation */
-    if (parm->Mode == AES_CTR && parm->iv) {
-        iv_ptr = (uint32_t *)parm->iv;
-        ctr_counter[0] = iv_ptr[0];
-        ctr_counter[1] = iv_ptr[1]; 
-        ctr_counter[2] = iv_ptr[2];
-        ctr_counter[3] = iv_ptr[3];
-    }
-    
-    /* Process full 128-bit blocks */
-    while (blocks_remaining > 0) {
-        
-        /* For CTR mode, write counter to DIN register */
-        if (parm->Mode == AES_CTR) {
-            AES_DINR_REG = ctr_counter[3];
-            
-            /* Increment counter (big-endian) */
-            for (i = 0; i < 16; i++) {
-                if (((uint8_t*)&ctr_counter)[15 - i] != 0xFF) {
-                    ((uint8_t*)&ctr_counter)[15 - i]++;
-                    break;
-                }
-                ((uint8_t*)&ctr_counter)[15 - i] = 0;
-            }
-        } else {
-            /* For ECB/CBC modes, write input block to DIN register */
-            AES_DINR_REG = *input_ptr;
-            AES_DINR_REG = input_ptr[1];
-            AES_DINR_REG = input_ptr[2]; 
-            AES_DINR_REG = input_ptr[3];
-        }
-        
-        /* Start encryption/decryption */
-        AES_CR_REG |= AES_CR_START;
-        
-        /* Wait for operation to complete */
-        timeout_counter = 0;
-        while ((AES_SR_REG & AES_SR_CCF) == 0) {
-            if (++timeout_counter > Alg_TimeOut_Counter) {
-                return AES_TimeOutError;
-            }
-        }
-        
-        /* Clear computation complete flag */
-        AES_SR_REG |= AES_SR_CCF;
-
-        /* Read output from DOUT register - read all 4 words sequentially */
-        if (parm->Mode == AES_CTR) {
-            /* CTR mode: XOR output with input plaintext */
-            *output_ptr = AES_DOUTR_REG ^ *input_ptr;
-            output_ptr[1] = AES_DOUTR_REG ^ input_ptr[1];
-            output_ptr[2] = AES_DOUTR_REG ^ input_ptr[2];
-            output_ptr[3] = AES_DOUTR_REG ^ input_ptr[3];
-        } else {
-            /* ECB/CBC modes: direct output */
-            *output_ptr = AES_DOUTR_REG;
-            output_ptr[1] = AES_DOUTR_REG;
-            output_ptr[2] = AES_DOUTR_REG;
-            output_ptr[3] = AES_DOUTR_REG;
-        }
-        
-        /* Advance pointers */
-        input_ptr  += 4;
-        output_ptr += 4;
-        blocks_remaining--;
-    }
-    
-    /* Process remaining bytes for CTR mode */
-    if (remaining_bytes > 0 && parm->Mode == AES_CTR) {
-        /* Write counter to DIN register */
-        AES_DINR_REG = ctr_counter[3];
-        
-        /* Start encryption */
-        AES_CR_REG |= AES_CR_START;
-        
-        /* Wait for operation to complete */
-        timeout_counter = 0;
-        while ((AES_SR_REG & AES_SR_CCF) == 0) {
-            if (++timeout_counter > Alg_TimeOut_Counter) {
-                return AES_TimeOutError;
-            }
-        }
-        
-        /* Clear computation complete flag */
-        AES_SR_REG |= AES_SR_CCF;
-        
-        /* Process remaining bytes with XOR */
-        for (j = 0; j < remaining_bytes; j++) {
-            ((uint8_t*)output_ptr)[j] = ((uint8_t*)AES_DOUTR_REG)[j] ^ ((uint8_t*)input_ptr)[j];
-        }
-    }
-    
     return AES_Crypto_OK;
 }
 
-/**
- * @brief Close AES hardware accelerator
- * @return none
- * @note Disables AES clock and clears hardware state
- */
+uint32_t AES_Init(AES_PARM *parm)
+{
+    uint32_t i;
+
+    /* Enable the SAC clock, select AES and kick off an ARAM clear. */
+    RCC_AHB1PCLKEN_REG |= RCC_AHB1PCLKEN_SACEN;
+    SAC_CR_REG = SAC_CR_INIT_AES; /* 0xD0, direct store */
+
+    if (CLEAR_ARAM_DONE_CHECK() == Time_Out)
+    {
+        return AES_TimeOutError;
+    }
+
+    /* Key length select; the direct store also resets every SACSFR1 field. */
+    switch (parm->keyWordLen)
+    {
+    case 4:
+        SAC_SFR1_REG = 0U; /* AES-128 */
+        break;
+    case 6:
+        SAC_SFR1_REG = SAC_SFR1_KEY192;
+        break;
+    case 8:
+        SAC_SFR1_REG = SAC_SFR1_KEY256;
+        break;
+    default:
+        return AES_Crypto_KeyLengthError;
+    }
+
+    /* Parameter validation, in the same order as the binary. */
+    if (parm->key == NULL)
+    {
+        return AES_Crypto_ParaNull;
+    }
+    if ((parm->Mode == AES_CBC || parm->Mode == AES_CTR) && parm->iv == NULL)
+    {
+        return AES_Crypto_ParaNull;
+    }
+    if (parm->Mode != AES_ECB && parm->Mode != AES_CBC && parm->Mode != AES_CTR)
+    {
+        return AES_Crypto_ModeError;
+    }
+    if (parm->En_De != AES_ENC && parm->En_De != AES_DEC)
+    {
+        return AES_Crypto_EnOrDeError;
+    }
+
+    /* Load the key through KADR and trigger the key expansion. */
+    BufToFIFO(&SAC_K_FIFO_REG, parm->key, parm->keyWordLen);
+    SAC_SFR1_REG |= SAC_SFR1_START;
+
+    for (i = 0U; (SAC_SR_REG & SAC_SR_DONE) == 0U; i++)
+    {
+        if (i > Alg_TimeOut_Counter)
+        {
+            return AES_TimeOutError;
+        }
+    }
+    SAC_SR_REG |= SAC_SR_DONE; /* write 1 to clear */
+
+    /* Direction: CTR always runs the cipher in encryption direction. */
+    if (parm->En_De == AES_ENC || parm->Mode == AES_CTR)
+    {
+        SAC_SFR1_REG = (SAC_SFR1_REG & ~0x3UL) | SAC_SFR1_ENCRYPT;
+    }
+    else
+    {
+        SAC_SFR1_REG = (SAC_SFR1_REG & 0xFFUL) | SAC_SFR1_DECRYPT;
+    }
+
+    /* Chaining mode; CBC additionally seeds the IV through P1ADR. */
+    if (parm->Mode == AES_ECB || parm->Mode == AES_CTR)
+    {
+        SAC_SFR1_REG &= ~SAC_SFR1_CBC;
+    }
+    else /* AES_CBC */
+    {
+        SAC_SFR1_REG = (SAC_SFR1_REG & 0xFFUL) | SAC_SFR1_CBC;
+        BufToFIFO(&SAC_P1_FIFO_REG, parm->iv, 4U);
+    }
+
+    return AES_Init_OK;
+}
+
+uint32_t AES_Crypto(AES_PARM *parm)
+{
+    uint32_t inWordLen, remaind, i, counter;
+    uint32_t *in, *out;
+    uint32_t iv_buf[4];
+
+    if (parm->in == NULL || parm->out == NULL)
+    {
+        return AES_Crypto_ParaNull;
+    }
+
+    inWordLen = parm->inWordLen;
+    if (inWordLen == 0U)
+    {
+        return AES_Crypto_LengthError;
+    }
+    /* ECB/CBC need a whole number of 16-byte blocks; CTR accepts any length. */
+    if ((inWordLen & 0x3U) != 0U && parm->Mode != AES_CTR)
+    {
+        return AES_Crypto_LengthError;
+    }
+
+    if ((RCC_AHB1PCLKEN_REG & RCC_AHB1PCLKEN_SACEN) == 0U ||
+        (SAC_CR_REG & SAC_CR_ENABLE) == 0U)
+    {
+        return AES_Crypto_UnInitError;
+    }
+
+    if (parm->Mode == AES_CTR)
+    {
+        iv_buf[0] = parm->iv[0];
+        iv_buf[1] = parm->iv[1];
+        iv_buf[2] = parm->iv[2];
+        iv_buf[3] = parm->iv[3];
+    }
+
+    in       = parm->in;
+    out      = parm->out;
+    remaind  = inWordLen & 0x3U;
+    inWordLen &= ~0x3U;
+    counter   = 0U;
+
+    while (inWordLen != 0U)
+    {
+        if (parm->Mode == AES_CTR)
+        {
+            /* Encrypt the counter block, then increment it as a 128-bit
+               big-endian integer before the next round. */
+            SAC_I_FIFO_REG = iv_buf[0];
+            SAC_I_FIFO_REG = iv_buf[1];
+            SAC_I_FIFO_REG = iv_buf[2];
+            SAC_I_FIFO_REG = iv_buf[3];
+            for (i = 16U; i != 0U; i--)
+            {
+                uint8_t *byte = ((uint8_t *)iv_buf) + i - 1U;
+                if (*byte != 0xFFU)
+                {
+                    (*byte)++;
+                    break;
+                }
+                *byte = (uint8_t)counter;
+            }
+        }
+        else
+        {
+            SAC_I_FIFO_REG = in[0];
+            SAC_I_FIFO_REG = in[1];
+            SAC_I_FIFO_REG = in[2];
+            SAC_I_FIFO_REG = in[3];
+        }
+
+        SAC_SFR1_REG |= SAC_SFR1_START;
+        if (SAC_WaitDone() != AES_Crypto_OK)
+        {
+            return AES_TimeOutError;
+        }
+        SAC_SR_REG |= SAC_SR_DONE; /* write 1 to clear */
+
+        if (parm->Mode == AES_CTR)
+        {
+            out[0] = SAC_O_FIFO_REG ^ in[0];
+            out[1] = SAC_O_FIFO_REG ^ in[1];
+            out[2] = SAC_O_FIFO_REG ^ in[2];
+            out[3] = SAC_O_FIFO_REG ^ in[3];
+        }
+        else
+        {
+            out[0] = SAC_O_FIFO_REG;
+            out[1] = SAC_O_FIFO_REG;
+            out[2] = SAC_O_FIFO_REG;
+            out[3] = SAC_O_FIFO_REG;
+        }
+
+        in += 4;
+        out += 4;
+        inWordLen -= 4U;
+    }
+
+    /* CTR tail: the trailing 1..3 words are XORed word-wise with fresh
+       keystream words read from OADR. */
+    if (remaind != 0U && parm->Mode == AES_CTR)
+    {
+        SAC_I_FIFO_REG = iv_buf[0];
+        SAC_I_FIFO_REG = iv_buf[1];
+        SAC_I_FIFO_REG = iv_buf[2];
+        SAC_I_FIFO_REG = iv_buf[3];
+
+        SAC_SFR1_REG |= SAC_SFR1_START;
+        if (SAC_WaitDone() != AES_Crypto_OK)
+        {
+            return AES_TimeOutError;
+        }
+        SAC_SR_REG |= SAC_SR_DONE; /* write 1 to clear */
+
+        for (i = 0U; i < remaind; i++)
+        {
+            out[i] = SAC_O_FIFO_REG ^ in[i];
+        }
+    }
+
+    return AES_Crypto_OK;
+}
+
 void AES_Close(void)
 {
-    /* Check if AES is enabled */
-    if ((RCC_AHB2ENR_REG & RCC_AHB2ENR_AESEN) == RCC_AHB2ENR_AESEN) {
-        /* Check if AES peripheral is ready */
-        if ((AES_SR_REG & AES_SR_KEYVALID) == AES_SR_KEYVALID) {
-            /* Disable AES and clear key valid flag */
-            AES_CR_REG |= AES_CR_ERRC;     // Clear errors
-            AES_CR_REG &= ~AES_CR_EN;      // Disable AES
-            AES_SR_REG &= ~AES_SR_KEYVALID; // Clear key valid flag
-            
-            /* Clear ARAM */
-            CLEAR_ARAM_DONE_CHECK();
-            
-            /* Disable AES clock */
-            RCC_AHB2ENR_REG &= ~RCC_AHB2ENR_AESEN;
-        }
+    if ((RCC_AHB1PCLKEN_REG & RCC_AHB1PCLKEN_SACEN) != 0U &&
+        (SAC_CR_REG & SAC_CR_ENABLE) != 0U)
+    {
+        SAC_CR_REG |= SAC_CR_DEINIT;
+        SAC_CR_REG &= ~SAC_CR_ENABLE;
+        (void)CLEAR_ARAM_DONE_CHECK();
+        RCC_AHB1PCLKEN_REG &= ~RCC_AHB1PCLKEN_SACEN;
     }
 }
 
-/**
- * @brief Get AES library version information
- * @param[out] type pointer to library type information
- * @param[out] customer pointer to customer ID information  
- * @param[out] date pointer to array containing date information (3 bytes)
- * @param[out] version pointer to version information
- * @return none
- * @note Returns fixed version information for this AES library implementation
- */
 void AES_Version(uint8_t *type, uint8_t *customer, uint8_t date[3], uint8_t *version)
 {
-    if (type) {
-        *type = 0x05;  // Library type indicator
-    }
-    
-    if (customer) {
-        *customer = 0x00;  // Standard version
-    }
-    
-    if (date) {
-        date[0] = 25;  // Year: 2025
-        date[1] = 3;   // Month: March  
-        date[2] = 19;  // Day: 19th
-    }
-    
-    if (version) {
-        *version = 0x10;  // Version 1.0
-    }
+    /* No NULL checks in the binary; callers must pass valid pointers. */
+    *type = 0x05;     /* Commercial + Normal */
+    *customer = 0x00; /* standard version */
+    date[0] = 25;     /* year 2025 */
+    date[1] = 3;      /* month */
+    date[2] = 19;     /* day */
+    *version = 0x10;  /* v1.0 */
 }
