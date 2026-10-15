@@ -116,16 +116,12 @@ void heatshrink_decoder_free(heatshrink_decoder *hsd);
 /**
  * @brief Initialize a decoder with caller-provided buffers.
  *
- * Configures a decoder instance whose state is allocated by the caller,
- * binding it to externally owned input and expansion window buffers.
- * The input buffer size and the window and lookahead sizes are runtime
- * selections; the caller must provide buffers large enough for the
- * requested sizes.
+ * The caller owns the instance and all buffers; the input buffer size
+ * and the window and lookahead sizes are selected at runtime.
  *
  * @param[in,out] hsd Decoder instance to configure. Must not be NULL.
- * @param[in] input_buffer_size Input buffer capacity to use, in bytes;
- *                             the decoder sinks at most this many bytes
- *                             before polling. Range [1, 65535].
+ * @param[in] input_buffer_size Input buffer capacity to use, in bytes.
+ *                             Range [1, 65535].
  * @param[in] window_sz2 Window size in bits; the window covers
  *                      2^window_sz2 bytes. In range
  *                      [HEATSHRINK_MIN_WINDOW_BITS,
@@ -133,14 +129,13 @@ void heatshrink_decoder_free(heatshrink_decoder *hsd);
  * @param[in] lookahead_sz2 Back-reference length field size in bits,
  *                          decoding match lengths up to 2^lookahead_sz2
  *                          bytes. In range [HEATSHRINK_MIN_LOOKAHEAD_BITS,
- *                          window_sz2), i.e. strictly less than
- *                          window_sz2.
- * @param[in] input_buffer Caller-provided input buffer with capacity for
- *                         at least input_buffer_size bytes. Must not be
- *                         NULL. Its lifetime must cover all uses of the
- *                         decoder until re-initialization.
- * @param[in] window_buffer Caller-provided expansion window buffer with
- *                         capacity for at least
+ *                          window_sz2).
+ * @param[in] input_buffer Input buffer with capacity for at least
+ *                         input_buffer_size bytes. Must not be NULL and
+ *                         must outlive the decoder until
+ *                         re-initialization.
+ * @param[in] window_buffer Expansion window buffer with capacity for at
+ *                         least
  *                         HEATSHRINK_DECODER_WINDOW_BUFFER_SIZE(window_sz2)
  *                         bytes. Must not be NULL.
  * @param[in] window_buffer_size Capacity of window_buffer in bytes.
@@ -155,8 +150,7 @@ void heatshrink_decoder_free(heatshrink_decoder *hsd);
  *      decoder function on the instance.
  * @note The window and lookahead sizes must match the settings used to
  *       compress the data.
- * @note The buffer contents need not be initialized by the caller; the
- *       decoder clears both buffers itself.
+ * @note The buffer contents need not be initialized by the caller.
  */
 HSD_init_res heatshrink_decoder_init(heatshrink_decoder *hsd,
     uint16_t input_buffer_size, uint8_t window_sz2,

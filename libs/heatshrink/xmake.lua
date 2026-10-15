@@ -49,24 +49,19 @@ if is_plat("linux", "windows", "macosx") and
     (library_scope == "xhive_host::heatshrink" and has_config("xhive_tests"))) then
     -- With the search index (default) and without, covering both
     -- HEATSHRINK_USE_INDEX settings of the new init path.
-    target("heatshrink_external")
-        set_kind("object")
-        set_default(false)
-        add_files("src/*.c")
-        add_includedirs("inc", {public = true})
-        add_defines("HEATSHRINK_DYNAMIC_ALLOC=0",
-            "HEATSHRINK_EXTERNAL_BUFFERS=1", {public = true})
-    target_end()
-
-    target("heatshrink_external_noindex")
-        set_kind("object")
-        set_default(false)
-        add_files("src/*.c")
-        add_includedirs("inc", {public = true})
-        add_defines("HEATSHRINK_DYNAMIC_ALLOC=0",
-            "HEATSHRINK_EXTERNAL_BUFFERS=1", "HEATSHRINK_USE_INDEX=0",
-            {public = true})
-    target_end()
+    for _, suffix in ipairs({"", "_noindex"}) do
+        target("heatshrink_external" .. suffix)
+            set_kind("object")
+            set_default(false)
+            add_files("src/*.c")
+            add_includedirs("inc", {public = true})
+            add_defines("HEATSHRINK_DYNAMIC_ALLOC=0",
+                "HEATSHRINK_EXTERNAL_BUFFERS=1", {public = true})
+            if suffix == "_noindex" then
+                add_defines("HEATSHRINK_USE_INDEX=0", {public = true})
+            end
+        target_end()
+    end
 
     add_requires("gtest")
     for _, file in ipairs(os.files("test/**.cc")) do

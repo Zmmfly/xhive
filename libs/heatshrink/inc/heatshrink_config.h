@@ -19,6 +19,10 @@
 #define HEATSHRINK_EXTERNAL_BUFFERS 0
 #endif
 
+#if HEATSHRINK_DYNAMIC_ALLOC && HEATSHRINK_EXTERNAL_BUFFERS
+#error "HEATSHRINK_DYNAMIC_ALLOC and HEATSHRINK_EXTERNAL_BUFFERS are mutually exclusive"
+#endif
+
 #if HEATSHRINK_DYNAMIC_ALLOC
     /* Optional replacement of malloc/free */
     #define HEATSHRINK_MALLOC(SZ) malloc(SZ)

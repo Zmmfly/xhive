@@ -117,10 +117,8 @@ void heatshrink_encoder_free(heatshrink_encoder *hse);
 /**
  * @brief Initialize an encoder with caller-provided buffers.
  *
- * Configures an encoder instance whose state is allocated by the
- * caller, binding it to externally owned buffers. The window and
- * lookahead sizes are runtime selections; the caller must provide
- * buffers large enough for the requested sizes.
+ * The caller owns the instance and all buffers; the window and
+ * lookahead sizes are selected at runtime.
  *
  * @param[in,out] hse Encoder instance to configure. Must not be NULL.
  * @param[in] window_sz2 Window size in bits; the window covers
@@ -130,22 +128,18 @@ void heatshrink_encoder_free(heatshrink_encoder *hse);
  * @param[in] lookahead_sz2 Back-reference length field size in bits,
  *                          encoding match lengths up to 2^lookahead_sz2
  *                          bytes. In range [HEATSHRINK_MIN_LOOKAHEAD_BITS,
- *                          window_sz2), i.e. strictly less than
- *                          window_sz2.
- * @param[in] window_buffer Caller-provided window buffer with capacity
- *                         for at least
+ *                          window_sz2).
+ * @param[in] window_buffer Window buffer with capacity for at least
  *                         HEATSHRINK_ENCODER_WINDOW_BUFFER_SIZE(window_sz2)
- *                         bytes. Must not be NULL. Its lifetime must
- *                         cover all uses of the encoder until
- *                         re-initialization.
- * @param[in] window_buffer_size Capacity of window_buffer in bytes.
- * @param[in] index_buffer Caller-provided search index buffer with
- *                         capacity for at least
- *                         HEATSHRINK_ENCODER_INDEX_BUFFER_SIZE(window_sz2)
- *                         bytes, aligned to at least 2 bytes. Ignored
- *                         (may be NULL) when HEATSHRINK_USE_INDEX is 0.
- *                         Its lifetime must cover all uses of the
+ *                         bytes. Must not be NULL and must outlive the
  *                         encoder until re-initialization.
+ * @param[in] window_buffer_size Capacity of window_buffer in bytes.
+ * @param[in] index_buffer Search index buffer with capacity for at
+ *                         least
+ *                         HEATSHRINK_ENCODER_INDEX_BUFFER_SIZE(window_sz2)
+ *                         bytes, aligned to at least 2 bytes. Ignored (may
+ *                         be NULL) when HEATSHRINK_USE_INDEX is 0; must
+ *                         outlive the encoder until re-initialization.
  * @param[in] index_buffer_size Capacity of index_buffer in bytes.
  * @return HSE_init_res Initialization status.
  * @retval HSER_INIT_OK The encoder is configured and reset for use.
@@ -158,9 +152,7 @@ void heatshrink_encoder_free(heatshrink_encoder *hse);
  *      encoder function on the instance.
  * @note The window and lookahead sizes must match the decoder used to
  *       decompress the resulting stream.
- * @note The buffer contents need not be initialized by the caller; the
- *       encoder clears the window buffer and rebuilds the index
- *       contents itself.
+ * @note The buffer contents need not be initialized by the caller.
  */
 HSE_init_res heatshrink_encoder_init(heatshrink_encoder *hse,
     uint8_t window_sz2, uint8_t lookahead_sz2,

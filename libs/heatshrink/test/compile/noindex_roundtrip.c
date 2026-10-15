@@ -15,9 +15,9 @@
 
 static heatshrink_encoder encoder;
 static heatshrink_decoder decoder;
-static uint8_t enc_window[2U << WINDOW_SZ2];
+static uint8_t enc_window[HEATSHRINK_ENCODER_WINDOW_BUFFER_SIZE(WINDOW_SZ2)];
 static uint8_t dec_input[INPUT_BUFFER_SIZE];
-static uint8_t dec_window[1U << WINDOW_SZ2];
+static uint8_t dec_window[HEATSHRINK_DECODER_WINDOW_BUFFER_SIZE(WINDOW_SZ2)];
 static uint8_t compressed[2048];
 static uint8_t decompressed[2048];
 
@@ -26,8 +26,36 @@ static const char input[] =
     "external buffer heatshrink roundtrip without index "
     "external buffer heatshrink roundtrip without index ";
 
-static int encode_all(const char *in, size_t in_len, uint8_t *out,
-        size_t out_cap, size_t *out_len) {
+/* Drain pending encoder output; fails if the output buffer is full. */
+static int drain_encoder(size_t out_cap, size_t *out_len) {
+    for (;;) {
+        size_t polled = 0;
+        HSE_poll_res pres;
+        if (*out_len >= out_cap) { return -1; }
+        pres = heatshrink_encoder_poll(&encoder, &compressed[*out_len],
+            out_cap - *out_len, &polled);
+        if (pres < 0) { return -1; }
+        *out_len += polled;
+        if (pres != HSER_POLL_MORE) { return 0; }
+    }
+}
+
+/* Drain pending decoder output; fails if the output buffer is full. */
+static int drain_decoder(size_t out_cap, size_t *out_len) {
+    for (;;) {
+        size_t polled = 0;
+        HSD_poll_res pres;
+        if (*out_len >= out_cap) { return -1; }
+        pres = heatshrink_decoder_poll(&decoder, &decompressed[*out_len],
+            out_cap - *out_len, &polled);
+        if (pres < 0) { return -1; }
+        *out_len += polled;
+        if (pres != HSDR_POLL_MORE) { return 0; }
+    }
+}
+
+static int encode_all(const char *in, size_t in_len, size_t out_cap,
+        size_t *out_len) {
     size_t sunk = 0;
     *out_len = 0;
     while (sunk < in_len) {
@@ -37,32 +65,18 @@ static int encode_all(const char *in, size_t in_len, uint8_t *out,
             return -1;
         }
         sunk += sunk_now;
-        for (;;) {
-            size_t polled = 0;
-            HSE_poll_res pres = heatshrink_encoder_poll(&encoder,
-                &out[*out_len], out_cap - *out_len, &polled);
-            if (pres < 0) { return -1; }
-            *out_len += polled;
-            if (pres != HSER_POLL_MORE) { break; }
-        }
+        if (drain_encoder(out_cap, out_len) != 0) { return -1; }
     }
     for (;;) {
         HSE_finish_res fres = heatshrink_encoder_finish(&encoder);
         if (fres < 0) { return -1; }
         if (fres == HSER_FINISH_DONE) { return 0; }
-        for (;;) {
-            size_t polled = 0;
-            HSE_poll_res pres = heatshrink_encoder_poll(&encoder,
-                &out[*out_len], out_cap - *out_len, &polled);
-            if (pres < 0) { return -1; }
-            *out_len += polled;
-            if (pres != HSER_POLL_MORE) { break; }
-        }
+        if (drain_encoder(out_cap, out_len) != 0) { return -1; }
     }
 }
 
-static int decode_all(const uint8_t *in, size_t in_len, uint8_t *out,
-        size_t out_cap, size_t *out_len) {
+static int decode_all(const uint8_t *in, size_t in_len, size_t out_cap,
+        size_t *out_len) {
     size_t sunk = 0;
     *out_len = 0;
     while (sunk < in_len) {
@@ -71,32 +85,18 @@ static int decode_all(const uint8_t *in, size_t in_len, uint8_t *out,
             (uint8_t *)&in[sunk], in_len - sunk, &sunk_now);
         if (sres < 0) { return -1; }
         sunk += sunk_now;
-        for (;;) {
-            size_t polled = 0;
-            HSD_poll_res pres = heatshrink_decoder_poll(&decoder,
-                &out[*out_len], out_cap - *out_len, &polled);
-            if (pres < 0) { return -1; }
-            *out_len += polled;
-            if (pres != HSDR_POLL_MORE) { break; }
-        }
+        if (drain_decoder(out_cap, out_len) != 0) { return -1; }
     }
     for (;;) {
         HSD_finish_res fres = heatshrink_decoder_finish(&decoder);
         if (fres < 0) { return -1; }
         if (fres == HSDR_FINISH_DONE) { return 0; }
-        for (;;) {
-            size_t polled = 0;
-            HSD_poll_res pres = heatshrink_decoder_poll(&decoder,
-                &out[*out_len], out_cap - *out_len, &polled);
-            if (pres < 0) { return -1; }
-            *out_len += polled;
-            if (pres != HSDR_POLL_MORE) { break; }
-        }
+        if (drain_decoder(out_cap, out_len) != 0) { return -1; }
     }
 }
 
 int main(void) {
-    const size_t in_len = strlen(input);
+    const size_t in_len = sizeof(input) - 1;
     size_t clen = 0;
     size_t dlen = 0;
 
@@ -111,12 +111,11 @@ int main(void) {
         fprintf(stderr, "decoder init failed\n");
         return 1;
     }
-    if (encode_all(input, in_len, compressed, sizeof(compressed), &clen) != 0) {
+    if (encode_all(input, in_len, sizeof(compressed), &clen) != 0) {
         fprintf(stderr, "encode failed\n");
         return 2;
     }
-    if (decode_all(compressed, clen, decompressed, sizeof(decompressed),
-            &dlen) != 0) {
+    if (decode_all(compressed, clen, sizeof(decompressed), &dlen) != 0) {
         fprintf(stderr, "decode failed\n");
         return 3;
     }

@@ -22,6 +22,10 @@ namespace {
 /* Largest window exercised by these tests. */
 constexpr uint8_t kMaxWindowBits = 10;
 
+/* Shared payload pattern for the mixed and fully repetitive generators. */
+const char kPattern[] = "heatshrink external init roundtrip payload";
+const size_t kPatternLen = sizeof(kPattern) - 1;
+
 /* Buffers owned by the test, sized for kMaxWindowBits so smaller runtime
  * configurations can reuse the same storage. The index buffer is a
  * uint16_t array to guarantee the required 2-byte alignment. */
@@ -36,14 +40,12 @@ struct ExternalStorage {
 /* Payload mixing repetitive runs with pseudo-random noise so every
  * configuration emits both back-references and literals. */
 std::vector<uint8_t> MakePayload(size_t size) {
-    static const char kPattern[] = "heatshrink external init roundtrip payload";
-    const size_t pattern_len = sizeof(kPattern) - 1;
     std::vector<uint8_t> data;
     data.reserve(size);
     uint32_t x = 0x12345678u;
     while (data.size() < size) {
         for (size_t i = 0; i < 29 && data.size() < size; ++i) {
-            data.push_back(static_cast<uint8_t>(kPattern[data.size() % pattern_len]));
+            data.push_back(static_cast<uint8_t>(kPattern[data.size() % kPatternLen]));
         }
         for (size_t i = 0; i < 13 && data.size() < size; ++i) {
             x = x * 1664525u + 1013904223u;
@@ -55,14 +57,38 @@ std::vector<uint8_t> MakePayload(size_t size) {
 
 /* Fully repetitive payload for compression-ratio comparison. */
 std::vector<uint8_t> MakeRepetitivePayload(size_t size) {
-    static const char kPattern[] = "heatshrink external init roundtrip payload";
-    const size_t pattern_len = sizeof(kPattern) - 1;
     std::vector<uint8_t> data;
     data.reserve(size);
     for (size_t i = 0; i < size; ++i) {
-        data.push_back(static_cast<uint8_t>(kPattern[i % pattern_len]));
+        data.push_back(static_cast<uint8_t>(kPattern[i % kPatternLen]));
     }
     return data;
+}
+
+/* Drain pending encoder output into *output until poll reports no more. */
+bool DrainEncoder(heatshrink_encoder *hse, std::vector<uint8_t> *output) {
+    uint8_t scratch[23];
+    for (;;) {
+        size_t polled = 0;
+        const HSE_poll_res pres = heatshrink_encoder_poll(hse, scratch,
+            sizeof(scratch), &polled);
+        if (pres < 0) { return false; }
+        output->insert(output->end(), scratch, scratch + polled);
+        if (pres != HSER_POLL_MORE) { return true; }
+    }
+}
+
+/* Drain pending decoder output into *output until poll reports no more. */
+bool DrainDecoder(heatshrink_decoder *hsd, std::vector<uint8_t> *output) {
+    uint8_t scratch[31];
+    for (;;) {
+        size_t polled = 0;
+        const HSD_poll_res pres = heatshrink_decoder_poll(hsd, scratch,
+            sizeof(scratch), &polled);
+        if (pres < 0) { return false; }
+        output->insert(output->end(), scratch, scratch + polled);
+        if (pres != HSDR_POLL_MORE) { return true; }
+    }
 }
 
 /* Sink the whole input in small chunks, polling in between, then finish
@@ -71,7 +97,6 @@ std::vector<uint8_t> MakeRepetitivePayload(size_t size) {
 bool EncodeAll(heatshrink_encoder *hse, const std::vector<uint8_t> &input,
                std::vector<uint8_t> *output) {
     output->clear();
-    uint8_t scratch[23];
     size_t sunk = 0;
     while (sunk < input.size()) {
         size_t sunk_now = 0;
@@ -81,32 +106,19 @@ bool EncodeAll(heatshrink_encoder *hse, const std::vector<uint8_t> &input,
             return false;
         }
         sunk += sunk_now;
-        HSE_poll_res pres;
-        do {
-            size_t polled = 0;
-            pres = heatshrink_encoder_poll(hse, scratch, sizeof(scratch), &polled);
-            if (pres < 0) { return false; }
-            output->insert(output->end(), scratch, scratch + polled);
-        } while (pres == HSER_POLL_MORE);
+        if (!DrainEncoder(hse, output)) { return false; }
     }
     for (;;) {
         const HSE_finish_res fres = heatshrink_encoder_finish(hse);
         if (fres < 0) { return false; }
         if (fres == HSER_FINISH_DONE) { return true; }
-        HSE_poll_res pres;
-        do {
-            size_t polled = 0;
-            pres = heatshrink_encoder_poll(hse, scratch, sizeof(scratch), &polled);
-            if (pres < 0) { return false; }
-            output->insert(output->end(), scratch, scratch + polled);
-        } while (pres == HSER_POLL_MORE);
+        if (!DrainEncoder(hse, output)) { return false; }
     }
 }
 
 bool DecodeAll(heatshrink_decoder *hsd, const std::vector<uint8_t> &input,
                std::vector<uint8_t> *output) {
     output->clear();
-    uint8_t scratch[31];
     size_t sunk = 0;
     while (sunk < input.size()) {
         size_t sunk_now = 0;
@@ -115,25 +127,13 @@ bool DecodeAll(heatshrink_decoder *hsd, const std::vector<uint8_t> &input,
             const_cast<uint8_t *>(&input[sunk]), chunk, &sunk_now);
         if (sres < 0) { return false; }
         sunk += sunk_now;
-        HSD_poll_res pres;
-        do {
-            size_t polled = 0;
-            pres = heatshrink_decoder_poll(hsd, scratch, sizeof(scratch), &polled);
-            if (pres < 0) { return false; }
-            output->insert(output->end(), scratch, scratch + polled);
-        } while (pres == HSDR_POLL_MORE);
+        if (!DrainDecoder(hsd, output)) { return false; }
     }
     for (;;) {
         const HSD_finish_res fres = heatshrink_decoder_finish(hsd);
         if (fres < 0) { return false; }
         if (fres == HSDR_FINISH_DONE) { return true; }
-        HSD_poll_res pres;
-        do {
-            size_t polled = 0;
-            pres = heatshrink_decoder_poll(hsd, scratch, sizeof(scratch), &polled);
-            if (pres < 0) { return false; }
-            output->insert(output->end(), scratch, scratch + polled);
-        } while (pres == HSDR_POLL_MORE);
+        if (!DrainDecoder(hsd, output)) { return false; }
     }
 }
 
@@ -216,23 +216,28 @@ TEST(HeatshrinkExternalInit, RejectsInvalidParameters) {
         init_dec(32, 8, 4, st.decoder_input, st.decoder_window, dec_win_sz));
 }
 
-TEST(HeatshrinkExternalInit, RoundtripsWithRuntimeSelectedSizes) {
+TEST(HeatshrinkExternalInit, RoundtripsAndReinitializesWithRuntimeSizes) {
     struct Config {
         uint8_t window;
         uint8_t lookahead;
         uint16_t ibs;
+        size_t payload_size;
     };
-    /* Includes windows > 8 to exercise the decoder backref-index MSB
-     * path with a runtime-selected window size. */
+    /* Includes windows > 8 to exercise the decoder backref-index MSB path.
+     * The instance and buffers stay outside the loop, so every iteration
+     * after the first also re-initializes them with different runtime
+     * sizes on the same storage. */
     const Config kConfigs[] = {
-        {4, 3, 1}, {5, 3, 32}, {8, 4, 64}, {9, 3, 32}, {10, 4, 64}, {10, 3, 7},
+        {4, 3, 1, 2048}, {5, 3, 32, 2048}, {8, 4, 64, 2048},
+        {9, 3, 32, 2048}, {10, 4, 64, 2048}, {10, 3, 7, 2048},
+        {4, 3, 5, 777}, {10, 4, 64, 777},
     };
-    const std::vector<uint8_t> payload = MakePayload(2048);
     ExternalStorage st;
     heatshrink_encoder hse;
     heatshrink_decoder hsd;
 
     for (const auto &cfg : kConfigs) {
+        const std::vector<uint8_t> payload = MakePayload(cfg.payload_size);
         ASSERT_EQ(HSER_INIT_OK,
             heatshrink_encoder_init(&hse, cfg.window, cfg.lookahead,
                 st.encoder_window, sizeof(st.encoder_window),
@@ -253,40 +258,6 @@ TEST(HeatshrinkExternalInit, RoundtripsWithRuntimeSelectedSizes) {
             << " lookahead=" << int(cfg.lookahead)
             << " ibs=" << cfg.ibs;
     }
-}
-
-TEST(HeatshrinkExternalInit, ReinitializesInstanceAndBuffers) {
-    const std::vector<uint8_t> payload = MakePayload(777);
-    ExternalStorage st;
-    heatshrink_encoder hse;
-    heatshrink_decoder hsd;
-    std::vector<uint8_t> compressed;
-    std::vector<uint8_t> decompressed;
-
-    /* First pass with a small window. */
-    ASSERT_EQ(HSER_INIT_OK,
-        heatshrink_encoder_init(&hse, 4, 3, st.encoder_window,
-            sizeof(st.encoder_window), st.encoder_index,
-            sizeof(st.encoder_index)));
-    ASSERT_TRUE(EncodeAll(&hse, payload, &compressed));
-    ASSERT_EQ(HSDR_INIT_OK,
-        heatshrink_decoder_init(&hsd, 5, 4, 3, st.decoder_input,
-            st.decoder_window, sizeof(st.decoder_window)));
-    ASSERT_TRUE(DecodeAll(&hsd, compressed, &decompressed));
-    EXPECT_EQ(payload, decompressed);
-
-    /* Re-initialize the same instances and buffers with different
-     * runtime sizes. */
-    ASSERT_EQ(HSER_INIT_OK,
-        heatshrink_encoder_init(&hse, 10, 4, st.encoder_window,
-            sizeof(st.encoder_window), st.encoder_index,
-            sizeof(st.encoder_index)));
-    ASSERT_TRUE(EncodeAll(&hse, payload, &compressed));
-    ASSERT_EQ(HSDR_INIT_OK,
-        heatshrink_decoder_init(&hsd, 64, 10, 4, st.decoder_input,
-            st.decoder_window, sizeof(st.decoder_window)));
-    ASSERT_TRUE(DecodeAll(&hsd, compressed, &decompressed));
-    EXPECT_EQ(payload, decompressed);
 }
 
 TEST(HeatshrinkExternalInit, WindowSizeAffectsCompression) {
