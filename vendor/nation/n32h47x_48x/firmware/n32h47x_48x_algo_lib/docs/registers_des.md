@@ -326,7 +326,7 @@ Illustrated"）一致。注意：`DES_PARM` 的 in/iv/key/out 均为 `uint32_t*`
 
 - key 同 T4；IV = `07 07 07 07 07 07 07 07`
 - in 同 T4；**标准**期望 out = `8D F0 79 BE 6B AF 8C B2 E1 F8 45 40 B6 3A F6 90 61 A7 8B 4F A8 9D 28 0C`
-- ⚠ 实测警告：见 §10——实板 TDES_3KEY+CBC 块间链接与标准不符（块 1 正确，块 2 起链值非上一块密文）；单钥 CBC 不受影响。
+- 板上验证 PASS（2026-10，厂商原库 + 重建库同板对照，见 §10.5）。早期观测到的“链接异常”系测试固件越界读，已结案（§10.6）。
 
 **T8 退化一致性**（数学恒等式，无需 openssl）
 
@@ -338,7 +338,12 @@ Illustrated"）一致。注意：`DES_PARM` 的 in/iv/key/out 均为 `uint32_t*`
 （即 word[0]=0x13345779, word[1]=0x9BBCDFF1 改为 0x01234567/0x89ABCDEF
 对应的两种打包顺序分别测试）。此为唯一无法从库二进制确认的自由度。
 
-## 10. 实板验证结果与 TDES+CBC 链接异常（N32H474 实板，2026-10）
+## 10. 实板验证结果与 TDES+CBC“链接异常”始末（N32H474 实板，2026-10）
+
+> **结案（§10.6）**：TDES（2KEY/3KEY）+ CBC 在实板上行为完全符合标准 EDE
+> CBC 链接。§10.1 的异常数据真实可复现，但成因是测试固件 T09 用例的
+> 越界读，与库（重建/厂商）和硅片均无关。§10.1–§10.5 保留原始证据链
+> 与排查过程。
 
 在 N32H474 实板（110 轮投票）上对本仓库重建源码的验证结果：
 
@@ -348,9 +353,12 @@ Illustrated"）一致。注意：`DES_PARM` 的 in/iv/key/out 均为 `uint32_t*`
 | 单钥 DES CBC（厂商 word 向量，8 块链） | PASS |
 | TDES_3KEY ECB、TDES_2KEY ECB（标准向量 LE 打包） | PASS |
 | 各模式 roundtrip | PASS |
-| **TDES_3KEY + CBC** | **FAIL（本节）** |
+| **TDES_3KEY + CBC** | 曾 FAIL；修复测试固件后 PASS（根因见 §10.6） |
 
 ### 10.1 异常现象（实测数据）
+
+> 注：本节数据真实；“板上 C2 非标准”的成因是测试固件把 .rodata 邻数组
+> 越界读作 P2（§10.6），硬件输出恰为**实际输入**的标准 CBC 结果。
 
 测试向量：key = `0123456789abcdef` `23456789abcdef01` `456789abcdef0123`，
 IV = `0^8`，pt = P1||P2，P1 = P2 = `0123456789abcdef`（LE 打包同 ECB 测试）：
@@ -377,12 +385,12 @@ IV = `0^8`，pt = P1||P2，P1 = P2 = `0123456789abcdef`（LE 打包同 ECB 测�
    IADR(+0x40，写 2 字)、SACSFR1(+0x0C，`|= 0x80`)、SACSR(+0x04，轮询/写 1 清
    bit2)、OADR(+0x44，读 2 字)。
 3. 2KEY+CBC 与 3KEY+CBC 的 Init 路径结构完全相同（同一公共尾，仅密钥端口数与
-   SACSFR1 位不同）；单钥 CBC 无 TDES 位且实测通过。→ 若 3KEY+CBC 异常，
-   2KEY+CBC 存在同样风险，**尚未实测**。
+   SACSFR1 位不同）；单钥 CBC 无 TDES 位且实测通过。→ 2KEY+CBC 已同批实测
+   （§10.5 第 3 项）：标准链接，PASS。
 4. 本仓库重建源码与厂商二进制在该路径上指令序列一致（同字面池、同 RMW 顺序），
-   无遗漏指令或错端口。→ **异常不可能由库代码差异引起，属硬件级行为**（推测：
-   硅片在 TDES+CBC 下块间链寄存器更新了非标准值，或需要某个库未触及的
-   未文档化配置）。
+   无遗漏指令或错端口。→ 该路径上库代码无差异（此结论仍然成立）。当时据此
+   推测“属硬件级行为”——**后被 §10.6 否决**：异常输入来自测试固件越界读，
+   硬件与库均为标准行为。
 
 ### 10.3 链值 X 的排除清单（openssl + 纯 Python DES 全部不符）
 
@@ -390,8 +398,13 @@ IV = `0^8`，pt = P1||P2，P1 = P2 = `0123456789abcdef`（LE 打包同 ECB 测�
 E/D 作用于 P、IV、stage1/2 输出、C1（含 ws/brev 变体）；任意两阶段组合；
 2KEY 风格混合阶段组合（E1D2E1/E2D3E2/E3D2E3/E1D3E1 及正逆序）；完整解密
 方向组合；纯 Python DES 内部状态（st1/st2/st3 的 L16||R16、R16||L16 即
-pre-FP、post-IP）。X 的代数来源未定，但不影响"硬件以 X 链接、确定性可复现"
-的结论。
+pre-FP、post-IP）。
+
+**已解（§10.6）**：X 是在“P2=P”的错误前提下导出的。实际 P2 是 .rodata
+邻数组 `v_des1_ecb_ct`（`85e813540f0ab405`），恒等式
+X = `85e813540f0ab405 ⊕ f2afd84ee809e2b5 ⊕ 0123456789abcdef`
+= `76648e7d6ea89b5f` 逐比特成立。排除清单无一命中，正因为 X 不经过
+DES 数据通路。
 
 ### 10.4 厂商 ALGO_DEMO 权威 word 向量（供上板复测）
 
@@ -399,7 +412,7 @@ pre-FP、post-IP）。X 的代数来源未定，但不影响"硬件以 X 链接�
 ALGO/ALGO_DEMO/src/algo_demo.c` 的 `TDES_3Key_test()` / `TDES_2Key_test()`。
 word→64-bit 块打包：每块两字按小端拼字节（源码注释自带 BE 十六进制互证）。
 **openssl 验证：demo 的 2KEY/3KEY CBC 期望值均为标准 EDE CBC 链接（链值 =
-上一块密文）**——与实板行为矛盾，需上板裁决（见 10.5）。
+上一块密文）**——该期望已被 §10.5 上板裁决证实为正确（厂商原库 PASS）。
 
 3KEY CBC（keyMode=TDES_3KEY, iv=iv1, Mode=DES_CBC, En_De=DES_ENC，
 期望值 openssl 8/8 块一致）：
@@ -439,14 +452,63 @@ uint32_t TDES_CBC_DE[16] = {0xED617A1E,0xBFDACE87,0x1FCAFD57,0x8D3ECA85,
 注：demo 中 CBC_DE 子项是"加密得密文→解密比对明文"的自洽用法；
 TDES_CBC_DE 数组是解密输出期望（即明文），不是另一组密文。
 
-### 10.5 建议的裁决实验（板上）
+### 10.5 裁决实验（已执行，2026-10）
 
-1. 烧录厂商原库 + 直接跑 `TDES_3Key_test()`：若 flag3 失败 → 硬件怪癖实锤
-   （厂商库同样非标准）；若通过 → 对比测试环境（打包/调用序列）找差异。
-2. 用 12.1 的最小向量实测 TDES_2KEY+CBC（键 = 前两把），验证同容是否异常。
-3. 4 块探针：IV=0，P||P||P||P（3KEY+CBC 加密），报出 C1..C4；反解每块
-   链值 X2..X4，判断非标准更新函数 Xᵢ = G(Cᵢ₋₁) 是否固定可循，并提供样本
-   作进一步代数识别。
+裁决固件 `/home/zmmfly/prjs/xhive_testspace/k3_des_probe`：同一 ELF 同时
+链接厂商原始 GCC 归档（`lib/n32h47x_48x_des.a` + `common.a`，符号经
+`objcopy --prefix-symbols=vd_` 隔离；仅为通过硬浮点链接补写
+`.ARM.attributes` 的 Tag_FP_arch=6/Tag_ABI_HardFP_use=1/Tag_ABI_VFP_args=1，
+代码节字节与厂商发行版逐一相同，经节级 MD5 对账）与重建源码，同板同轮
+对照，串口投票（413 轮，每轮 27 项全 PASS）：
+
+1. 厂商原库跑 §10.4 的 demo word 向量（3KEY enc/dec、2KEY enc/dec，word
+   对 word 比对）：**全部 PASS** —— 厂商 demo 期望值就是标准链接，厂商库
+   在此硅片上输出标准结果。
+2. 厂商原库与重建库分别跑 §10.1 最小向量：均输出标准
+   `f2afd84ee809e2b5 db7860f547d16c54`（PASS）。
+3. TDES_2KEY+CBC 最小向量（键=前两把，IV=0，P||P）：标准
+   `a6bb373e196b375e 0f71099ab28d9088`（PASS，主机 cryptography 生成）。
+4. 4 块探针（P^4，IV=0，3KEY/2KEY）：C1..C4 全部标准链接（链值=上一块
+   密文），不存在非标准更新函数 G。
+5. 前置条件对照（均为阴性，输出保持标准值）：RCC AHBPCLKEN bit4 与
+   CFG3 bit2（CMSIS 注释为 RNGCEN/TRNG1MEN，与 SAC 无关）、AHBPRST
+   SACRST（0x40021024 bit3）复位、单钥 CBC 紧接 3KEY CBC、AES
+   (ECB/CBC/CTR)/SM4/SHA256/TRNG/完整 aes_tests 序列后再做 3KEY CBC。
+6. SAC 寄存器轨迹对照（DES_Init/Crypto 前后，重建 vs 厂商）：完全一致，
+   `SACCR=0x51`、`SACSR=0x3000`、`SACSFR1=0x32`、`SACSFR2/3=0`。均一性使
+   J-Link 断点逐指令对比不再必要。
+
+→ 厂商库 PASS，重建库同固件同轮也 PASS：问题不在库、不在硅片，转向测试
+环境后定位到 demo T09 越界读（§10.6）。
+
+### 10.6 根因与修复（结案）
+
+**根因：测试固件 `n32h474_demo` 的 T09 用例越界读，与库（重建/厂商）和
+硅片均无关。** T09 原调用 `des_case(..., v_des1_pt, 16, ...)`，而
+`v_des1_pt` 是 8 字节数组；`le_pack(s_win, pt, 16)` 把 .rodata 中紧邻的
+`v_des1_ecb_ct`（demo ELF：`v_des1_pt`@0x08025414、`v_des1_ecb_ct`@
+0x0802541c 无缝相接）读作第 2 块明文。硬件实际计算的是标准
+`3DES-CBC(P || 85e813540f0ab405)`：
+
+- 主机复核该实际输入的标准输出 = `f2afd84ee809e2b5 326310a3c41bd2fd`，
+  与 §10.1 板上“异常”数据逐字节一致（含“错误”的 C2）。
+- X 的恒等解释见 §10.3；块 1 正确、roundtrip 自洽、110 轮确定性复现均
+  由此解释（固件不变时越界内容恒定）。
+- “与厂商 demo 期望矛盾”亦消解：demo 期望是标准链接，厂商库板上实测
+  PASS（§10.5）；矛盾来自本仓库测试固件，不是厂商资产。
+
+修复（仅测试资产，SDK 库源码零改动）：
+
+- `gen_vectors.py` 新增 `v_des1_pt2`（P||P，16B）与 `v_tdes2_cbc_ct`
+  （2KEY CBC 标准期望），重新生成 `src/algo_vectors.h`（既有向量逐字节
+  不变）。
+- demo `main.c`：T09 改用 `v_des1_pt2`；新增 `T09b 3des-cbc-2k`。
+- 修复后整包回归：43 项用例 × 373 轮全部 PASS（含 T09/T09b 及 roundtrip）。
+
+对使用者的建议：TDES 2KEY/3KEY 的 ECB/CBC 均可按标准语义使用，无需回避
+CBC 或软件补链。调用约定注意：`in/iv/key/out` 均为 32 位字指针，
+`inWordLen` 以字计；输入缓冲必须真实占满 `inWordLen*4` 字节——本次事故
+即长度与缓冲不匹配所致。
 
 ## 11. 未确认点汇总（均标"推测"）
 
@@ -454,13 +516,14 @@ TDES_CBC_DE 数组是解密输出期望（即明文），不是另一组密文�
 | --- | --- | --- |
 | SACCR[2:0] | 算法选择：AES=0, DES=1, SM4=4 | 三库 Init 立即数 0xD0/0xD1/0xD4 |
 | SACCR bit6 | 恒置 1，用途未知 | 三库 Init 值均含该位 |
-| SACCR bit7 | ARAM 清理触发、自清零 | Init 写入后立即轮询该位到 0 |
+| SACCR bit7 | ARAM 清理触发、自清零 | Init 写入后立即轮询该位到 0；**板上确认**：DES_Init 后读回 SACCR=0x51（bit7 已自清） |
 | SACCR bit8 | Close 收尾动作（复位/flush） | 仅 Close 观测到 `|= 0x100` |
 | SACSFR1 bit4/bit5 | bit5=TDES、bit4=第 3 把密钥 | 2KEY=0x20、3KEY=0x30 的组合 |
-| SACSFR1 bit7 (GO) | 完成后自清零 | 库从不清除却支持多块连续运算 |
+| SACSFR1 bit7 (GO) | 完成后自清零 | 库从不清除却支持多块连续运算；**板上确认**：DES_Crypto 后读回 SACSFR1=0x32（3KEY|CBC，bit7=0） |
 | SACSR bit2 清除方式 | 写 1 清除（rc_w1） | 库的 RMW 写回序列；也可能是读清 |
 | 块内字节序 | 向量字节序 = MSB 字节在前 | 密码加速器惯例；T1/T8 板上确认（已证实） |
-| TDES+CBC 块间链值 | 3KEY+CBC 实板块 2 起链值非上一块密文（§10）；代数来源未定；2KEY+CBC 未测 | 实板数据 + 库侧逐指令复查（无库代码差异） |
+| SACSR bit0/bit12/13 读回 | common 在 ARAM 完成后写 SACSR bit0，但板上 DES_Init/Crypto 后读回恒为 0x3000（bit0=0；bit12/13 置位，含义未知） | 板上寄存器转储（§10.5 第 6 项）；推测 bit0 为脉冲式应答或自清零，无进一步证据 |
+| TDES+CBC 块间链值 | **已结案：标准链接（链值=上一块密文）**，2KEY/3KEY CBC 均板上 PASS；早期“异常”系测试固件越界读（§10.6） | 厂商原库+重建库同板对照（§10.5/§10.6） |
 | 复位值 | 所有寄存器复位值未知 | 库从不读回未写状态 |
 
 ## 12. 版本信息
@@ -472,3 +535,7 @@ TDES_CBC_DE 数组是解密输出期望（即明文），不是另一组密文�
 ---
 生成于 DES 库逆向任务；分析中间产物位于 `/tmp/des-re/`（含 DWARF dump 与
 行号表）。`src/n32h47x_48x_des.c` 已按本文档对齐 v1.2.0 行为。
+
+裁决实验（2026-10）：厂商原库与重建库同板同轮对照全部 PASS，TDES+CBC
+“链接异常”结案为测试固件越界读（§10.6）；裁决固件与中间产物位于
+`/home/zmmfly/prjs/xhive_testspace/k3_des_probe/` 与 `/tmp/des-re/`。
