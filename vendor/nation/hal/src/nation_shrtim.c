@@ -358,6 +358,23 @@ static uint32_t edge_compare(uint32_t period, uint32_t duty)
  * x2 mirrors the sources (exact complement). LA-verified: duty 300 ->
  * x1 = 30.00 %, x2 = 70.00 % at 10.02 kHz (CMP1 = 14400 = P * 300/1000).
  *
+ * The User Manual documents the underlying behaviour (located after the
+ * LA/JLink rounds): CN_UM_N32H47x_48x_Series_User_Manual_V1.1.0,
+ * chapter 9 (SHRTIM), "Timer clock and prescaler":
+ *  - "when several timers are enabled, the prescaler synchronizes with
+ *    the prescaler of the timer that was started first" — the master is
+ *    started first by center_master_setup(), so a locked slave follows
+ *    the master time base;
+ *  - "the prescaler cannot be modified once the counter is enabled
+ *    (TxCNTEN/MCNTEN set)" — and the up-down section adds that UPDOWNM
+ *    must not change while running;
+ *  - the warning that events crossing timer boundaries (output set/reset,
+ *    counter reset, update, ...) require EQUAL prescaler ratios in the
+ *    coupled timers, otherwise "the results are unpredictable". This
+ *    scheme couples slave and master (MASTERPER set/reset + MASTER_PER
+ *    reset trigger) with unequal ratios; rounds 4-7 measured the outcome
+ *    as the deterministic follow-the-master behaviour encoded above.
+ *
  * @note The pulses are anchored to the master period edge (leading for
  *       duty <= 500, trailing above), not geometrically centered inside
  *       the PWM cycle. Rounds 3-7 found no crossbar combination on this
@@ -404,6 +421,13 @@ static uint32_t center_compare(uint32_t period, uint32_t duty)
  *    reset-trigger register; calling them on a center unit can break the
  *    phase lock.
  * Edge-aligned units are not affected.
+ *
+ * @note The master-vs-slave prescaler ratios are intentionally unequal
+ *       here; the User Manual (see center_compare() for the citation)
+ *       warns that events crossing timers with unequal prescalers are
+ *       unpredictable in general — this scheme relies on the
+ *       deterministic follow-the-master behaviour measured on this
+ *       silicon and encoded in center_compare().
  *
  * @param[in] ratio_idx Slave prescaler index in s_ratio_hw (0..6; the DIV4
  *                      last step has no slower master counterpart and is
