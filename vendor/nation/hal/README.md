@@ -95,6 +95,7 @@ sampling points) before driving real hardware:
 | `shrtim_example_bridgeless_pfc.c` | Totem-pole bridgeless PFC (4 outputs, force-commutated slow leg) |
 | `shrtim_example_full_llc.c` | Full-bridge LLC (4 PWM, PFM sweep with auto anchor) |
 | `shrtim_example_full_pfc_half_llc.c` | Two NON-interleaved PFC fast legs (4 PWM, independent channels) + half-bridge LLC (2 PWM) |
+| `shrtim_example_three_phase_bldc.c` | Three-phase BLDC inverter (FOC/SVPWM carrier, 6 PWM) |
 
 ## Build integration
 
