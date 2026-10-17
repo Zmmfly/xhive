@@ -87,6 +87,16 @@ frequency holds the phase; zero amplitude yields three 0.5 duties. Amplitude
 clipping is indicated in the result. Voltage-frequency laws and ramps remain
 caller policy rather than an implicit motor-specific choice.
 
+## FOC and sliding-mode observer
+
+The umbrella `fieldctrl.h` also exposes `fieldctrl_foc.h` for d/q current control
+and the mechanical-speed/current cascade, and `fieldctrl_smo.h` for the
+sliding-mode current/back-EMF observer. See the
+[FOC/SMO design and validation notes](README_foc_smo.md) for the motor model,
+anti-windup rules, signed electrical-angle reconstruction, discrete low-pass
+phase compensation, locking criteria and software-only rotating handover tests.
+The observer is not a standstill startup procedure.
+
 ## Safety boundary
 
 The caller is responsible for current/voltage/temperature limits, ADC offset
