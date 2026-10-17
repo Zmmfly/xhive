@@ -40,6 +40,8 @@
  * 要点：
  *  - LLC 两桥臂用 CENTER 模式：pwm_init()/pwm_freq() 内部自动配置并跟随
  *    共享 master 锚周期（硬件实测验证的路径），示例不需要手写 master 周期。
+ *    跨桥臂反相存在启动时确定的相位残差（实测 0~350ns，整轮恒定）；桥臂内
+ *    不重叠由每单元死区保证。对伏秒对称敏感的功率级需计入该残差。
  *  - 第二桥臂经 shrtim_pwm_swap() 交换输出后与桥臂 1 反相，得到对角导通
  *    对 Q1(B1)+Q4(C2) / Q2(C1)+Q3(B2)（swap 已实测，见 demo T08）。
  *  - 约束：CENTER 模式共享同一个 master，所有 CENTER 单元必须同频（本例
@@ -171,7 +173,11 @@ int shrtim_example_half_pfc_full_llc_init(void)
  * @brief Start both converters (LLC first, then the PFC).
  *
  * CENTER-mode units need no manual master handling: the anchor counter is
- * already configured and running from shrtim_pwm_init().
+ * already configured and running from shrtim_pwm_init(). Cross-leg
+ * anti-phase holds within a startup-dependent residual phase offset
+ * (LA-observed 0..350 ns at 100 kHz, constant per run); within-leg
+ * non-overlap is guaranteed per-unit by the dead-time generator. Budget
+ * the residual when the power stage cares about volt-second symmetry.
  */
 void shrtim_example_half_pfc_full_llc_start(void)
 {

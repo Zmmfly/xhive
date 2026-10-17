@@ -148,6 +148,9 @@ int shrtim_example_full_llc_init(void)
  *
  * CENTER mode needs no manual master handling: the anchor counter runs
  * from shrtim_pwm_init() and both units lock to it (demo T03/T04 pattern).
+ * Cross-leg anti-phase holds within a startup-dependent residual phase
+ * offset (LA-observed 0..350 ns at 100 kHz, constant per run); within-leg
+ * non-overlap is guaranteed per-unit by the dead-time generator.
  */
 void shrtim_example_full_llc_start(void)
 {
