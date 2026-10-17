@@ -84,6 +84,14 @@ config LIBS_ADD_LINEARS
         Add allocation-free matrix operations in f32, f64, q15, and q31.
         Fixed-point matrices use explicit binary block exponents.
 
+config LIBS_ADD_FILTERS
+    bool "Add filters Signal Processing Library"
+    default n
+    select LIBS_ADD_LINEARS
+    help
+        Add allocation-free streaming filters and Kalman estimation in
+        f32, f64, q15, and q31, using the linears numeric kernel.
+
 config LIBS_ADD_LLHTTP
     bool "Add llhttp Library"
     default n

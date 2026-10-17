@@ -129,8 +129,8 @@ build/configuration directories, without replacing the SDK's normal host cache.
 | M0 | Requirements, design, validation plan, and this worklog | Review scope and accepted decisions; whitespace check | Committed as `63e7132` |
 | M1a | Shared numerical types/core and linears build entry | Contract/quantization tests, SDK graph regression, full host group, strict C99 | Committed as `37d5961` |
 | M1b | Foundation matrix/vector operations | Four-variant Eigen references, contract/audit regressions, native-f32 ARM evidence | Committed as `b5ffaf2` |
-| M2 | LU/solve/inverse/determinant, Cholesky, QR, LDLT, SVD | Eight family entries: 258 cases passed, 2 floating cases inapplicable; host build | Reviewed and frozen; coordinating-agent commit pending |
-| M3 | Filters including scalar and matrix Kalman | Per-family reference/long-sequence/state tests; host build | Implementation in progress |
+| M2 | LU/solve/inverse/determinant, Cholesky, QR, LDLT, SVD | Eight family entries: 258 cases passed, 2 floating cases inapplicable; host build | Committed as `c9a14da`; independent audit `70e9d2c` |
+| M3 | Filters including scalar and matrix Kalman | 10 entries / 201 cases, Eigen Kalman, strict GCC/Clang C99, full 42-entry SDK group | Ready for coordinating-agent review |
 | M4 | Control foundations, PI/PWM, VVVF | Transform/formula tests, limit/direction/state tests; host build | Implementation in progress |
 | M5 | FOC and SMO | Four-variant software control/observer tests and stated observability limits | Implementation in progress |
 | M6 | DTC | Flux/torque/sector/hysteresis/table tests and software plant scenarios | Planned |
@@ -759,3 +759,92 @@ is reserved for a following test-only commit. The production signed-extrema
 export correction is included in the decomposition change. This handoff does
 not include the still-in-progress filters/control source trees or the draft
 root integration/documentation updates for them.
+The coordinator committed M2 as `c9a14da`
+(`feat(linears): add four-format static matrix decompositions`) and the separate
+independent audit as `70e9d2c`
+(`test(linears): cover decomposition scale and failure boundaries`).
+
+The build agent also independently checked every current linears production
+source with both GCC 15.2.0 and Clang 21.1.8:
+
+```sh
+for compiler in cc clang; do
+    "$compiler" -std=c99 -pedantic-errors -Wall -Wextra -Werror -Wvla -Walloca \
+        -O2 -fstrict-aliasing -Ilibs/linears/include -fsyntax-only libs/linears/src/*.c
+done
+```
+
+Both compilers passed. This check includes the final size macros and native-f32
+template, and is independent of the owners' earlier compiler reports.
+
+### 2026-10-17 — corrected-isolation final linears sanitizer run
+
+From the actual SDK root, using only an external cache/output directory whose
+resolved target and object paths were checked beforehand:
+
+```sh
+work=/home/zmmfly/prjs/xhive_testspace/fieldctrl/host-verify-DXUdWt
+XMAKE_CONFIGDIR="$work" xmake test -P . -j2 -g xhive -v 'linears_test_*/*'
+```
+
+The configuration uses O2, strict aliasing, ASan/UBSan,
+`-fno-sanitize-recover=all`, frame pointers and VLA/alloca compile errors as
+recorded above. **Confirmed:** 15 Xmake entries passed, **391 GoogleTest cases
+passed and the same 2 inapplicable floating SVD cases skipped**. This includes
+both final maximum-raw-span norm regressions. Compiler commands show the intended
+flags and correct output paths; the build tree was confirmed in the authorized
+location. No ASan/UBSan/runtime-error diagnostic was found in the full
+`host-verify-DXUdWt/linears-final.log`.
+
+### 2026-10-17 — M3 complete filter acceptance
+
+All ten filter categories were frozen by their owners before this run. The
+matrix Kalman test now uses Eigen 3.4.0 `Matrix<long double>` with an independent
+Eigen LDLT innovation solve; the build agent inspected those source references.
+The temporary handwritten Gauss–Jordan oracle was replaced, not accepted as the
+required Eigen comparison. Tolerances were not relaxed to make that change pass.
+
+The final matrix workspace is three separate caller-owned typed arrays: raw
+numeric intermediates, basic-kernel union units, and decomposition working
+scalars. This avoids casting a union array into unrelated flat element arrays.
+Measurement/innovation SPD is checked before the existing pivoted linear solve;
+no explicit inverse is formed. The earlier Clang C23-extension diagnostic on an
+anonymous `offsetof` type was fixed with named alignment carriers.
+
+Executed from the SDK root:
+
+```sh
+xmake b
+xmake test -g xhive -v 'filters_test_*/*'
+for compiler in cc clang; do
+    "$compiler" -std=c99 -pedantic-errors -Wall -Wextra -Werror -Wvla -Walloca \
+        -O2 -fstrict-aliasing -Ilibs/linears/include -Ilibs/filters/include \
+        -fsyntax-only libs/filters/src/*.c
+done
+xmake test -g xhive -v
+```
+
+**Confirmed results:**
+
+- Filter selection: **10 Xmake entries, 201 GoogleTest cases, all passed**.
+  Eight basic-filter categories contribute 140; scalar Kalman 24; matrix Kalman
+  37. Log: `/tmp/xhive-fieldctrl-filters-final-2bBK2n.log`.
+- Every filter production source passed strict C99 with GCC 15.2.0 and Clang
+  21.1.8, including the named-alignment-carrier portability correction.
+- Default SDK build passed. The full SDK host group passed **42 Xmake entries**,
+  zero failed; the two already documented SVD type-specific skips remain.
+  Log: `/tmp/xhive-fieldctrl-M3-host-iqxREx.log`.
+- SDK-entry regression confirms filters is in the default host map, its linears
+  dependency is public, standalone filters registers only its own tests, no
+  production Eigen package is attached, and disabled/embedded tests do not leak
+  test-package requirements.
+- **Delegated owner evidence:** all 201 cases also passed isolated release and
+  sanitizer runs; Kalman's final 61 cases passed Clang ASan/UBSan with Eigen.
+  Those logs are under `/tmp/xhive-kalman.2A60yo`; basic-filter logs are recorded
+  earlier. Unified final sanitizer regression remains a separate final gate.
+
+M3 integration staging paths: `libs/filters/xmake.lua`, `libs/xmake.lua`,
+`libs/Kconfig`, `tests/sdk_entry.lua`, and this worklog, plus the filter owner's
+frozen library files. `libs/fieldctrl/xmake.lua` is still an unregistered draft;
+root README and library-catalog edits covering all three libraries remain for
+the final documentation node. No control source belongs in the M3 commit.
