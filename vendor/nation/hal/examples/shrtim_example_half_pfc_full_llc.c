@@ -74,6 +74,9 @@
  * [set anchor, CMP1] and its middle is CMP1/2. The free compare CMP3 is
  * programmed with that value and routed to @p trig. Must be refreshed
  * after every duty or frequency change (the hooks below do this).
+ * Verified register-level (demo T20: cmp3 == cmp1/2); the ADC routing
+ * itself is only API-return-checked (rc == 0, as demo T14) and its
+ * electrical trigger position is not LA-observable.
  *
  * @param[in] trig ADC trigger index 1..10.
  * @param[in] unit Unit whose current is sampled.

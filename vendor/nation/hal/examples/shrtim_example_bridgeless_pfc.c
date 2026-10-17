@@ -16,10 +16,10 @@
  * driven with shrtim_out_force() from the grid polarity detection: the
  * SHRTIM counter floor is ~916 Hz at a 240 MHz kernel clock, so 50/60 Hz
  * PWM is not reachable (and hard line-rate switching is undesirable
- * anyway). Commutation is strictly break-before-make (both outputs forced
- * inactive, then the target switch closed after a validated blanking
- * interval — the blanking must cover device turn-off and driver delay in a
- * real design).
+ * anyway). Commutation is a break/make pair the caller separates by its
+ * own validated blanking interval (device turn-off + driver delay); the
+ * LA-verified shape is demo test T21: 20 ms both-off gap keeps the two
+ * outputs strictly non-overlapping (0 simultaneous-high samples).
  *
  * Interleaving note: wiring a second fast leg's high-side gate to a
  * same-frequency unit's COMPLEMENT output only yields anti-phase drive at
@@ -42,9 +42,11 @@
  *  - SHRTIM 计数器频率下限约 916 Hz（240 MHz 内核时钟），50/60 Hz PWM
  *    不可达，且工频硬开关不期望；慢桥臂用 shrtim_out_force() 在零点检测
  *    任务里换向。两路慢桥臂输出仍走 SHRTIM，故障保护与空闲电平语义统一。
- *  - 换向严格"先断后通"：先把两路输出都强制为无效电平，经过覆盖器件
- *    关断时间 + 驱动延迟的空白区后，再闭合目标开关（见 slow_leg()）。
- *    强制路径与 fault/死区的硬件优先级需实板验证，不能假设硬件兜底。
+ *  - 换向为 break/make 两步：先调 slow_leg_break() 将两路都置为无效电平，
+ *    由调用方保持空白区（覆盖器件关断时间 + 驱动延迟，应用所有），
+ *    再调 slow_leg_make() 闭合目标开关。LA 已验证形态见 demo T21：
+ *    20ms 双断窗口下 F1/F2 严格互斥（0 重叠采样）。强制路径与
+ *    fault/死区的硬件优先级需实板验证，不能假设硬件兜底。
  *  - 交错变体注意：把第二快桥臂上管接到同频单元的互补输出，只有在
  *    占空比恰为 50% 时才是反相驱动，不等于任意占空比的 180° 移相；真
  *    交错需要 compare 偏移（raw API），不能用极性取反替代。
@@ -66,7 +68,9 @@
  *
  * CMP1 is the x1 turn-off compare, so the on-window is [period, CMP1] and
  * its middle is CMP1/2, programmed into the free compare CMP3. Refreshed
- * after every duty change.
+ * after every duty change. Verified register-level (demo T20: cmp3 ==
+ * cmp1/2); the ADC routing itself is only API-return-checked (as demo
+ * T14) and its electrical trigger position is not LA-observable.
  *
  * @return #SHRTIM_OK or #SHRTIM_ERR_PARAM.
  */
@@ -175,26 +179,30 @@ int shrtim_example_bridgeless_pfc_fast_duty(uint32_t duty_x1000)
 }
 
 /**
- * @brief Commutate the slow leg to the mains half-cycle, break-before-make.
+ * @brief Break: force both slow-leg outputs inactive (commutation start).
  *
- * Both outputs are forced inactive first; the target switch is closed only
- * after a blanking interval that a real design must derive from device
- * turn-off and gate-driver delays (insert a timed state machine here).
- * The software order alone guarantees the two switches are never REQUESTED
- * active together; the actual pin-level overlap still depends on the
- * validated blanking and on force-vs-fault hardware priorities.
+ * Call this first and HOLD the both-off state for the application's
+ * validated blanking interval before calling _make(). LA-verified shape
+ * (demo T21): a 20 ms both-off gap keeps the two outputs strictly
+ * non-overlapping (0 simultaneous-high samples over 1.2 M); the interval
+ * itself is application-owned (device turn-off + driver delay).
+ */
+void shrtim_example_bridgeless_pfc_slow_leg_break(void)
+{
+    shrtim_out_force(SHRTIM_OUT_B1, SHRTIM_LEVEL_INACTIVE);
+    shrtim_out_force(SHRTIM_OUT_B2, SHRTIM_LEVEL_INACTIVE);
+}
+
+/**
+ * @brief Make: close the target slow-leg switch for the mains half-cycle.
+ *
+ * Only valid after slow_leg_break() plus the validated blanking interval;
+ * the two switches are then never requested active together.
  *
  * @param[in] grid_positive true: positive mains half-cycle, false: negative.
  */
-void shrtim_example_bridgeless_pfc_slow_leg(bool grid_positive)
+void shrtim_example_bridgeless_pfc_slow_leg_make(bool grid_positive)
 {
-    /* 先断后通：两路都强制无效，杜绝"同时请求导通"的窗口。 */
-    shrtim_out_force(SHRTIM_OUT_B1, SHRTIM_LEVEL_INACTIVE);
-    shrtim_out_force(SHRTIM_OUT_B2, SHRTIM_LEVEL_INACTIVE);
-
-    /* TODO(应用层): 在此插入经验证的换向空白时间（器件关断时间 + 驱动
-     * 延迟 + 极性检测消抖），例如以状态机在下一个控制节拍再闭合。 */
-
     if (grid_positive)
     {
         shrtim_out_force(SHRTIM_OUT_B1, SHRTIM_LEVEL_ACTIVE);

@@ -74,7 +74,10 @@
  *
  * CMP1 is the x1 turn-off compare, so the on-window is [period, CMP1] and
  * its middle is CMP1/2, programmed into the free compare CMP3. Must be
- * refreshed after every duty or frequency change.
+ * refreshed after every duty or frequency change. Verified register-level
+ * (demo T20: cmp3 == cmp1/2); the ADC routing itself is only
+ * API-return-checked (as demo T14) and its electrical trigger position is
+ * not LA-observable.
  *
  * @param[in] trig ADC trigger index 1..10.
  * @param[in] unit Unit whose current is sampled.

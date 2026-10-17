@@ -64,7 +64,10 @@ static uint32_t s_llc_freq_hz = LLC_FREQ_MAX_HZ;
  *
  * CMP1 is the moving (turn-off) compare, so the on-window is
  * [set anchor, CMP1] and its middle is CMP1/2, programmed into the free
- * compare CMP3. Refreshed after every frequency change.
+ * compare CMP3. Refreshed after every frequency change. Verified
+ * register-level (demo T20: cmp3 == cmp1/2); the ADC routing itself is
+ * only API-return-checked (as demo T14) and its electrical trigger
+ * position is not LA-observable.
  *
  * @return #SHRTIM_OK or #SHRTIM_ERR_PARAM.
  */
