@@ -20,3 +20,25 @@ target("nation_hal")
         target:add("deps", "nation_n32h47x_48x", {public = true})
     end)
 target_end()
+
+-- Compile check for the usage examples: not linked into any firmware image.
+-- Registered like `nation_hal` under the same kconfig guard; SDK targets
+-- are only reachable through an application's dependency graph (they
+-- cannot be built by name from a demo project). A standalone check works
+-- with:
+--   arm-none-eabi-gcc -std=c99 -Wall -Wextra -Iinc -c examples/*.c
+target("nation_hal_examples")
+    set_kind("object")
+    set_default(false)
+
+    on_load(function(target)
+        local conf = target:data("kconfig")
+        if not conf or not conf.NATION_USE_N32H47X_48X then
+            return
+        end
+
+        local sdir = os.scriptdir()
+        target:add("files", path.join(sdir, "examples", "*.c"))
+        target:add("deps", "nation_hal")
+    end)
+target_end()
