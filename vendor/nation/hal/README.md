@@ -96,6 +96,7 @@ sampling points) before driving real hardware:
 | `shrtim_example_full_llc.c` | Full-bridge LLC (4 PWM, PFM sweep with auto anchor) |
 | `shrtim_example_full_pfc_half_llc.c` | Two NON-interleaved PFC fast legs (4 PWM, independent channels) + half-bridge LLC (2 PWM) |
 | `shrtim_example_three_phase_bldc.c` | Three-phase BLDC inverter (FOC/SVPWM carrier, 6 PWM) |
+| `shrtim_example_pfc_llc_dcdc_chain.c` | Three-stage chain: two-leg PFC + full-bridge LLC + sync-buck DC-DC (10 PWM, one unit spare) |
 
 ## Build integration
 
