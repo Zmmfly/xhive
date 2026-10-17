@@ -92,6 +92,15 @@ config LIBS_ADD_FILTERS
         Add allocation-free streaming filters and Kalman estimation in
         f32, f64, q15, and q31, using the linears numeric kernel.
 
+config LIBS_ADD_FIELDCTRL
+    bool "Add fieldctrl Motor Control Library"
+    default n
+    select LIBS_ADD_LINEARS
+    select LIBS_ADD_FILTERS
+    help
+        Add allocation-free VVVF, FOC/SMO, and DTC software algorithms in
+        f32, f64, q15, and q31. Hardware protection is application-owned.
+
 config LIBS_ADD_LLHTTP
     bool "Add llhttp Library"
     default n

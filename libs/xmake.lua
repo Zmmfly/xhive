@@ -37,6 +37,7 @@ includes("divsufsort")
 includes("ezctrl")
 includes("linears")
 includes("filters")
+includes("fieldctrl")
 includes("llhttp")
 includes("mbedtls")
 
@@ -57,6 +58,7 @@ target("libs")
             LIBS_ADD_EZCTRL     = "ezctrl",
             LIBS_ADD_LINEARS    = "linears",
             LIBS_ADD_FILTERS    = "filters",
+            LIBS_ADD_FIELDCTRL  = "fieldctrl",
             LIBS_ADD_LLHTTP     = "llhttp",
             -- LIBS_ADD_MBEDTLS    = "mbedtls", // need explicit declaration
         }

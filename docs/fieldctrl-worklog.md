@@ -130,10 +130,10 @@ build/configuration directories, without replacing the SDK's normal host cache.
 | M1a | Shared numerical types/core and linears build entry | Contract/quantization tests, SDK graph regression, full host group, strict C99 | Committed as `37d5961` |
 | M1b | Foundation matrix/vector operations | Four-variant Eigen references, contract/audit regressions, native-f32 ARM evidence | Committed as `b5ffaf2` |
 | M2 | LU/solve/inverse/determinant, Cholesky, QR, LDLT, SVD | Eight family entries: 258 cases passed, 2 floating cases inapplicable; host build | Committed as `c9a14da`; independent audit `70e9d2c` |
-| M3 | Filters including scalar and matrix Kalman | 10 entries / 201 cases, Eigen Kalman, strict GCC/Clang C99, full 42-entry SDK group | Ready for coordinating-agent review |
-| M4 | Control foundations, PI/PWM, VVVF | Transform/formula tests, limit/direction/state tests; host build | Implementation in progress |
-| M5 | FOC and SMO | Four-variant software control/observer tests and stated observability limits | Implementation in progress |
-| M6 | DTC | Flux/torque/sector/hysteresis/table tests and software plant scenarios | Planned |
+| M3 | Filters including scalar and matrix Kalman | 10 entries / 201 cases, Eigen Kalman, strict GCC/Clang C99, full 42-entry SDK group | Committed as `70be7fa` |
+| M4 | Control foundations, PI/PWM, VVVF | 3 entries / 82 cases; default build and SDK graph isolation | Reviewed implementation and integration ready |
+| M5 | FOC and SMO | 2 entries / 74 cases, including software observer/handover scenarios | Tests passed; separate commit pending |
+| M6 | DTC | 1 entry / 60 cases, including subnormal sector regression | Tests passed; separate commit pending |
 | M7 | Complete SDK integration and final regression | Full host group, default build, standalone entries, isolated ARM compile/link, heap/stack audit | Planned |
 
 The coordinating agent may split a milestone into smaller coherent commits.
@@ -848,3 +848,146 @@ M3 integration staging paths: `libs/filters/xmake.lua`, `libs/xmake.lua`,
 frozen library files. `libs/fieldctrl/xmake.lua` is still an unregistered draft;
 root README and library-catalog edits covering all three libraries remain for
 the final documentation node. No control source belongs in the M3 commit.
+The coordinator committed M3 as `70be7fa`
+(`feat(filters): add static four-format filters and Kalman estimators`).
+
+### 2026-10-17 — control defect closure and frozen host acceptance
+
+The confirmed control defects above were repaired before final acceptance:
+
+- Floating DTC sector comparisons normalize their scale before testing the
+  sector boundary, including finite subnormal inputs.
+- Current-loop anti-windup scales vectors before taking a sign-sensitive dot
+  product; speed-loop sign tests compare signs rather than multiplying tiny
+  operands. Neither normal-scale underflow nor giant intermediate products
+  silently disable anti-windup.
+- SVPWM and VVVF calculate modulation in unit-bus coordinates and convert the
+  physical voltage only at the output boundary. Common-scale tests include
+  floating denorm/min/ordinary/large values and q exponents +/-1000.
+- A shared rescale helper uses native `frexp`/`ldexp` for floating values and
+  integer mantissa/exponent arithmetic for q. This fixes both multiply/divide
+  orderings that previously lost representable radial-limit components.
+- A final independent q-hypot counterexample used separately scaled components
+  at exponent MAX and MIN, with limit equal to the larger component. The old
+  unused `lo/hi` precision contribution returned RANGE. For canonical gap>32,
+  the relative norm correction is below `2^-65`, so returning the larger value
+  is correctly rounded at 31-bit working precision. This reachable scalar case
+  is distinct from the removed, unreachable single-block matrix-norm branch.
+  Two q-only owner cases and two independent cases confirm exact mantissa/
+  exponent preservation.
+
+Final arithmetic-header SHA-256 is
+`d2aafc6a7ebe466ae4b6afb6b4dd14a57a29ad162b8a3554dc44e9150364c08a`.
+The independent reviewer reran all **34** audit cases under ASan/UBSan, with
+source hashes checked before/after compilation and after testing. The earlier
+32-case count predates the final q-hypot regression. No hardware was accessed.
+
+A first SDK control run succeeded while the last arithmetic/header and PI/PWM
+regression were being updated. The build agent's before/after hash comparison
+caught the change; `/tmp/xhive-fieldctrl-root-aERIZG.log` was explicitly not used
+as frozen acceptance. After all owners froze their final files, ran:
+
+```sh
+xmake b
+xmake test -g xhive -v 'fieldctrl_test_*/*' 'xhive_test_sdk_entry/sdk_entry'
+xmake test -g xhive -v
+```
+
+**Confirmed:** all control source/header/test hashes stayed unchanged throughout
+the precise run. **11 Xmake entries** passed (10 control entries plus SDK graph
+regression). Control internal counts are:
+
+| Node | Xmake entries | GoogleTest cases passed |
+| --- | ---: | ---: |
+| M4 transforms / PI-PWM / VVVF | 3 | 20 + 42 + 20 = 82 |
+| M5 FOC / SMO | 2 | 38 + 36 = 74 |
+| M6 DTC | 1 | 60 |
+| Independent DTC / FOC / numeric / PWM audit | 4 | 4 + 12 + 8 + 10 = 34 |
+| Total control | 10 | 250 |
+
+The full SDK group then passed **52 Xmake entries**, zero failed, retaining only
+the two documented inapplicable SVD floating cases. Logs:
+`/tmp/xhive-fieldctrl-frozen-1cKxOb.log` (with before/after hash sidecars) and
+`/tmp/xhive-fieldctrl-all-host-pKYoiO.log`.
+
+The SDK graph now checks fieldctrl's two public production dependencies, all
+three libraries' C99 production setting/no test packages, each standalone
+library's own tests only, and an application selecting fieldctrl with host tests
+disabled. That application includes linears and filters transitively without
+Eigen/GoogleTest requirements.
+
+The build agent also ran the six authored control entries in a separately
+configured real library entry (cwd at `libs/fieldctrl`), first verifying all
+228 returned target/object paths were inside its authorized output directory.
+That earlier post-rescale/pre-q-hypot checkpoint passed 214 cases and both GCC /
+Clang strict C99 checks. It is superseded by the frozen 250-case SDK run above.
+The owners additionally linked/executed q-only base/FOC/SMO/DTC call closures on
+the host without libm and reported no reachable floating-arithmetic helper or
+allocator symbols; this is delegated host evidence, not MCU timing evidence.
+
+M4 integration staging paths are `libs/fieldctrl/xmake.lua`, `libs/xmake.lua`,
+`libs/Kconfig`, `tests/sdk_entry.lua`, and this worklog, together with the control
+owner's frozen foundation files. FOC/SMO, DTC and independent audits retain their
+separate commit boundaries despite being tested together in the workspace.
+
+### 2026-10-17 — real Cortex-M4 application link and resource checks
+
+The external fixture now contains a real C application with separate
+`linears_calls.c`, `filters_calls.c`, `control_calls.c`, and `main.c`. It calls
+all four variants of the decompositions, low-pass, scalar/matrix Kalman, VVVF,
+current/speed FOC, SMO and DTC. Linker `--require-defined` roots additionally
+retain **292 distinct public algorithm symbols** across all variants, even if
+a representative call does not exercise every entry. This prevents section
+collection from turning missing/unlinked implementations into a false pass.
+
+All application commands run in
+`/home/zmmfly/prjs/xhive_testspace/fieldctrl`, with the SDK worktree and isolated
+cache passed per command. No embedded toolchain was downloaded:
+
+```sh
+sdk=/home/zmmfly/prjs/xhive_worktrees/fieldctrl
+XHIVE_SDK_PATH="$sdk" XMAKE_CONFIGDIR="$PWD" xmake f -P . -y -m release --xhive_tests=n
+XHIVE_SDK_PATH="$sdk" XMAKE_CONFIGDIR="$PWD" xmake b -P . app::fieldctrl_compile
+```
+
+Before building, Xmake introspection verified 162 returned target/object paths
+inside the application directory and no package attached to any firmware
+dependency. The toolchain is the existing Arm GNU 14.3.1, with Cortex-M4,
+Thumb, `fpv4-sp-d16`, hard-float ABI, O2 and no LTO.
+
+The **first real link failed**: without section-level GC the entire vendor
+object set was retained, exceeding the fixed 256 KiB ROM by 77,796 bytes; the
+`-nostartfiles` application also lacked Newlib `_init`/`_fini` hooks. The read-only
+reference demo provides those hooks at its `src/main.c` lines 33/34. Only the new
+fixture was changed: add its C-only runtime hooks, compile function/data sections
+and link `--gc-sections`, while retaining every one of the 292 algorithm roots.
+No library implementation was stubbed and no memory-region size was increased.
+
+**Confirmed corrected link:**
+
+- `dist/fieldctrl_compile.elf` and `.bin` were produced; library source hashes
+  were unchanged throughout the build.
+- ELF identity is **ELF32 ARM, EABI5 hard-float, CPU 7E-M, VFPv4-D16, VFP
+  argument registers**. The Xmake cache's host-architecture directory name is
+  not used as an architecture claim.
+- ROM image: **260,180 / 262,144 bytes (99.25%)**, leaving 1,964 bytes.
+  ELF `size`: text 260,080, data 100, bss 1,028 bytes. The 1,128-byte data+bss
+  sum is not a peak runtime RAM/stack measurement. This deliberately retains
+  every variant/API and is not a representative selectively linked product.
+- Defined-symbol enumeration confirmed all **292 / 292** required algorithm
+  symbols. No unresolved symbols and no matched malloc/calloc/realloc/free,
+  sbrk/alloca or C++ allocation entry were present in the linked image.
+- Actual application-build `.su` files contain **390 library entries**, all
+  `static`: linears 142 entries (largest single frame 648 bytes,
+  `linears_svd_f64`); filters 146 (448 bytes,
+  `filters_kalman_matrix_f64_update`); fieldctrl 102 (584 bytes,
+  `fieldctrl_q15_smo_step`). VLA/alloca compile errors were enabled.
+- These are per-function compiler bounds, **not** a whole call-chain, interrupt
+  nesting, libc/libm stack bound, WCET, or measured hardware RAM result.
+- ELF SHA-256:
+  `f66aae04621c22844498c2293bf69f4c30bc24fddd4a216124dcec4dbdc3b869`.
+
+Artifacts include `arm-link.log` (original failure), `arm-link-gc.log` (successful
+corrected build), source-hash sidecars, linker map, ELF identity, required/defined
+symbols and `dist/validation-report.json`. All remain in the authorized external
+application. **The ELF was not flashed or executed on a board or motor.**
