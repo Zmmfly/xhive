@@ -60,14 +60,16 @@
 static uint32_t s_llc_freq_hz = LLC_FREQ_MAX_HZ;
 
 /**
- * @brief Point ADC trigger 1 at the electrical middle of leg 1's on-window.
+ * @brief Point ADC trigger 1 at the nominal logical midpoint of leg 1's
+ *        x1 pulse.
  *
- * CMP1 is the moving (turn-off) compare, so the on-window is
- * [set anchor, CMP1] and its middle is CMP1/2, programmed into the free
- * compare CMP3. Refreshed after every frequency change. Verified
- * register-level (demo T20: cmp3 == cmp1/2); the ADC routing itself is
- * only API-return-checked (as demo T14) and its electrical trigger
- * position is not LA-observable.
+ * CMP1 is the moving (turn-off) compare, so the ideal on-window is
+ * [set anchor, CMP1] and its nominal midpoint is CMP1/2, programmed into
+ * the free compare CMP3. Dead-time and gate-drive delay shift the true
+ * electrical point - calibrate per power stage. Verified register-level
+ * (demo T20: cmp3 == cmp1/2); the ADC routing itself is only
+ * API-return-checked (as demo T14) and its electrical trigger position is
+ * not LA-observable.
  *
  * @return #SHRTIM_OK or #SHRTIM_ERR_PARAM.
  */
@@ -152,8 +154,10 @@ int shrtim_example_full_llc_init(void)
  * CENTER mode needs no manual master handling: the anchor counter runs
  * from shrtim_pwm_init() and both units lock to it (demo T03/T04 pattern).
  * Cross-leg anti-phase holds within a startup-dependent residual phase
- * offset (LA-observed 0..350 ns at 100 kHz, constant per run); within-leg
- * non-overlap is guaranteed per-unit by the dead-time generator.
+ * offset (estimated 0..350 ns at 100 kHz from 200 ns-resolution LA
+ * samples over finite windows - an observed range, not a guaranteed
+ * bound, constant per run); within-leg non-overlap is guaranteed
+ * per-unit by the dead-time generator.
  */
 void shrtim_example_full_llc_start(void)
 {
@@ -211,9 +215,16 @@ int shrtim_example_full_llc_freq_set(uint32_t hz)
 }
 
 /**
- * @brief Read back the tracked switching frequency.
+ * @brief Read back the last fully committed switching frequency.
  *
- * @return Frequency in Hz (both legs always match by construction).
+ * This is the bookkeeping value of the last request where BOTH legs (and
+ * the shared anchor) were updated successfully - not a live measurement,
+ * and during the transient window or after a failed/rolled-back request
+ * the legs may not match it. Callers must serialise control updates and
+ * must not let another CENTER-mode user re-configure the shared master at
+ * a different frequency.
+ *
+ * @return Last committed frequency in Hz.
  */
 uint32_t shrtim_example_full_llc_freq_get(void)
 {

@@ -25,7 +25,9 @@
  * same-frequency unit's COMPLEMENT output only yields anti-phase drive at
  * exactly 50 % duty — it is NOT a 180 deg phase-shifted copy of an
  * arbitrary duty cycle. True interleaving needs a per-unit compare offset
- * (raw API territory), not polarity inversion.
+ * PLUS matching set/reset event routing (in EDGE mode the set event stays
+ * at the period, so moving CMP1 alone changes duty, not phase) - raw API
+ * territory, not a single call.
  */
 
 /*
@@ -63,14 +65,16 @@
 #define OCP_FAULT_CH   1u       /**< FLT1 pin: over-current comparator.    */
 
 /**
- * @brief Point ADC trigger 1 at the electrical middle of the fast-leg
- *        on-window.
+ * @brief Point ADC trigger 1 at the nominal logical midpoint of the
+ *        fast-leg x1 pulse.
  *
- * CMP1 is the x1 turn-off compare, so the on-window is [period, CMP1] and
- * its middle is CMP1/2, programmed into the free compare CMP3. Refreshed
- * after every duty change. Verified register-level (demo T20: cmp3 ==
- * cmp1/2); the ADC routing itself is only API-return-checked (as demo
- * T14) and its electrical trigger position is not LA-observable.
+ * CMP1 is the x1 turn-off compare, so the ideal on-window is [period,
+ * CMP1] and its nominal midpoint is CMP1/2, programmed into the free
+ * compare CMP3. Dead-time and gate-drive delay shift the true electrical
+ * sampling point - calibrate per power stage. Verified register-level
+ * (demo T20: cmp3 == cmp1/2); the ADC routing itself is only
+ * API-return-checked (as demo T14) and its electrical trigger position
+ * is not LA-observable.
  *
  * @return #SHRTIM_OK or #SHRTIM_ERR_PARAM.
  */
@@ -169,8 +173,15 @@ void shrtim_example_bridgeless_pfc_stop(void)
  */
 int shrtim_example_bridgeless_pfc_fast_duty(uint32_t duty_x1000)
 {
-    int rc = shrtim_pwm_duty(FAST_UNIT, duty_x1000);
+    int rc;
 
+    /* Degenerate 0/1000 keep a stale CMP1 (fixed-level outputs, HAL
+     * contract); stay in 1..999 for this sampling example. */
+    if ((duty_x1000 == 0u) || (duty_x1000 >= 1000u))
+    {
+        return SHRTIM_ERR_PARAM;
+    }
+    rc = shrtim_pwm_duty(FAST_UNIT, duty_x1000);
     if (rc == SHRTIM_OK)
     {
         rc = adc_midpoint_setup();

@@ -1,6 +1,11 @@
 /**
  * @file shrtim_example_full_pfc_half_llc.c
- * @brief Single-chip combo: full-bridge PFC (4 PWM) + half-bridge LLC (2 PWM).
+ * @brief Single-chip combo: two NON-INTERLEAVED PFC fast legs (4 PWM) +
+ *        half-bridge LLC (2 PWM).
+ *
+ * (File name kept for history: an earlier revision labelled the PFC part
+ * "full-bridge PFC"; see the topology note below for what it actually
+ * configures.)
  *
  * Unit / switch mapping (fixed silicon pins):
  *
@@ -14,13 +19,20 @@
  * | C    | C2     | PB13 | LLC low-side MOSFET       |                          |
  *
  * The two PFC legs run identical complementary PWM at the same frequency
- * and duty (two parallel totem-pole fast legs). NOTE: this is NOT a 180 deg
- * interleaved drive — a same-frequency unit's complement output is 1-D, so
- * it only equals a half-period shift at exactly 50 % duty. True 180 deg
- * interleaving at arbitrary duty needs a per-unit compare offset, which the
- * simplified HAL does not wrap (see shrtim_period_raw/shrtim_compare_raw
- * for the raw escape hatch); the legs here start back-to-back and hold the
- * same duty, which keeps their phase offset constant for a given session.
+ * and duty: two INDEPENDENT, non-interleaved fast-leg gate patterns. This
+ * is NOT a complete four-switch full-bridge PFC modulator - no cross-leg
+ * phase relationship is established, the legs must each feed their own
+ * inductor / converter channel, and the two midpoints must never be
+ * hard-paralleled (the per-unit dead-time does not protect a cross-leg
+ * short). Back-to-back starting leaves a constant but uncontrolled
+ * inter-leg phase offset; do not read "same duty" as "co-phase".
+ *
+ * NOTE: a same-frequency unit's complement output is 1-D, so it only
+ * equals a half-period shift at exactly 50 % duty; true 180 deg
+ * interleaving at arbitrary duty needs a per-unit compare offset PLUS
+ * matching set/reset event routing (in EDGE mode the set event stays at
+ * the period, so moving CMP1 alone changes duty, not phase) - raw API
+ * territory outside the simplified HAL.
  *
  * The half-bridge LLC is a single complementary pair (no cross-leg phase
  * requirement, hence no master lock needed) regulated by frequency sweep.
@@ -33,20 +45,25 @@
 
 /*
  * ============================== 中文说明 ==============================
- * 拓扑：单芯片全桥 PFC（4 路 PWM，单元 A/B）+ 半桥 LLC（2 路 PWM，单元 C）。
+ * 拓扑：两路非交错 PFC 快桥臂（4 路 PWM，单元 A/B）+ 半桥 LLC（2 路 PWM，
+ * 单元 C）。注意：这不是完整四开关全桥 PFC 调制——不建立跨桥臂相位关系，
+ * 两路需各自接独立的电感/通道，严禁将两桥臂中点直接并联（每单元死区
+ * 不保护跨桥短路）；文件名保留历史命名。
  *
  * 单元 / 开关映射：
  *   单元 A  A1(PA8) → PFC 桥臂 1 上管；A2(PA9) → 桥臂 1 下管
  *   单元 B  B1(PA10) → PFC 桥臂 2 上管；B2(PA11) → 桥臂 2 下管
  *          —— 65 kHz 互补 + 50 ns 死区；两桥臂同频同占空比
  *   单元 C  C1(PB12) → LLC 上管；C2(PB13) → LLC 下管
- *          —— 100 kHz 固定 50% + 150 ns 死区，调频稳输出
+ *          —— 标称 100 kHz（软启动自 150 kHz 起步，范围 60..150 kHz），
+ *             固定 50% + 150 ns 死区
  *
  * 要点：
- *  - PFC 两桥臂为同频同占空比的并联图腾柱快桥臂，背靠背启动后相位差
- *    保持恒定。注意：这不是 180° 交错——同频单元的互补输出是 1-D，只有
- *    占空比恰为 50% 时才等效半周期移相；任意占空比的真交错需要 compare
- *    偏置（简化 API 未封装，raw API 可作扩展出口）。
+ *  - PFC 两桥臂为同频同占空比的独立快桥臂门极模式：背靠背启动留下恒定
+ *    但不受控的相位差，“同占空比”≠“同相”。这不是 180° 交错——同频单元的
+ *    互补输出是 1-D，仅 50% 占空比时等效半周期移相；真交错需 compare 偏置
+ *    加配套 set/reset 事件路由（EDGE 下仅改 CMP1 变占空比不变相位），
+ *    属 raw API 范畴。
  *  - 半桥 LLC 只有一个桥臂，无跨桥臂相位需求，因此本例完全不使用
  *    master/锁相 API。
  *  - PA9/PA10 兼作 USART1：需要串口时 PFC 迁往 E/F、LLC 迁往 D（pinmux
@@ -69,15 +86,16 @@
 #define OCP_FAULT_CH    1u       /**< FLT1 pin: over-current comparator.   */
 
 /**
- * @brief Point an ADC trigger at the electrical middle of a unit's x1
- *        on-window.
+ * @brief Point an ADC trigger at the nominal logical midpoint of a unit's
+ *        x1 pulse.
  *
- * CMP1 is the x1 turn-off compare, so the on-window is [period, CMP1] and
- * its middle is CMP1/2, programmed into the free compare CMP3. Must be
- * refreshed after every duty or frequency change. Verified register-level
- * (demo T20: cmp3 == cmp1/2); the ADC routing itself is only
- * API-return-checked (as demo T14) and its electrical trigger position is
- * not LA-observable.
+ * CMP1 is the x1 turn-off compare, so the ideal on-window is [period,
+ * CMP1] and its nominal midpoint is CMP1/2, programmed into the free
+ * compare CMP3. Dead-time and gate-drive delay shift the true electrical
+ * point - calibrate per power stage. Must be refreshed after every duty
+ * or frequency change. Verified register-level (demo T20: cmp3 ==
+ * cmp1/2); the ADC routing itself is only API-return-checked (as demo
+ * T14) and its electrical trigger position is not LA-observable.
  *
  * @param[in] trig ADC trigger index 1..10.
  * @param[in] unit Unit whose current is sampled.
@@ -204,7 +222,15 @@ void shrtim_example_full_pfc_half_llc_stop(void)
  */
 int shrtim_example_full_pfc_half_llc_pfc_duty(uint32_t duty_x1000)
 {
-    int rc = shrtim_pwm_duty(PFC_LEG1_UNIT, duty_x1000);
+    int rc;
+
+    /* Degenerate 0/1000 keep a stale CMP1 (fixed-level outputs, HAL
+     * contract); stay in 1..999 for this sampling example. */
+    if ((duty_x1000 == 0u) || (duty_x1000 >= 1000u))
+    {
+        return SHRTIM_ERR_PARAM;
+    }
+    rc = shrtim_pwm_duty(PFC_LEG1_UNIT, duty_x1000);
 
     if (rc == SHRTIM_OK)
     {

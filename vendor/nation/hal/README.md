@@ -51,7 +51,10 @@ pin-sharing caveat.
 ## Semantics worth knowing (hardware-validated on N32H474RC)
 
 - `shrtim_pwm_init()` leaves the unit stopped; call `shrtim_pwm_start()`.
-  Runtime `shrtim_pwm_freq()/duty()` changes are glitch-free via preload.
+  Runtime `shrtim_pwm_freq()/duty()` changes are glitch-free via preload
+  per unit; changing a multi-unit group updates members one after another
+  (transient window), and master-locked CENTER pairs keep a startup-
+  dependent cross-unit phase residual (see the examples).
 - Center alignment (`SHRTIM_ALIGN_CENTER`) locks the unit to the master
   period anchor; pulses are exact in frequency/duty and x1/x2 split the
   period exactly, but the pulse is anchored at the period edge rather than
@@ -91,7 +94,7 @@ sampling points) before driving real hardware:
 | `shrtim_example_half_pfc_full_llc.c` | Half-bridge PFC (2 PWM) + full-bridge LLC (4 PWM, CENTER-anchored, swap-based diagonal) |
 | `shrtim_example_bridgeless_pfc.c` | Totem-pole bridgeless PFC (4 outputs, force-commutated slow leg) |
 | `shrtim_example_full_llc.c` | Full-bridge LLC (4 PWM, PFM sweep with auto anchor) |
-| `shrtim_example_full_pfc_half_llc.c` | Full-bridge PFC legs (4 PWM, same freq/duty) + half-bridge LLC (2 PWM) |
+| `shrtim_example_full_pfc_half_llc.c` | Two NON-interleaved PFC fast legs (4 PWM, independent channels) + half-bridge LLC (2 PWM) |
 
 ## Build integration
 
@@ -100,4 +103,7 @@ The HAL registers as `nation_hal` (object target) under the
 `vendor_nation` dependency chain. Reference integration and the hardware
 verification matrix live in the demo project
 (`xhive_testspace/n32h474_demo`, see its `tools/VERIFY_PLAN.md`):
-16 measured PASS, 0 FAIL, 3 observe-only items.
+16 measured PASS, 0 FAIL, 3 observe-only items (2026-10-16 run). The
+2026-10-17 example-pattern regression adds T18..T21: 20 PASS / 0 FAIL /
+1 OBS, where the pair checks are bounded-average smoke criteria and T20
+is register-level math only - per-criterion scope is documented there.

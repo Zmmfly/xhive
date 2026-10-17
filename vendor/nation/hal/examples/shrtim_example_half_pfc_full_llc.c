@@ -23,7 +23,10 @@
  *
  * PA9/PA10 double as USART1 pads. To reclaim BOTH console pins the PFC
  * must move too (e.g. PFC -> E/F, LLC -> C/D), because unit A drives PA9.
- * When remapping, the shrtim_pinmux()/fault pins must move with the units.
+ * When remapping, the shrtim_pinmux() output routing and the
+ * shrtim_fault_attach() unit arguments move with the units; the FLT1
+ * input pin itself is fixed silicon and stays put (only a different
+ * fault channel / board wiring would change it).
  */
 
 /*
@@ -47,7 +50,8 @@
  *  - 约束：CENTER 模式共享同一个 master，所有 CENTER 单元必须同频（本例
  *    两腿始终同频）。PFC 为边沿模式且不锁相，不占用 master。
  *  - 在线调频：llc_freq() 依次更新两腿（每次都会搬 master 锚）；两次调用
- *    之间有短暂过渡窗口。要求严格无毛刺时应在停波状态下改频。
+ *    之间有短暂过渡窗口，失败回滚期间也不保证一致——“同频”是成功提交后
+ *    的稳态约束。要求严格无毛刺时应在停波状态下改频。
  *  - PA9/PA10 兼作 USART1：要同时保留两个串口引脚，PFC 也要迁走（PFC→E/F、
  *    LLC→C/D 之类），且 pinmux/故障引脚需随单元一起迁移。
  * =====================================================================
@@ -68,15 +72,18 @@
 #define OCP_FAULT_CH    1u       /**< FLT1 pin: over-current comparator.  */
 
 /**
- * @brief Point an ADC trigger at the electrical middle of the x1 on-window.
+ * @brief Point an ADC trigger at the nominal logical midpoint of the x1
+ *        pulse.
  *
- * CMP1 is the x1 moving (turn-off) compare, so the on-window spans
- * [set anchor, CMP1] and its middle is CMP1/2. The free compare CMP3 is
- * programmed with that value and routed to @p trig. Must be refreshed
- * after every duty or frequency change (the hooks below do this).
- * Verified register-level (demo T20: cmp3 == cmp1/2); the ADC routing
- * itself is only API-return-checked (rc == 0, as demo T14) and its
- * electrical trigger position is not LA-observable.
+ * CMP1 is the x1 moving (turn-off) compare, so the ideal on-window spans
+ * [set anchor, CMP1] and its nominal midpoint is CMP1/2. Dead-time shifts
+ * the real turn-on edge and gate drivers add delay - the true electrical
+ * sampling point must be calibrated per power stage. The free compare
+ * CMP3 is programmed with that value and routed to @p trig. Must be
+ * refreshed after every duty or frequency change (the hooks below do
+ * this). Verified register-level (demo T20: cmp3 == cmp1/2); the ADC
+ * routing itself is only API-return-checked (rc == 0, as demo T14) and
+ * its electrical trigger position is not LA-observable.
  *
  * @param[in] trig ADC trigger index 1..10.
  * @param[in] unit Unit whose current is sampled.
@@ -178,9 +185,11 @@ int shrtim_example_half_pfc_full_llc_init(void)
  * CENTER-mode units need no manual master handling: the anchor counter is
  * already configured and running from shrtim_pwm_init(). Cross-leg
  * anti-phase holds within a startup-dependent residual phase offset
- * (LA-observed 0..350 ns at 100 kHz, constant per run); within-leg
- * non-overlap is guaranteed per-unit by the dead-time generator. Budget
- * the residual when the power stage cares about volt-second symmetry.
+ * (estimated 0..350 ns at 100 kHz from 200 ns-resolution LA samples over
+ * finite windows - an observed range, not a guaranteed bound, constant
+ * per run); within-leg non-overlap is guaranteed per-unit by the
+ * dead-time generator. Budget the residual when the power stage cares
+ * about volt-second symmetry.
  */
 void shrtim_example_half_pfc_full_llc_start(void)
 {
@@ -213,8 +222,18 @@ void shrtim_example_half_pfc_full_llc_stop(void)
  */
 int shrtim_example_half_pfc_full_llc_pfc_duty(uint32_t duty_x1000)
 {
-    int rc = shrtim_pwm_duty(PFC_UNIT, duty_x1000);
+    int rc;
 
+    /* Degenerate 0/1000 switch the outputs to fixed levels WITHOUT
+     * rewriting CMP1 (HAL contract), so the midpoint helper would keep
+     * refreshing a stale compare. Keep this sampling example inside
+     * 1..999; note that even 1..999 does not guarantee a pulse wider
+     * than the configured dead-time. */
+    if ((duty_x1000 == 0u) || (duty_x1000 >= 1000u))
+    {
+        return SHRTIM_ERR_PARAM;
+    }
+    rc = shrtim_pwm_duty(PFC_UNIT, duty_x1000);
     if (rc == SHRTIM_OK)
     {
         rc = adc_midpoint_setup(1u, PFC_UNIT);

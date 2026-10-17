@@ -20,7 +20,8 @@
  *  - Output pins are fixed by silicon (PA8/PA9, PA10/PA11, PB12..PB15,
  *    PC6..PC9); shrtim_pinmux() programs the right AF for a given output.
  *
- * All setters return 0 on success and a negative @ref shrtim_rc_t on error.
+ * Setters that can fail return 0 on success and a negative @ref
+ * shrtim_rc_t on error; the level and run helpers are void.
  */
 
 #ifndef NATION_SHRTIM_HAL_H
