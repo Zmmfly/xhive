@@ -128,8 +128,8 @@ build/configuration directories, without replacing the SDK's normal host cache.
 | --- | --- | --- | --- |
 | M0 | Requirements, design, validation plan, and this worklog | Review scope and accepted decisions; whitespace check | Committed as `63e7132` |
 | M1a | Shared numerical types/core and linears build entry | Contract/quantization tests, SDK graph regression, full host group, strict C99 | Committed as `37d5961` |
-| M1b | Foundation matrix/vector operations | Four-variant Eigen references, contract/audit regressions, native-f32 ARM evidence | Ready for coordinating-agent review |
-| M2 | LU/solve/inverse/determinant, Cholesky, QR, LDLT, SVD | Per-family four-variant numerical and failure tests; host build | Implementation in progress |
+| M1b | Foundation matrix/vector operations | Four-variant Eigen references, contract/audit regressions, native-f32 ARM evidence | Committed as `b5ffaf2` |
+| M2 | LU/solve/inverse/determinant, Cholesky, QR, LDLT, SVD | Eight family entries: 258 cases passed, 2 floating cases inapplicable; host build | Reviewed and frozen; coordinating-agent commit pending |
 | M3 | Filters including scalar and matrix Kalman | Per-family reference/long-sequence/state tests; host build | Implementation in progress |
 | M4 | Control foundations, PI/PWM, VVVF | Transform/formula tests, limit/direction/state tests; host build | Implementation in progress |
 | M5 | FOC and SMO | Four-variant software control/observer tests and stated observability limits | Implementation in progress |
@@ -673,6 +673,8 @@ contracts + 36 independent numeric audit), log
 host result. The owner separately reran all 64 foundation cases under strict
 C99/O2/strict-aliasing/ASan/UBSan. f32 code was unchanged by this last cleanup;
 the prior ARM native-f32 disassembly observation still describes its code path.
+The coordinator committed M1b as `b5ffaf2`
+(`feat(linears): add allocation-free basic matrix operations`).
 
 ### Control review defects pending final verification
 
@@ -725,3 +727,35 @@ isolated runs will keep cwd at the real source project, isolate only
 The earlier standalone-control output location is also being checked. This
 incident does not turn the executed test results into a hardware result or
 justify claiming the final suite complete; final post-fix regression is pending.
+
+The coordinator inspected and authorized two exact relocations. After checking
+all source/parent nodes with `lstat` (no symlink), exact realpaths, current-user
+ownership, absent destinations, terminated Xmake jobs and no current-user
+`/proc` cwd/fd references to the source trees, the build agent used `os.rename`
+to move only:
+
+1. The sanitizer `build` directory from the doubly nested path above into its
+   correct `host-sanitized-QuOKXV/build` directory.
+2. The early standalone-control `build` directory from
+   `/home/zmmfly/xhive_testspace/fieldctrl/host-fieldctrl-base-wmKQDl/build` into
+   `/home/zmmfly/prjs/xhive_testspace/fieldctrl/host-fieldctrl-base-wmKQDl/build`.
+
+Both moves completed without overwriting a destination. No recursive deletion
+occurred; all old empty parent directories were retained. New SDK sanitizer
+configuration at `host-verify-DXUdWt` now runs with SDK-root cwd and separately
+isolated cache. Before any build, explicit Xmake target/object introspection
+with `config.load()` verified all 323 returned output-path entries lie inside
+its authorized build root. A standalone preflight that omitted `config.load()`
+correctly stopped before compilation when it observed default paths; it must be
+rerun with loaded configuration, not bypassed.
+
+### M2 commit handoff
+
+The decomposition owner froze 26 owned files after source/whitespace review.
+The accepted eight family entries contain 260 registered GoogleTest cases:
+258 passed and exactly two floating instantiations of the fixed-exponent-only
+SVD test are inapplicable/skipped. The independent 26-case audit also passed and
+is reserved for a following test-only commit. The production signed-extrema
+export correction is included in the decomposition change. This handoff does
+not include the still-in-progress filters/control source trees or the draft
+root integration/documentation updates for them.
