@@ -13,5 +13,6 @@
 #include "fieldctrl_base.h"
 #include "fieldctrl_foc.h"
 #include "fieldctrl_smo.h"
+#include "fieldctrl_dtc.h"
 
 #endif

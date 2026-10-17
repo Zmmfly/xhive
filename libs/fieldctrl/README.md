@@ -97,6 +97,15 @@ anti-windup rules, signed electrical-angle reconstruction, discrete low-pass
 phase compensation, locking criteria and software-only rotating handover tests.
 The observer is not a standstill startup procedure.
 
+## Direct torque control
+
+The umbrella also exposes `fieldctrl_dtc.h` for voltage-model flux estimation,
+flux/torque hysteresis and six-sector switching-table control. It returns a
+requested inverter state in `0..7`, not a duty ratio or an executed gate action.
+The [DTC design and validation notes](README_dtc.md) document the complete
+positive/negative torque table, zero-vector selection, initial-flux requirements,
+integrator drift, sample timing and the software motor-model tests.
+
 ## Safety boundary
 
 The caller is responsible for current/voltage/temperature limits, ADC offset

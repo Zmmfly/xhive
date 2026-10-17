@@ -132,7 +132,7 @@ build/configuration directories, without replacing the SDK's normal host cache.
 | M2 | LU/solve/inverse/determinant, Cholesky, QR, LDLT, SVD | Eight family entries: 258 cases passed, 2 floating cases inapplicable; host build | Committed as `c9a14da`; independent audit `70e9d2c` |
 | M3 | Filters including scalar and matrix Kalman | 10 entries / 201 cases, Eigen Kalman, strict GCC/Clang C99, full 42-entry SDK group | Committed as `70be7fa` |
 | M4 | Control foundations, PI/PWM, VVVF | 3 entries / 82 cases; default build and SDK graph isolation | Committed as `8ab6396` |
-| M5 | FOC and SMO | 2 entries / 74 cases, including software observer/handover scenarios | Tests passed; separate commit pending |
+| M5 | FOC and SMO | 2 entries / 74 cases, including software observer/handover scenarios | Committed as `6184b7e` |
 | M6 | DTC | 1 entry / 60 cases, including subnormal sector regression | Tests passed; separate commit pending |
 | M7 | Complete SDK integration and final regression | Full host group, default build, standalone entries, isolated ARM compile/link, heap/stack audit | Planned |
 
@@ -935,7 +935,10 @@ M5/M6 implementation files are frozen and ready for their separate commits.
 The existing final SDK run above covers M5's 74 and M6's 60 cases against the
 same algorithm hashes. Only the umbrella header and README links are being
 connected at each commit boundary; algorithm implementations are unchanged.
-Their commit hashes will be recorded when reported by the coordinator.
+The coordinator committed M5 as `6184b7e`. M6 remains reviewed and ready:
+its 60-case result above applies to the frozen DTC algorithm; only final umbrella
+and README navigation are being connected. The M6 hash will be recorded after
+its separate commit.
 
 ### 2026-10-17 — real Cortex-M4 application link and resource checks
 
