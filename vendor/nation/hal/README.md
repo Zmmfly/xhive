@@ -32,8 +32,10 @@ shrtim_pwm_start(SHRTIM_UNIT_C);      /* outputs run (enable_outputs)     */
 | EXEV / fault / capture | `shrtim_exev_config` / `shrtim_exev_reset_unit`, `shrtim_fault_config` / `_attach` / `_reset`, `shrtim_capture_config` / `shrtim_capture_read` |
 | Interrupts | `shrtim_irq_hook` / `shrtim_irq_enable` / `shrtim_isr_master` / `shrtim_isr_timer` / `shrtim_isr_fault` |
 
-All setters return `0` (`SHRTIM_OK`) or a negative `shrtim_rc_t`. Full
-contracts in `inc/nation_shrtim.h` (Doxygen).
+Configuration functions that can fail return `0` (`SHRTIM_OK`) or a
+negative `shrtim_rc_t`; level/run helpers such as `shrtim_out_force()` or
+`shrtim_pwm_start()` are `void`. Full contracts in `inc/nation_shrtim.h`
+(Doxygen).
 
 ## Fixed output pins
 
@@ -55,10 +57,14 @@ pin-sharing caveat.
   period exactly, but the pulse is anchored at the period edge rather than
   geometrically centered (silicon crossbar limitation, see
   `center_compare()` docs in the source).
-- Multi-unit phase alignment: configure each unit, `shrtim_pwm_sync_to_master
-  (unit, true)`, set the master period without starting, start the units,
-  then start the master to release the group (sequence used and verified in
-  the demo project, test T17).
+- Multi-unit phase alignment: prefer CENTER alignment for phase-locked
+  groups — `shrtim_pwm_init()`/`shrtim_pwm_freq()` configure and keep
+  following the shared master anchor automatically (hardware-validated
+  path; all CENTER units must share one frequency). Manual
+  `shrtim_master_period()` anchoring writes raw high-resolution ticks and
+  does NOT touch the master prescaler, so hand-computed tick values are
+  only correct against a matching master time base — treat it as a raw
+  escape hatch, not the default path.
 - UPDATE interrupts fire 2-4x the nominal per-period rate (dual-edge preload
   transfer semantics) — plan IRQ budgets accordingly.
 - Interrupts are manual-hookup by design: the application defines the
@@ -72,16 +78,20 @@ pin-sharing caveat.
 
 ## Examples
 
-`examples/` holds drop-in init sequences for common single-chip topologies
-(each file maps units/outputs to switches and shows the runtime control
-hooks; compile-checked with `arm-none-eabi-gcc -std=c99 -Wall -Wextra`):
+`examples/` holds configuration skeletons for common single-chip
+topologies (each file maps units/outputs to switches and shows the runtime
+control hooks; compile-checked with `arm-none-eabi-gcc -std=c99 -Wall
+-Wextra`). The HAL primitives they use are hardware-validated; the
+topology mappings themselves are illustrative and still need
+power-stage-specific verification (commutation blanking, interleave phase,
+sampling points) before driving real hardware:
 
 | File | Topology |
 | --- | --- |
-| `shrtim_example_half_pfc_full_llc.c` | Half-bridge PFC (2 PWM) + full-bridge LLC (4 PWM) |
-| `shrtim_example_bridgeless_pfc.c` | Totem-pole bridgeless PFC (4 outputs) |
-| `shrtim_example_full_llc.c` | Full-bridge LLC (4 PWM) |
-| `shrtim_example_full_pfc_half_llc.c` | Full-bridge PFC (4 PWM) + half-bridge LLC (2 PWM) |
+| `shrtim_example_half_pfc_full_llc.c` | Half-bridge PFC (2 PWM) + full-bridge LLC (4 PWM, CENTER-anchored, swap-based diagonal) |
+| `shrtim_example_bridgeless_pfc.c` | Totem-pole bridgeless PFC (4 outputs, force-commutated slow leg) |
+| `shrtim_example_full_llc.c` | Full-bridge LLC (4 PWM, PFM sweep with auto anchor) |
+| `shrtim_example_full_pfc_half_llc.c` | Full-bridge PFC legs (4 PWM, same freq/duty) + half-bridge LLC (2 PWM) |
 
 ## Build integration
 
