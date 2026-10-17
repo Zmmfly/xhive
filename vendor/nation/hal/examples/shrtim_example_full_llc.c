@@ -56,10 +56,6 @@
 #define LLC_DT_NS       150u     /**< Dead-time, both edges.              */
 #define OCP_FAULT_CH    1u       /**< FLT1 pin: over-current comparator.  */
 
-/** 当前开关频率（两桥臂共享）；HAL 不提供周期读回，故本地记录。
- *  (Tracked locally because the HAL exposes no period read-back.) */
-static uint32_t s_llc_freq_hz = LLC_FREQ_MAX_HZ;
-
 /**
  * @brief Point ADC trigger 1 at the nominal logical midpoint of leg 1's
  *        x1 pulse.
@@ -145,7 +141,6 @@ int shrtim_example_full_llc_init(void)
     {
         return rc;
     }
-    s_llc_freq_hz = LLC_FREQ_MAX_HZ;       /* 重新初始化后同步软件缓存 */
     return SHRTIM_OK;
 }
 
@@ -208,26 +203,22 @@ int shrtim_example_full_llc_freq_set(uint32_t hz)
     {
         rc = adc_midpoint_setup();
     }
-    if (rc == SHRTIM_OK)
-    {
-        s_llc_freq_hz = hz;                /* 只有全部成功才提交缓存 */
-    }
     return rc;
 }
 
 /**
- * @brief Read back the last fully committed switching frequency.
+ * @brief Read back the configured switching frequency via the HAL.
  *
- * This is the bookkeeping value of the last request where BOTH legs (and
- * the shared anchor) were updated successfully - not a live measurement,
- * and during the transient window or after a failed/partially applied
- * request the legs may not match it. Callers must serialise control
- * updates and must not let another CENTER-mode user re-configure the
- * shared master at a different frequency.
+ * Configured-value readback reconstructed from the unit's prescaler and
+ * period registers (see the HAL contract): during the transient window
+ * or after a failed/partially applied request the legs may not match it.
+ * Callers must serialise control updates and must not let another
+ * CENTER-mode user re-configure the shared master at a different
+ * frequency.
  *
- * @return Last committed frequency in Hz.
+ * @return Frequency in Hz, 0 when not configured.
  */
 uint32_t shrtim_example_full_llc_freq_get(void)
 {
-    return s_llc_freq_hz;
+    return shrtim_pwm_freq_get(LLC_LEG1_UNIT);
 }

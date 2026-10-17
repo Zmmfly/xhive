@@ -19,13 +19,13 @@ shrtim_pwm_init(SHRTIM_UNIT_C, &cfg); /* unit left stopped                */
 shrtim_pwm_start(SHRTIM_UNIT_C);      /* outputs run (enable_outputs)     */
 ```
 
-## API surface (41 functions)
+## API surface (42 functions)
 
 | Group | Functions |
 | --- | --- |
 | Lifecycle | `shrtim_init` / `shrtim_clk_hz` / `shrtim_deinit` |
 | Pin muxing | `shrtim_pinmux` / `shrtim_pinmux_fault` |
-| PWM config & run | `shrtim_pwm_init` / `_freq` / `_duty` / `_duty2` / `_deadtime` / `_start` / `_stop` / `_start_all` / `_stop_all` / `_oneshot_arm` |
+| PWM config & run | `shrtim_pwm_init` / `_freq` / `_freq_get` / `_duty` / `_duty2` / `_deadtime` / `_start` / `_stop` / `_start_all` / `_stop_all` / `_oneshot_arm` |
 | Output control | `shrtim_out_enable` / `_disable` / `_force` / `_polarity`, `shrtim_pwm_swap` / `_pushpull` / `_chopper` |
 | Raw access | `shrtim_counter` / `shrtim_period_raw` / `shrtim_compare_raw` / `shrtim_compare_get` |
 | Master & triggers | `shrtim_master_period` / `shrtim_pwm_sync_to_master` / `shrtim_adc_trigger` |

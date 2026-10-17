@@ -286,6 +286,12 @@ static const uint32_t s_ratio_hw[8] = {
     SHRTIM_PRESCALERRATIO_DIV2, SHRTIM_PRESCALERRATIO_DIV4,
 };
 
+/** Numerators of the s_ratio_hw[] candidates: fHRCK = fSHRTIM * num/den. */
+static const uint16_t s_ratio_num[8] = {32u, 16u, 8u, 4u, 2u, 1u, 1u, 1u};
+
+/** Denominators of the s_ratio_hw[] candidates. */
+static const uint16_t s_ratio_den[8] = {1u, 1u, 1u, 1u, 1u, 1u, 2u, 4u};
+
 /**
  * @brief Solve the high-resolution prescaler and period for a PWM frequency.
  *
@@ -304,8 +310,6 @@ static const uint32_t s_ratio_hw[8] = {
 static int solve_timing(uint32_t hz, uint32_t mult,
                         uint32_t *ratio, uint32_t *period, uint8_t *idx)
 {
-    static const uint16_t num[8] = {32u, 16u, 8u, 4u, 2u, 1u, 1u, 1u};
-    static const uint16_t den[8] = {1u, 1u, 1u, 1u, 1u, 1u, 2u, 4u};
     unsigned i;
 
     if (hz == 0u) {
@@ -313,8 +317,8 @@ static int solve_timing(uint32_t hz, uint32_t mult,
     }
     for (i = 0u; i < 8u; i++) {
         /* period = round(fSHRTIM * num / (den * hz * mult)) */
-        uint64_t div = (uint64_t)hz * (uint64_t)mult * (uint64_t)den[i];
-        uint64_t p = ((uint64_t)s_clk_hz * (uint64_t)num[i] + div / 2u) / div;
+        uint64_t div = (uint64_t)hz * (uint64_t)mult * (uint64_t)s_ratio_den[i];
+        uint64_t p = ((uint64_t)s_clk_hz * (uint64_t)s_ratio_num[i] + div / 2u) / div;
 
         if ((p >= 1u) && (p <= (uint64_t)SHRTIM_HAL_PERIOD_MAX)) {
             *ratio = s_ratio_hw[i];
@@ -1200,6 +1204,42 @@ int shrtim_pwm_freq(shrtim_unit_t unit, uint32_t hz)
     apply_crossbars((unsigned)unit);
     SHRTIM_ForceUpdate(SHRTIM1, tmr);
     return SHRTIM_OK;
+}
+
+uint32_t shrtim_pwm_freq_get(shrtim_unit_t unit)
+{
+    uint32_t tmr;
+    uint32_t ratio;
+    uint32_t period;
+    unsigned i;
+
+    if ((unit == SHRTIM_UNIT_MASTER) || ((unsigned)unit >= SHRTIM_HAL_UNITS)) {
+        return 0u;
+    }
+    if ((s_clk_hz == 0u) || (s_unit[unit].configured == 0u)) {
+        return 0u;
+    }
+
+    tmr = s_tmr_id[unit];
+    ratio = SHRTIM_TIM_GetPrescaler(SHRTIM1, tmr);
+    period = SHRTIM_TIM_GetPeriod(SHRTIM1, tmr);
+    if (period == 0u) {
+        return 0u;
+    }
+
+    for (i = 0u; i < 8u; i++) {
+        if (s_ratio_hw[i] == ratio) {
+            uint32_t mult =
+                (s_unit[unit].align == (uint8_t)SHRTIM_ALIGN_CENTER) ? 2u : 1u;
+            uint64_t div = (uint64_t)mult * (uint64_t)period
+                           * (uint64_t)s_ratio_den[i];
+
+            /* freq = round(fSHRTIM * num / (mult * period * den)) */
+            return (uint32_t)(((uint64_t)s_clk_hz * (uint64_t)s_ratio_num[i]
+                               + div / 2u) / div);
+        }
+    }
+    return 0u;
 }
 
 int shrtim_pwm_duty(shrtim_unit_t unit, uint32_t duty_x1000)

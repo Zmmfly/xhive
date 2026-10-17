@@ -274,6 +274,21 @@ int shrtim_pwm_init(shrtim_unit_t unit, const shrtim_pwm_cfg_t *cfg);
 int shrtim_pwm_freq(shrtim_unit_t unit, uint32_t hz);
 
 /**
+ * @brief Read back the configured PWM frequency of a unit.
+ *
+ * Reconstructs the frequency from the unit's programmed prescaler and
+ * period registers and its alignment. This is a configured-value
+ * readback reflecting the last programming that reached the unit's
+ * registers - not a live measurement, and after a partially applied
+ * multi-unit update it reports that unit's own state only.
+ *
+ * @param[in] unit Configured unit (SHRTIM_UNIT_MASTER is rejected).
+ * @return Frequency in Hz, 0 when the unit is unknown, the HAL is not
+ *         initialised or the unit is not configured.
+ */
+uint32_t shrtim_pwm_freq_get(shrtim_unit_t unit);
+
+/**
  * @brief Change output x1 duty cycle at runtime (0.1 % units, 0..1000).
  *
  * With a zero duty2 the x2 output stays the automatic complement.
