@@ -91,6 +91,8 @@ function main()
     local targets = project.targets()
     assert(targets["xhive_host::deps"])
     assert(targets["xhive_host::base64"])
+    assert(targets["xhive_host::linears"])
+    assert(#table.wrap(targets["xhive_host::linears"]:get("packages")) == 0)
     assert(targets["xhive_host::heatshrink"])
     assert(targets["xhive_host::micro-ecc"])
     assert(targets["xhive_host::mbedtls"])
@@ -108,7 +110,7 @@ function main()
         end
     end
     local deps = table.wrap(targets["xhive_host::libs"]:get("deps"))
-    for _, name in ipairs({"base64", "bitmap", "ezctrl", "heatshrink", "micro-ecc", "cjson"}) do
+    for _, name in ipairs({"base64", "bitmap", "ezctrl", "linears", "heatshrink", "micro-ecc", "cjson"}) do
         assert(table.contains(deps, name), name)
     end
     if config.get("plat") == "linux" or config.get("plat") == "windows" or config.get("plat") == "macosx" then
@@ -133,14 +135,17 @@ function main()
     end
     assert(#table.wrap(project.get("xhive_host::requires")) == 0)
 ]])
-            print("PASS: disabling tests removes tests and GoogleTest requirement")
+            print("PASS: disabling tests removes tests and test-package requirements")
 
-            for _, library in ipairs({"base64", "bitmap", "divsufsort", "ezctrl"}) do
+            for _, library in ipairs({"base64", "bitmap", "divsufsort", "ezctrl", "linears"}) do
                 _probe(path.join(work, library), path.join(sdkdir, "libs", library), string.format([[
     local targets = project.targets()
     local library = %q
     assert(targets[library])
     assert(not targets[library]:get("tests"))
+    if library == "linears" then
+        assert(#table.wrap(targets[library]:get("packages")) == 0)
+    end
     local count = 0
     for name, target in pairs(targets) do
         if target:get("tests") then
@@ -149,6 +154,10 @@ function main()
             assert(target:kind() == "binary", name)
             assert(#table.wrap(target:get("tests")) == 1, name)
             assert(not name:find("_main$"), name)
+            if library == "linears" then
+                assert(table.contains(table.wrap(target:get("languages")), "c++17"), name)
+                assert(table.contains(table.wrap(target:get("packages")), "eigen"), name)
+            end
             count = count + 1
         end
     end

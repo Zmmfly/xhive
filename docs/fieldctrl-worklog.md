@@ -126,8 +126,9 @@ build/configuration directories, without replacing the SDK's normal host cache.
 
 | ID | Commit-sized scope | Required review/validation | State |
 | --- | --- | --- | --- |
-| M0 | Requirements, design, validation plan, and this worklog | Review scope and accepted decisions; whitespace check | Ready for coordinating-agent review |
-| M1 | Shared numerical types/core and foundation operations | Contract/quantization tests, Eigen operator references, default host build | Implementation in progress |
+| M0 | Requirements, design, validation plan, and this worklog | Review scope and accepted decisions; whitespace check | Committed as `63e7132` |
+| M1a | Shared numerical types/core and linears build entry | Contract/quantization tests, SDK graph regression, full host group, strict C99 | Ready for coordinating-agent review |
+| M1b | Foundation matrix/vector operations | Four-variant Eigen references and failure tests, default host build | Implementation in progress |
 | M2 | LU/solve/inverse/determinant, Cholesky, QR, LDLT, SVD | Per-family four-variant numerical and failure tests; host build | Implementation in progress |
 | M3 | Filters including scalar and matrix Kalman | Per-family reference/long-sequence/state tests; host build | Implementation in progress |
 | M4 | Control foundations, PI/PWM, VVVF | Transform/formula tests, limit/direction/state tests; host build | Implementation in progress |
@@ -157,10 +158,13 @@ more restrictive (notably options before selectors with Xmake 3.0.8).
 
 **Confirmed (numerical-contract owner report):** public numerical headers were
 created at `libs/linears/include/linears.h` and `linears_numeric.h`; the integer
-working-scalar conventions above are frozen. Foundation operations are planned
-to stage results in caller-provided aligned workspace, permitting data overlap
-while preserving output on failure. The workspace representation's C effective
-type/strict-aliasing contract is under review; it is not yet treated as verified.
+working-scalar conventions above are frozen. Foundation operations stage results in caller-provided typed workspace,
+permitting data overlap while preserving output on failure. The frozen workspace
+parameters are `linears_workspace_unit_t *workspace` plus a byte capacity;
+implementations access each union array element's member rather than casting a
+union array to a flat scalar array. The numerical owner reports a strict C99,
+`-O2 -fstrict-aliasing`, UBSan check for the numerical core; foundation operators
+have not yet been validated.
 
 **Confirmed:** the authorized ARM fixture directory was inspected and is empty.
 The reference demo was listed read-only; no reference files were changed.
@@ -196,3 +200,70 @@ the public APIs are stable and the real fixture has been constructed.
 - `git diff --no-index --check /dev/null docs/fieldctrl-worklog.md`: passed;
   this explicitly covers the new untracked document.
 - Build/runtime checks: not run for M0 (documentation-only milestone).
+- Coordinating agent reviewed and committed M0 as `63e7132`
+  (`docs(fieldctrl): record library plan and validation milestones`).
+
+### 2026-10-17 — host baseline before build integration
+
+**Confirmed:** Xmake `3.0.8+dev.fe5d480`, GCC/G++ `15.2.0`, Python `3.14.4` on
+Linux x86-64. The following commands completed successfully before new-library
+registration:
+
+```sh
+xmake f -P . -y -m debug --xhive_tests=y --xhive_cross_tests=n
+xmake b
+xmake test -g xhive -v
+```
+
+The full group passed **17 Xmake test entries**, not 17 individual GoogleTest
+cases. Existing test output included an AddressSanitizer huge-allocation warning
+(`failed to allocate 0x1000000000000000 bytes`); the existing tests and process
+returned success. This is a baseline observation, not a new-library sanitizer
+qualification.
+
+### 2026-10-17 — M1a numerical core and linears build integration
+
+**Confirmed:** only `linears` was added to the SDK library map and Kconfig for
+this milestone. The new `filters/xmake.lua` and `fieldctrl/xmake.lua` were drafted
+but are not included by the SDK root yet and are not part of the M1a stage list.
+This avoids compiling incomplete downstream algorithms during core acceptance.
+
+Eigen **3.4.0** downloaded from the upstream archive and installed successfully
+through Xmake's normal package manager. Its include paths appear on the test
+compile commands, not on the production `linears` target. SDK graph regression
+confirms a production target with no packages, no embedded tests/requires, no
+test packages when tests are disabled, standalone per-file tests, and C++17/Eigen
+on the new tests.
+
+Executed successfully:
+
+```sh
+xmake f -P . -y -m debug --xhive_tests=y --xhive_cross_tests=n
+xmake b
+xmake test -g xhive -v 'linears_test_numeric_contract/numeric_contract' 'xhive_test_sdk_entry/sdk_entry'
+cc -std=c99 -pedantic-errors -Wall -Wextra -Werror -Ilibs/linears/include -fsyntax-only libs/linears/src/numeric.c
+xmake test -g xhive -v
+```
+
+- Precise run: **2 Xmake test entries**, including **7 numerical-contract
+  GoogleTest cases**, passed.
+- Full group: **18 Xmake test entries**, zero failed; retained command log:
+  `/tmp/xhive-fieldctrl-M1a-host-gmVvj2.log`.
+- The coordinator's first strict-C99 review rejected four `_Alignof` expressions
+  (C11-only). The numerical owner replaced them with named `offsetof` alignment
+  probes; the strict-C99 command above passed after that fix.
+- **Confirmed by numerical-owner report:** isolated strict C99,
+  `-O2 -fstrict-aliasing`, `-Wall -Wextra -Werror`, UBSan compilation and execution
+  passed the same 7 tests in `/tmp/xhive-linears-numeric-VDXiOr`. This is a
+  delegated check; the build/worklog agent independently ran the commands above.
+- **Unverified:** foundation operators, decompositions, downstream filters and
+  control, ARM linking, full three-library sanitizer/stack/heap coverage.
+
+M1a integration stage paths are `libs/linears/xmake.lua`, `libs/xmake.lua`,
+`libs/Kconfig`, `tests/sdk_entry.lua`, and this worklog. The numerical owner's
+five frozen implementation/header/test paths are reviewed separately by the
+coordinator. No broad `git add` operation is authorized for the other in-progress
+library trees. `git diff --check` passed; the untracked
+`libs/linears/xmake.lua` was also checked with
+`git diff --no-index --check /dev/null libs/linears/xmake.lua` and produced no
+whitespace diagnostics (exit 1 denotes the new-file difference).

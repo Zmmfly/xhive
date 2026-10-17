@@ -35,6 +35,7 @@ includes("base64")
 includes("bitmap")
 includes("divsufsort")
 includes("ezctrl")
+includes("linears")
 includes("llhttp")
 includes("mbedtls")
 
@@ -53,6 +54,7 @@ target("libs")
             LIBS_ADD_DIVSUFSORT = "divsufsort",
             LIBS_ADD_BITMAP     = "bitmap",
             LIBS_ADD_EZCTRL     = "ezctrl",
+            LIBS_ADD_LINEARS    = "linears",
             LIBS_ADD_LLHTTP     = "llhttp",
             -- LIBS_ADD_MBEDTLS    = "mbedtls", // need explicit declaration
         }
