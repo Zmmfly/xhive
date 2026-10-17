@@ -70,6 +70,7 @@ typedef struct {
     uint32_t duty2;       /**< x2 duty in 0.1 % steps, 0 = complementary. */
     uint8_t align;        /**< shrtim_align_t. */
     uint8_t ratio_idx;    /**< Index of ratio in s_ratio_hw (master anchor). */
+    uint8_t out_wanted;   /**< #3/#10: outputs the application wants enabled. */
     uint8_t configured;   /**< Non-zero after shrtim_pwm_init(). */
 } unit_state_t;
 
@@ -83,6 +84,21 @@ static void *s_cb_user[SHRTIM_HAL_UNITS + 1u][SHRTIM_HAL_EVT_COUNT];
 
 /** Latch requests per fault channel (informational; see fault_config). */
 static bool s_fault_latch[6];
+
+/* Defect-audit round 8 state (#10/#11/#14/#2): per-unit fault attachment
+ * masks (for #10 output restoration and #11 protection-window-free
+ * re-attachment), saved output-enable state at pwm_stop (#3), and the ADC
+ * trigger 1..4 last-group record (#14 cross-group residue clearing). */
+static uint8_t s_fault_attached[SHRTIM_HAL_UNITS];
+static uint8_t s_stopped_outen[SHRTIM_HAL_UNITS]; /* 0xFF = nothing saved */
+static uint8_t s_adc_last_grp[5];                 /* 0 none, 1 = G1, 2 = G2 */
+
+/* ISR runaway-source guards moved to file scope so shrtim_deinit() can
+ * clear them (defect #2 lifecycle cleanup). */
+static uint16_t s_tmr_storm[SHRTIM_HAL_UNITS][9];
+static uint16_t s_tmr_storm_deg[SHRTIM_HAL_UNITS];
+static uint16_t s_m_storm[7];
+static uint16_t s_m_storm_deg;
 
 /* ---------------------------------------------------------------------- */
 /* Pin muxing tables                                                       */
@@ -447,10 +463,20 @@ static void center_master_setup(uint8_t ratio_idx, uint32_t period)
         SHRTIM_TIM_SetPrescaler(SHRTIM1, SHRTIM_TIMER_MASTER, m_ratio);
         SHRTIM_TIM_EnablePreload(SHRTIM1, SHRTIM_TIMER_MASTER);
         SHRTIM_TIM_SetPeriod(SHRTIM1, SHRTIM_TIMER_MASTER, period);
-        /* Roll-over generated update: keeps the master preload live and
-         * raises master UPDATE events for interrupt users. */
+        /* Defect #15: the master update-trigger field only supports
+         * NONE/REPETITION. SHRTIM_UPDATETRIG_RESET (= TxCTRL RSTROUEN,
+         * 0x40000) shifted by the vendor master shift (12) lands on
+         * MCTRL.BRSTDMA[0] - the old call actually set a Burst-DMA bit.
+         * REPETITION (0x20000 << 12 = MREPTUEN bit29) is the documented
+         * master update source; with MREPT reset to 0 the repetition
+         * event fires every period, giving continuous updates. */
         SHRTIM_TIM_SetUpdateTrig(SHRTIM1, SHRTIM_TIMER_MASTER,
-                                 SHRTIM_UPDATETRIG_RESET);
+                                 SHRTIM_UPDATETRIG_REPETITION);
+        /* Defect #15: the master reset default is single-shot (CONT = 0);
+         * the anchor must free-run. Set continuous mode while the counter
+         * is still stopped (this function runs before CounterEnable). */
+        SHRTIM_TIM_SetCounterMode(SHRTIM1, SHRTIM_TIMER_MASTER,
+                                  SHRTIM_MODE_CONTINUOUS);
         SHRTIM_ForceUpdate(SHRTIM1, SHRTIM_TIMER_MASTER);
         SHRTIM_TIM_CounterEnable(SHRTIM1, SHRTIM_TIMER_MASTER);
         if (SHRTIM_TIM_GetPrescaler(SHRTIM1, SHRTIM_TIMER_MASTER) == m_ratio) {
@@ -837,6 +863,14 @@ int shrtim_init(uint32_t fshrtim_hz)
     uint64_t fin;
     volatile uint32_t spin;
 
+    /* Defect #1 (conditional blocker): refuse to reconfigure the SHRTPLL
+     * while the system clock is derived from it - reprogramming would
+     * stall the core mid-write. */
+    if ((RCC->PLLCTRL & RCC_PLLCTRL_SCLKPLLSEL)
+        == RCC_PLLCTRL_SCLKPLLSEL_SHRTPLL) {
+        return SHRTIM_ERR_CLOCK;
+    }
+
     if (fshrtim_hz == 0u) {
         fshrtim_hz = 240000000u;
     }
@@ -884,6 +918,9 @@ int shrtim_init(uint32_t fshrtim_hz)
 
         for (u = 0u; u < SHRTIM_HAL_UNITS; u++) {
             s_unit[u].configured = 0u;
+            s_unit[u].out_wanted = 0u;
+            s_stopped_outen[u] = 0xFFu;
+            s_fault_attached[u] = 0u;
         }
     }
     return SHRTIM_OK;
@@ -897,6 +934,34 @@ uint32_t shrtim_clk_hz(void)
 void shrtim_deinit(void)
 {
     unsigned i;
+    shrtim_unit_t u;
+
+    /* Defect #2: quiesce the interrupt sources FIRST - mask every unit's
+     * IDEN, the common fault/sync enables and the NVIC lines (plus their
+     * pending state) before any clock manipulation. */
+    for (i = 0u; i < 7u; i++) {
+        *tmr_reg(&SHRTIM1->sMasterRegs.MIDEN, i) = 0u;
+    }
+    SHRTIM_DisableIT_FALT1(SHRTIM1);
+    SHRTIM_DisableIT_FALT2(SHRTIM1);
+    SHRTIM_DisableIT_FALT3(SHRTIM1);
+    SHRTIM_DisableIT_FALT4(SHRTIM1);
+    SHRTIM_DisableIT_FALT5(SHRTIM1);
+    SHRTIM_DisableIT_FALT6(SHRTIM1);
+    SHRTIM_DisableIT_SYSFALT(SHRTIM1);
+    SHRTIM_DisableIT_SYNC(SHRTIM1);
+    SHRTIM_DisableIT_BMPRD(SHRTIM1);
+    {
+        static const IRQn_Type irqs[8] = {
+            SHRT1_MST_IRQn, SHRT1_TIMA_IRQn, SHRT1_TIMB_IRQn, SHRT1_TIMC_IRQn,
+            SHRT1_TIMD_IRQn, SHRT1_TIME_IRQn, SHRT1_TIMF_IRQn, SHRT1_FLT_IRQn,
+        };
+
+        for (i = 0u; i < 8u; i++) {
+            NVIC_DisableIRQ(irqs[i]);
+            NVIC_ClearPendingIRQ(irqs[i]);
+        }
+    }
 
     SHRTIM_TIM_CounterDisable(SHRTIM1, SHRTIM_TIMER_ALL);
     for (i = 0u; i < 12u; i++) {
@@ -905,11 +970,50 @@ void shrtim_deinit(void)
 
     RCC_EnableAHBPeriphReset(RCC_AHB_PERIPHRST_SHRTIM);
     RCC_EnableAHBPeriphClk(RCC_AHB_PERIPHEN_SHRTIM, DISABLE);
-    (void)RCC_ConfigSHRTPll(RCC_SHRTPLL_SRC_HSI, 0u, 0u, DISABLE);
 
-    for (i = 0u; i < SHRTIM_HAL_UNITS; i++) {
-        s_unit[i].configured = 0u;
+    /* Defect #1: never power the SHRTPLL down while SYSCLK runs from it.
+     * The peripheral itself is already reset and clock-gated above. */
+    if ((RCC->PLLCTRL & RCC_PLLCTRL_SCLKPLLSEL)
+        != RCC_PLLCTRL_SCLKPLLSEL_SHRTPLL) {
+        (void)RCC_ConfigSHRTPll(RCC_SHRTPLL_SRC_HSI, 0u, 0u, DISABLE);
     }
+
+    /* Defect #2: clear every piece of lifecycle state so a later init()
+     * cannot observe stale callbacks, fault masks or storm counters. */
+    for (u = (shrtim_unit_t)0u; (unsigned)u < SHRTIM_HAL_UNITS; u++) {
+        s_unit[u].configured = 0u;
+        s_unit[u].out_wanted = 0u;
+        s_stopped_outen[u] = 0xFFu;
+        s_fault_attached[u] = 0u;
+    }
+    for (i = 0u; i < (unsigned)SHRTIM_HAL_EVT_COUNT; i++) {
+        s_cb[SHRTIM_HAL_UNITS][i] = NULL;
+        s_cb_user[SHRTIM_HAL_UNITS][i] = NULL;
+    }
+    for (u = (shrtim_unit_t)0u; (unsigned)u < SHRTIM_HAL_UNITS; u++) {
+        for (i = 0u; i < (unsigned)SHRTIM_HAL_EVT_COUNT; i++) {
+            s_cb[(unsigned)u][i] = NULL;
+            s_cb_user[(unsigned)u][i] = NULL;
+        }
+    }
+    for (i = 0u; i < 6u; i++) {
+        s_fault_latch[i] = false;
+    }
+    for (i = 0u; i < 5u; i++) {
+        s_adc_last_grp[i] = 0u;
+    }
+    for (i = 0u; i < SHRTIM_HAL_UNITS; i++) {
+        unsigned k;
+
+        for (k = 0u; k < 9u; k++) {
+            s_tmr_storm[i][k] = 0u;
+        }
+        s_tmr_storm_deg[i] = 0u;
+    }
+    for (i = 0u; i < 7u; i++) {
+        s_m_storm[i] = 0u;
+    }
+    s_m_storm_deg = 0u;
     s_clk_hz = 0u;
 }
 
@@ -1141,7 +1245,11 @@ int shrtim_pwm_init(shrtim_unit_t unit, const shrtim_pwm_cfg_t *cfg)
 
     if (cfg->enable_outputs) {
         SHRTIM_EnableOutput(SHRTIM1, out1 | out2);
+        s_unit[unit].out_wanted = 3u; /* #3/#10: both outputs wanted on */
+    } else {
+        s_unit[unit].out_wanted = 0u;
     }
+    s_stopped_outen[unit] = 0xFFu; /* fresh config: nothing saved */
     return SHRTIM_OK;
 }
 
@@ -1297,14 +1405,45 @@ void shrtim_pwm_start(shrtim_unit_t unit)
         return;
     }
     tmr = s_tmr_id[unit];
+    /* Defect #3: pwm_stop() saved the output-enable state and drove the
+     * pins to their idle levels; restore the pins the application had
+     * enabled before restarting the counter. */
+    if (s_stopped_outen[unit] != 0xFFu) {
+        if ((s_stopped_outen[unit] & 1u) != 0u) {
+            SHRTIM_EnableOutput(SHRTIM1, s_out_id[2u * (unsigned)unit]);
+        }
+        if ((s_stopped_outen[unit] & 2u) != 0u) {
+            SHRTIM_EnableOutput(SHRTIM1, s_out_id[2u * (unsigned)unit + 1u]);
+        }
+        s_stopped_outen[unit] = 0xFFu;
+    }
     SHRTIM_TIM_CounterEnable(SHRTIM1, tmr);
 }
 
 void shrtim_pwm_stop(shrtim_unit_t unit)
 {
-    if ((unit != SHRTIM_UNIT_MASTER) && ((unsigned)unit < SHRTIM_HAL_UNITS)) {
-        SHRTIM_TIM_CounterDisable(SHRTIM1, s_tmr_id[unit]);
+    uint32_t tmr;
+
+    if ((unit == SHRTIM_UNIT_MASTER) || ((unsigned)unit >= SHRTIM_HAL_UNITS)) {
+        return;
     }
+    tmr = s_tmr_id[unit];
+    /* Defect #3: "stop the counter and leave the pins at their idle
+     * levels" - halting the counter alone keeps the last output level on
+     * the pins. Snapshot the live OEN bits, disable both output drivers
+     * (the pads fall back to their programmed idle levels) and then stop
+     * the counter; pwm_start() restores the snapshot. A second stop
+     * without an intervening start must not overwrite the snapshot (it
+     * would capture the already-disabled state and lose the original). */
+    if (s_stopped_outen[unit] == 0xFFu) {
+        s_stopped_outen[unit] =
+            (uint8_t)((SHRTIM_IsEnabledOutput(SHRTIM1, s_out_id[2u * (unsigned)unit]) != 0u) ? 1u : 0u);
+        s_stopped_outen[unit] |=
+            (uint8_t)((SHRTIM_IsEnabledOutput(SHRTIM1, s_out_id[2u * (unsigned)unit + 1u]) != 0u) ? 2u : 0u);
+    }
+    SHRTIM_DisableOutput(SHRTIM1, s_out_id[2u * (unsigned)unit]);
+    SHRTIM_DisableOutput(SHRTIM1, s_out_id[2u * (unsigned)unit + 1u]);
+    SHRTIM_TIM_CounterDisable(SHRTIM1, tmr);
 }
 
 void shrtim_pwm_start_all(void)
@@ -1321,7 +1460,12 @@ void shrtim_pwm_start_all(void)
 
 void shrtim_pwm_stop_all(void)
 {
-    SHRTIM_TIM_CounterDisable(SHRTIM1, SHRTIM_TIMER_X);
+    shrtim_unit_t u;
+
+    for (u = (shrtim_unit_t)0u; (unsigned)u < SHRTIM_HAL_UNITS; u++)
+    {
+        shrtim_pwm_stop(u); /* #3: also disables the output drivers */
+    }
 }
 
 void shrtim_pwm_oneshot_arm(shrtim_unit_t unit)
@@ -1339,6 +1483,7 @@ void shrtim_out_enable(shrtim_out_t out)
 {
     if ((unsigned)out < 12u) {
         SHRTIM_EnableOutput(SHRTIM1, s_out_id[out]);
+        s_unit[(unsigned)out / 2u].out_wanted |= (uint8_t)(1u << ((unsigned)out & 1u));
     }
 }
 
@@ -1346,6 +1491,7 @@ void shrtim_out_disable(shrtim_out_t out)
 {
     if ((unsigned)out < 12u) {
         SHRTIM_DisableOutput(SHRTIM1, s_out_id[out]);
+        s_unit[(unsigned)out / 2u].out_wanted &= (uint8_t)~(1u << ((unsigned)out & 1u));
     }
 }
 
@@ -1362,9 +1508,15 @@ void shrtim_out_force(shrtim_out_t out, shrtim_level_t level)
 void shrtim_out_polarity(shrtim_out_t out, bool active_low)
 {
     if ((unsigned)out < 12u) {
-        SHRTIM_OUT_SetPolarity(SHRTIM1, s_out_id[out],
-                               active_low ? SHRTIM_OUT_NEGATIVE_POLARITY
-                                          : SHRTIM_OUT_POSITIVE_POLARITY);
+        /* Defect #4: the User Manual forbids rewriting POL while the
+         * owning counter is running. The API signature is frozen (void),
+         * so the write is skipped instead of returning an error - flip
+         * the polarity while the unit is stopped. */
+        if (SHRTIM_TIM_IsCounterEnabled(SHRTIM1, s_tmr_id[(unsigned)out / 2u]) == 0u) {
+            SHRTIM_OUT_SetPolarity(SHRTIM1, s_out_id[out],
+                                   active_low ? SHRTIM_OUT_NEGATIVE_POLARITY
+                                              : SHRTIM_OUT_POSITIVE_POLARITY);
+        }
     }
 }
 
@@ -1512,6 +1664,11 @@ void shrtim_master_period(uint32_t period_ticks, bool start_now)
         SHRTIM_TIM_SetPeriod(SHRTIM1, SHRTIM_TIMER_MASTER, period_ticks);
         SHRTIM_ForceUpdate(SHRTIM1, SHRTIM_TIMER_MASTER);
         if (start_now) {
+            /* Defect #15: the master defaults to single-shot (CONT = 0);
+             * a synchronising master must free-run. Program continuous
+             * mode before the counter is enabled. */
+            SHRTIM_TIM_SetCounterMode(SHRTIM1, SHRTIM_TIMER_MASTER,
+                                      SHRTIM_MODE_CONTINUOUS);
             SHRTIM_TIM_CounterEnable(SHRTIM1, SHRTIM_TIMER_MASTER);
         }
     }
@@ -1529,9 +1686,9 @@ void shrtim_pwm_sync_to_master(shrtim_unit_t unit, bool enable)
 int shrtim_adc_trigger(uint8_t trig, shrtim_unit_t unit, shrtim_evt_t evt)
 {
     const uint32_t(*table)[6];
+    volatile uint32_t *base;
     unsigned evi;
-    unsigned grp;
-    uint32_t src_reg;
+    unsigned row;
     uint32_t src;
     uint32_t update;
 
@@ -1566,58 +1723,81 @@ int shrtim_adc_trigger(uint8_t trig, shrtim_unit_t unit, shrtim_evt_t evt)
     case 1u:
     case 3u:
         table = s_adtg13;
-        grp = (unit == SHRTIM_UNIT_MASTER || (unsigned)unit <= 2u) ? 0u : 1u;
-        src_reg = (grp == 0u)
-                      ? ((trig == 1u) ? SHRTIM_ADCTRIG1_SOURCE_GROUP1
-                                      : SHRTIM_ADCTRIG3_SOURCE_GROUP1)
-                      : ((trig == 1u) ? SHRTIM_ADCTRIG1_SOURCE_GROUP2
-                                      : SHRTIM_ADCTRIG3_SOURCE_GROUP2);
         break;
     case 2u:
     case 4u:
         table = s_adtg24;
-        grp = (unit == SHRTIM_UNIT_MASTER || (unsigned)unit <= 2u) ? 0u : 1u;
-        src_reg = (grp == 0u)
-                      ? ((trig == 2u) ? SHRTIM_ADCTRIG2_SOURCE_GROUP1
-                                      : SHRTIM_ADCTRIG4_SOURCE_GROUP1)
-                      : ((trig == 2u) ? SHRTIM_ADCTRIG2_SOURCE_GROUP2
-                                      : SHRTIM_ADCTRIG4_SOURCE_GROUP2);
         break;
     case 5u:
-        table = s_adtg579;
-        src_reg = SHRTIM_ADCTRIG5_SOURCE;
-        break;
     case 7u:
-        table = s_adtg579;
-        src_reg = SHRTIM_ADCTRIG7_SOURCE;
-        break;
     case 9u:
         table = s_adtg579;
-        src_reg = SHRTIM_ADCTRIG9_SOURCE;
         break;
     case 6u:
-        table = s_adtg6810;
-        src_reg = SHRTIM_ADCTRIG6_SOURCE;
-        break;
     case 8u:
-        table = s_adtg6810;
-        src_reg = SHRTIM_ADCTRIG8_SOURCE;
-        break;
     default:
         table = s_adtg6810;
-        src_reg = SHRTIM_ADCTRIG10_SOURCE;
         break;
     }
 
-    src = table[(unsigned)unit][evi];
-    if (src == 0u) {
-        return SHRTIM_ERR_PARAM; /* source not available in this group */
+    /* Defect #12: the routing tables are stored in vendor register order
+     * (row 0 = MASTER, rows 1..6 = A..F) but the HAL enum is A=0..F=5 with
+     * MASTER=6. Translate the unit before indexing, otherwise every
+     * request reads the wrong row (MASTER requests hit F, A hit MASTER...). */
+    row = (unit == SHRTIM_UNIT_MASTER) ? 0u : (unsigned)unit + 1u;
+
+    src = table[row][evi];
+    if ((src == 0u)
+        && !((row == 0u) && (evi == ADTG_SRC_C1)
+             && ((table == s_adtg579) || (table == s_adtg6810)))) {
+        /* 0 marks an unavailable (group, unit, event) combination. The one
+         * exception (defect #12 note): MCMP1 of the extended groups is a
+         * legitimate zero encoding and must not be rejected. */
+        return SHRTIM_ERR_PARAM;
     }
 
     update = (unit == SHRTIM_UNIT_MASTER) ? (uint32_t)SHRTIM_ADCTRIG_UPDATE_MASTER
                                           : (uint32_t)SHRTIM_ADCTRIG_UPDATE_TIMER_A +
                                                 (uint32_t)unit;
-    SHRTIM_ConfigADCTrig(SHRTIM1, src_reg, (uint32_t)(trig - 1u), update, src);
+    /* The vendor ADTGUPD offset table is indexed by the trigger number and
+     * is correct for all ten triggers; only the source registers need the
+     * corrections below. */
+    SHRTIM_SetADCTrigUpdate(SHRTIM1, (uint32_t)(trig - 1u), update);
+
+    base = (volatile uint32_t *)&SHRTIM1->sCommonRegs.ADTG1SRC1;
+    if (trig <= 4u) {
+        /* Triggers 1..4: one 32-bit source register per (trigger, group);
+         * M/A/B/C route through group 1, D/E/F through group 2. */
+        unsigned grp = (row <= 3u) ? 0u : 1u;
+
+        /* Defect #14: switching a trigger between groups left the old
+         * group's source register loaded, so both groups kept firing.
+         * Clear the previous group register before committing the new
+         * one. (0 selects MCMP1 - there is no documented "none"
+         * encoding - which is inert while master CMP1 is unused.) */
+        if ((s_adc_last_grp[trig - 1u] != 0u)
+            && (s_adc_last_grp[trig - 1u] != (uint8_t)(grp + 1u))) {
+            unsigned old = s_adc_last_grp[trig - 1u] - 1u;
+            volatile uint32_t *oldreg =
+                (volatile uint32_t *)((uint32_t)base + ((trig - 1u) * 2u + old) * 4u);
+
+            *oldreg = 0u;
+        }
+        s_adc_last_grp[trig - 1u] = (uint8_t)(grp + 1u);
+
+        *(volatile uint32_t *)((uint32_t)base + ((trig - 1u) * 2u + grp) * 4u) = src;
+    } else {
+        /* Defect #13: the vendor offset table maps the ADC6 source enum to
+         * ADTGEX1 and the ADC9 enum to ADTGEX2 - both wrong (writes for 6
+         * clobber 5, writes for 9 clobber 10). Program the extended
+         * registers directly: EX1 holds trig 5/7/9 in 6-bit fields at
+         * shifts 0/8/16, EX2 holds trig 6/8/10 the same way. */
+        volatile uint32_t *ex =
+            (volatile uint32_t *)((uint32_t)base + (((trig & 1u) != 0u) ? 0x50u : 0x54u));
+        unsigned shift = ((unsigned)(trig - 5u) / 2u) * 8u;
+
+        *ex = (*ex & ~(0x3Fu << shift)) | ((src & 0x3Fu) << shift);
+    }
     return SHRTIM_OK;
 }
 
@@ -1734,24 +1914,49 @@ int shrtim_fault_attach(shrtim_unit_t unit, uint8_t mask,
         }
     }
 
-    /* Replace the whole attachment: clear all, then enable the requested. */
-    SHRTIM_TIM_DisableFault(SHRTIM1, s_tmr_id[unit],
-                            SHRTIM_FAULT_1 | SHRTIM_FAULT_2 | SHRTIM_FAULT_3 |
-                                SHRTIM_FAULT_4 | SHRTIM_FAULT_5 | SHRTIM_FAULT_6);
-    if (bits != 0u) {
-        SHRTIM_TIM_EnableFault(SHRTIM1, s_tmr_id[unit], bits);
-    }
-
+    /* Defect #11: the old code cleared ALL six fault-enable bits before
+     * enabling the new set, leaving a protection-gap window on a running
+     * converter. Program the per-output fault states FIRST, then commit
+     * the new enable mask differentially: only the bits that actually
+     * change are touched, kept channels never lose protection. */
     fs1 = fault_state_encode(out1);
     fs2 = fault_state_encode(out2);
     SHRTIM_OUT_SetFaultState(SHRTIM1, s_out_id[2u * (unsigned)unit], fs1);
     SHRTIM_OUT_SetFaultState(SHRTIM1, s_out_id[2u * (unsigned)unit + 1u], fs2);
+
+    {
+        uint32_t old = (uint32_t)s_fault_attached[unit] & 0x3Fu;
+        uint32_t remove = old & ~bits;
+        uint32_t add = bits & ~old;
+
+        if (remove != 0u) {
+            SHRTIM_TIM_DisableFault(SHRTIM1, s_tmr_id[unit], remove);
+        }
+        if (add != 0u) {
+            SHRTIM_TIM_EnableFault(SHRTIM1, s_tmr_id[unit], add);
+        }
+    }
+    s_fault_attached[unit] = mask; /* #10: remember the attachment */
     return SHRTIM_OK;
 }
 
 void shrtim_fault_reset(uint8_t fault)
 {
-    if ((fault >= 1u) && (fault <= 6u)) {
+    unsigned f;
+
+    if ((fault < 1u) || (fault > 6u)) {
+        return;
+    }
+    f = (unsigned)fault - 1u;
+
+    /* Defect #10: clearing the interrupt flag alone does NOT release the
+     * outputs - the User Manual requires software to re-enable the output
+     * drivers (OEN) after the fault state ends; the old implementation
+     * left the pins in the fault state forever. Clear the flag (unless a
+     * non-latched configuration already released it), then for every unit
+     * attached to this fault whose OTHER attached faults are inactive,
+     * re-enable the outputs the application wanted enabled. */
+    if (s_fault_latch[f]) {
         switch (fault) {
         case 1u:
             SHRTIM_ClearFlag_FALT1(SHRTIM1);
@@ -1771,6 +1976,60 @@ void shrtim_fault_reset(uint8_t fault)
         default:
             SHRTIM_ClearFlag_FALT6(SHRTIM1);
             break;
+        }
+    }
+
+    {
+        unsigned u;
+
+        for (u = 0u; u < SHRTIM_HAL_UNITS; u++) {
+            uint8_t attached = s_fault_attached[u];
+
+            if ((attached & (uint8_t)(1u << f)) == 0u) {
+                continue; /* unit not driven by this fault channel */
+            }
+            /* Only restore when no OTHER fault of this unit is active. */
+            {
+                unsigned k;
+                bool busy = false;
+
+                for (k = 0u; k < 6u; k++) {
+                    if ((k == f) || ((attached & (uint8_t)(1u << k)) == 0u)) {
+                        continue;
+                    }
+                    switch (k) {
+                    case 0u:
+                        busy = busy || (SHRTIM_IsActiveFlag_FALT1(SHRTIM1) != 0u);
+                        break;
+                    case 1u:
+                        busy = busy || (SHRTIM_IsActiveFlag_FALT2(SHRTIM1) != 0u);
+                        break;
+                    case 2u:
+                        busy = busy || (SHRTIM_IsActiveFlag_FALT3(SHRTIM1) != 0u);
+                        break;
+                    case 3u:
+                        busy = busy || (SHRTIM_IsActiveFlag_FALT4(SHRTIM1) != 0u);
+                        break;
+                    case 4u:
+                        busy = busy || (SHRTIM_IsActiveFlag_FALT5(SHRTIM1) != 0u);
+                        break;
+                    default:
+                        busy = busy || (SHRTIM_IsActiveFlag_FALT6(SHRTIM1) != 0u);
+                        break;
+                    }
+                }
+                if (busy) {
+                    continue;
+                }
+            }
+            if ((s_unit[u].configured != 0u) && (s_unit[u].out_wanted != 0u)) {
+                if ((s_unit[u].out_wanted & 1u) != 0u) {
+                    SHRTIM_EnableOutput(SHRTIM1, s_out_id[2u * u]);
+                }
+                if ((s_unit[u].out_wanted & 2u) != 0u) {
+                    SHRTIM_EnableOutput(SHRTIM1, s_out_id[2u * u + 1u]);
+                }
+            }
         }
     }
 }
@@ -1906,25 +2165,19 @@ int shrtim_irq_enable(shrtim_unit_t unit, shrtim_evt_t evt, bool enable)
 
 void shrtim_isr_master(void)
 {
-    static uint16_t storm[7];
-    static uint16_t degraded;
-
     isr_pass(&SHRTIM1->sMasterRegs.MIDEN, &SHRTIM1->sMasterRegs.MINTSTS,
              &SHRTIM1->sMasterRegs.MINTCLR, 0u, SHRTIM_UNIT_MASTER,
-             storm, &degraded, 7u, s_m_evt, s_m_bit);
+             s_m_storm, &s_m_storm_deg, 7u, s_m_evt, s_m_bit);
 }
 
 void shrtim_isr_timer(shrtim_unit_t unit)
 {
-    static uint16_t storm[SHRTIM_HAL_UNITS][9];
-    static uint16_t degraded[SHRTIM_HAL_UNITS];
-
     if ((unit == SHRTIM_UNIT_MASTER) || ((unsigned)unit >= SHRTIM_HAL_UNITS)) {
         return;
     }
     isr_pass(&SHRTIM1->sMasterRegs.MIDEN, &SHRTIM1->sMasterRegs.MINTSTS,
              &SHRTIM1->sMasterRegs.MINTCLR, (unsigned)unit + 1u, unit,
-             storm[unit], &degraded[unit], 9u, s_t_evt, s_t_bit);
+             s_tmr_storm[unit], &s_tmr_storm_deg[unit], 9u, s_t_evt, s_t_bit);
 }
 
 void shrtim_isr_fault(void)
