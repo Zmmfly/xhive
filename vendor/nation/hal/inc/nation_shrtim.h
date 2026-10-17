@@ -265,7 +265,7 @@ int shrtim_pwm_init(shrtim_unit_t unit, const shrtim_pwm_cfg_t *cfg);
  * @brief Change the PWM frequency of a configured unit at runtime.
  *
  * Period and compare values are recomputed for the current duty settings and
- * pushed through the preload mechanism (glitch-free while running).
+ * committed together; prescaler changes stop/restart the counter if running.
  *
  * @param[in] unit Configured unit.
  * @param[in] hz   New frequency in Hz.
@@ -321,7 +321,7 @@ int shrtim_pwm_duty2(shrtim_unit_t unit, uint32_t duty_x1000);
  * @param[in] rise_ns  Dead-time before x1 goes active (ns).
  * @param[in] fall_ns  Dead-time after x1 goes inactive (ns).
  * @return #SHRTIM_OK, or #SHRTIM_ERR_PARAM when a value exceeds the range of
- *         every prescaler (approximately 16 us at 240 MHz).
+ *         every prescaler (approximately 34 us at 240 MHz: 511 * 16 / fSHRTIM).
  */
 int shrtim_pwm_deadtime(shrtim_unit_t unit, uint32_t rise_ns, uint32_t fall_ns);
 
@@ -369,7 +369,7 @@ void shrtim_out_enable(shrtim_out_t out);
 void shrtim_out_disable(shrtim_out_t out);
 
 /**
- * @brief Force an output to a logic level, bypassing the PWM crossbar.
+ * @brief Generate a one-shot software set/reset event, not a persistent override.
  *
  * @param[in] out Output to force.
  * @param[in] level #SHRTIM_LEVEL_ACTIVE or #SHRTIM_LEVEL_INACTIVE.
@@ -448,7 +448,8 @@ uint32_t shrtim_compare_get(shrtim_unit_t unit, uint8_t cmp);
 /**
  * @brief Configure the master timer period for synchronised operation.
  *
- * @param[in] period_ticks Master period in high-resolution ticks.
+ * @param[in] period_ticks Master period in high-resolution ticks;
+ *                         values outside 1..65535 are silently ignored.
  * @param[in] start_now Also start the master counter.
  */
 void shrtim_master_period(uint32_t period_ticks, bool start_now);
@@ -531,6 +532,9 @@ int shrtim_capture_config(shrtim_unit_t unit, uint8_t cpt, uint8_t ev);
 
 /**
  * @brief Latch a software-triggered capture and read both capture units.
+ *
+ * This triggers a new software capture; to read EXEV-captured values, read
+ * TxCTP1/2 directly or from the capture callback.
  *
  * @param[in] unit Unit to capture.
  * @param[out] cpt1 Captured counter of capture unit 1 (may be NULL).

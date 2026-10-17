@@ -313,8 +313,8 @@ static const uint16_t s_ratio_den[8] = {1u, 1u, 1u, 1u, 1u, 1u, 2u, 4u};
  *
  * Walks the prescaler candidates from the highest resolution (fHRCK =
  * fSHRTIM x 32) downwards and picks the first one whose period
- * fHRCK / (hz * mult) fits 1..0xFFFF. mult is 2 for center alignment
- * (one PWM cycle spans 2 * period counter ticks).
+ * fHRCK / (hz * mult) fits the UM table 9-8 range. mult is 2 for center
+ * alignment (one PWM cycle spans 2 * period counter ticks).
  *
  * @param[in] hz Requested PWM frequency in Hz.
  * @param[in] mult Cycle multiplier (1 edge, 2 center).
@@ -336,7 +336,8 @@ static int solve_timing(uint32_t hz, uint32_t mult,
         uint64_t div = (uint64_t)hz * (uint64_t)mult * (uint64_t)s_ratio_den[i];
         uint64_t p = ((uint64_t)s_clk_hz * (uint64_t)s_ratio_num[i] + div / 2u) / div;
 
-        if ((p >= 1u) && (p <= (uint64_t)SHRTIM_HAL_PERIOD_MAX)) {
+        if ((p >= (0x60u >> ((i < 5u) ? i : 5u))) &&
+            (p <= (uint64_t)SHRTIM_HAL_PERIOD_MAX)) {
             *ratio = s_ratio_hw[i];
             *period = (uint32_t)p;
             *idx = (uint8_t)i;
@@ -347,15 +348,16 @@ static int solve_timing(uint32_t hz, uint32_t mult,
 }
 
 /** Compare value for an edge-aligned duty: round(P * duty / 1000), clamped
- * to P-1 so the reset event never coincides with the period event. */
-static uint32_t edge_compare(uint32_t period, uint32_t duty)
+ * to P-1 and the UM table 9-8 minimum (which takes precedence). */
+static uint32_t edge_compare(uint32_t period, uint32_t duty, uint8_t ratio_idx)
 {
     uint64_t c = (((uint64_t)period * (uint64_t)duty) + 500u) / 1000u;
+    uint32_t min = 0x60u >> ((ratio_idx < 5u) ? ratio_idx : 5u);
 
     if (c >= (uint64_t)period) {
         c = (uint64_t)period - 1u;
     }
-    return (uint32_t)c;
+    return (uint32_t)((c < min) ? min : c);
 }
 
 /**
@@ -405,18 +407,21 @@ static uint32_t edge_compare(uint32_t period, uint32_t duty)
  * @param[in] period Period P (programmed to both the slave PRD and the
  *                   master MPRD; one full PWM cycle in master ticks).
  * @param[in] duty Duty in 0.1 % steps (caller guarantees 1..999).
- * @return Compare value in master time-base ticks.
+ * @param[in] ratio_idx Prescaler index used for the UM table 9-8 minimum.
+ * @return Compare value in master time-base ticks, clamped to that minimum.
  */
-static uint32_t center_compare(uint32_t period, uint32_t duty)
+static uint32_t center_compare(uint32_t period, uint32_t duty, uint8_t ratio_idx)
 {
     uint64_t scaled;
+    uint32_t min = 0x60u >> ((ratio_idx < 5u) ? ratio_idx : 5u);
 
     if (duty <= 500u) {
         scaled = (uint64_t)period * (uint64_t)duty;
     } else {
         scaled = (uint64_t)period * (1000u - (uint64_t)duty);
     }
-    return (uint32_t)((scaled + 500u) / 1000u);
+    scaled = (scaled + 500u) / 1000u;
+    return (uint32_t)((scaled < min) ? min : scaled);
 }
 
 /**
@@ -459,6 +464,9 @@ static void center_master_setup(uint8_t ratio_idx, uint32_t period)
     uint32_t m_ratio = s_ratio_hw[(unsigned)ratio_idx + 1u];
     unsigned retry;
 
+    if (SHRTIM_TIM_GetPrescaler(SHRTIM1, SHRTIM_TIMER_MASTER) != m_ratio) {
+        SHRTIM_TIM_CounterDisable(SHRTIM1, SHRTIM_TIMER_MASTER);
+    }
     for (retry = 0u; retry < 3u; retry++) {
         SHRTIM_TIM_SetPrescaler(SHRTIM1, SHRTIM_TIMER_MASTER, m_ratio);
         SHRTIM_TIM_EnablePreload(SHRTIM1, SHRTIM_TIMER_MASTER);
@@ -519,7 +527,7 @@ static void apply_crossbars(unsigned unit)
         } else {
             set1 = SHRTIM_OUTPUTSET_TIMPER;
             rst1 = SHRTIM_OUTPUTRESET_TIMCMP1;
-            SHRTIM_TIM_SetCompare1(SHRTIM1, tmr, edge_compare(st->period, st->duty));
+            SHRTIM_TIM_SetCompare1(SHRTIM1, tmr, edge_compare(st->period, st->duty, st->ratio_idx));
         }
 
         if (st->duty2 == 0u) {
@@ -531,13 +539,13 @@ static void apply_crossbars(unsigned unit)
         } else {
             set2 = SHRTIM_OUTPUTSET_TIMPER;
             rst2 = SHRTIM_OUTPUTRESET_TIMCMP2;
-            SHRTIM_TIM_SetCompare2(SHRTIM1, tmr, edge_compare(st->period, st->duty2));
+            SHRTIM_TIM_SetCompare2(SHRTIM1, tmr, edge_compare(st->period, st->duty2, st->ratio_idx));
         }
     } else {
         /* Center aligned, 1..999 per-mille duty: master-period-anchored
          * single compare per output (see center_compare() and
          * center_master_setup() for the derivation and constraints). */
-        uint32_t c = center_compare(st->period, st->duty);
+        uint32_t c = center_compare(st->period, st->duty, st->ratio_idx);
 
         if (st->duty <= 500u) {
             set1 = SHRTIM_OUTPUTSET_MASTERPER;
@@ -555,7 +563,7 @@ static void apply_crossbars(unsigned unit)
             set2 = SHRTIM_OUTPUTSET_TIMPER;
             rst2 = SHRTIM_OUTPUTRESET_NONE;
         } else {
-            uint32_t c2 = center_compare(st->period, st->duty2);
+            uint32_t c2 = center_compare(st->period, st->duty2, st->ratio_idx);
 
             if (st->duty2 <= 500u) {
                 set2 = SHRTIM_OUTPUTSET_MASTERPER;
@@ -895,6 +903,7 @@ int shrtim_init(uint32_t fshrtim_hz)
         }
     }
     if (RCC_GetFlagStatus(RCC_FLAG_SHRTPLLRDF) != SET) {
+        s_clk_hz = 0u;
         return SHRTIM_ERR_CLOCK;
     }
 
@@ -1128,11 +1137,6 @@ int shrtim_pwm_init(shrtim_unit_t unit, const shrtim_pwm_cfg_t *cfg)
         return SHRTIM_ERR_FREQ;
     }
 
-    rc = program_deadtime((unsigned)unit, cfg->dt_rise_ns, cfg->dt_fall_ns);
-    if (rc != SHRTIM_OK) {
-        return rc;
-    }
-
     tmr = s_tmr_id[unit];
     out1 = s_out_id[2u * (unsigned)unit];
     out2 = s_out_id[2u * (unsigned)unit + 1u];
@@ -1146,6 +1150,10 @@ int shrtim_pwm_init(shrtim_unit_t unit, const shrtim_pwm_cfg_t *cfg)
     }
 
     SHRTIM_TIM_CounterDisable(SHRTIM1, tmr);
+    rc = program_deadtime((unsigned)unit, cfg->dt_rise_ns, cfg->dt_fall_ns);
+    if (rc != SHRTIM_OK) {
+        return rc;
+    }
     /* Write the unit configuration with preload DISABLED: the JLink dump
      * proved the update-trigger field defaults to
      * SHRTIM_UPDATETRIG_NONE, so shadow registers are never transferred
@@ -1259,6 +1267,7 @@ int shrtim_pwm_freq(shrtim_unit_t unit, uint32_t hz)
     uint32_t period;
     uint32_t mult;
     uint32_t tmr;
+    uint32_t restart;
     uint8_t ratio_idx;
     int center;
 
@@ -1282,6 +1291,11 @@ int shrtim_pwm_freq(shrtim_unit_t unit, uint32_t hz)
     }
 
     tmr = s_tmr_id[unit];
+    restart = (ratio != s_unit[unit].ratio) && SHRTIM_TIM_IsCounterEnabled(SHRTIM1, tmr);
+    /* Stopping makes CKPSC writes take effect immediately. */
+    if (restart) { SHRTIM_TIM_CounterDisable(SHRTIM1, tmr); }
+    /* UPDDIS blocks automatic preload transfers until the register set is complete. */
+    SHRTIM1->sCommonRegs.CTRL1 |= SHRTIM_CTRL1_TAUPDDIS << (unsigned)unit;
     if (center) {
         /* Keep the shared master anchor in step with the new cycle time;
          * configured before the unit so its writes cannot land on the
@@ -1290,27 +1304,13 @@ int shrtim_pwm_freq(shrtim_unit_t unit, uint32_t hz)
     }
     SHRTIM_TIM_SetPrescaler(SHRTIM1, tmr, ratio);
     SHRTIM_TIM_SetPeriod(SHRTIM1, tmr, period);
-    {
-        unsigned retry;
-
-        for (retry = 0u; retry < 3u; retry++) {
-            if ((SHRTIM_TIM_GetPrescaler(SHRTIM1, tmr) == ratio)
-                && (SHRTIM_TIM_GetPeriod(SHRTIM1, tmr) == period)) {
-                break;
-            }
-            SHRTIM_TIM_DisablePreload(SHRTIM1, tmr);
-            SHRTIM_TIM_SetPrescaler(SHRTIM1, tmr, ratio);
-            SHRTIM_TIM_SetPeriod(SHRTIM1, tmr, period);
-            SHRTIM_ForceUpdate(SHRTIM1, tmr);
-            SHRTIM_TIM_EnablePreload(SHRTIM1, tmr);
-            SHRTIM_ForceUpdate(SHRTIM1, tmr);
-        }
-    }
     s_unit[unit].ratio = ratio;
     s_unit[unit].ratio_idx = ratio_idx;
     s_unit[unit].period = period;
     apply_crossbars((unsigned)unit);
+    SHRTIM1->sCommonRegs.CTRL1 &= ~(SHRTIM_CTRL1_TAUPDDIS << (unsigned)unit);
     SHRTIM_ForceUpdate(SHRTIM1, tmr);
+    if (restart) { SHRTIM_TIM_CounterEnable(SHRTIM1, tmr); }
     return SHRTIM_OK;
 }
 
@@ -1363,7 +1363,9 @@ int shrtim_pwm_duty(shrtim_unit_t unit, uint32_t duty_x1000)
     }
 
     s_unit[unit].duty = duty_x1000;
+    SHRTIM1->sCommonRegs.CTRL1 |= SHRTIM_CTRL1_TAUPDDIS << (unsigned)unit;
     apply_crossbars((unsigned)unit);
+    SHRTIM1->sCommonRegs.CTRL1 &= ~(SHRTIM_CTRL1_TAUPDDIS << (unsigned)unit);
     SHRTIM_ForceUpdate(SHRTIM1, s_tmr_id[unit]);
     return SHRTIM_OK;
 }
@@ -1381,20 +1383,29 @@ int shrtim_pwm_duty2(shrtim_unit_t unit, uint32_t duty_x1000)
     }
 
     s_unit[unit].duty2 = duty_x1000;
+    SHRTIM1->sCommonRegs.CTRL1 |= SHRTIM_CTRL1_TAUPDDIS << (unsigned)unit;
     apply_crossbars((unsigned)unit);
+    SHRTIM1->sCommonRegs.CTRL1 &= ~(SHRTIM_CTRL1_TAUPDDIS << (unsigned)unit);
     SHRTIM_ForceUpdate(SHRTIM1, s_tmr_id[unit]);
     return SHRTIM_OK;
 }
 
 int shrtim_pwm_deadtime(shrtim_unit_t unit, uint32_t rise_ns, uint32_t fall_ns)
 {
+    uint32_t running;
+    int rc;
+
     if ((unit == SHRTIM_UNIT_MASTER) || ((unsigned)unit >= SHRTIM_HAL_UNITS)) {
         return SHRTIM_ERR_PARAM;
     }
     if ((s_clk_hz == 0u) || (s_unit[unit].configured == 0u)) {
         return SHRTIM_ERR_STATE;
     }
-    return program_deadtime((unsigned)unit, rise_ns, fall_ns);
+    running = SHRTIM_TIM_IsCounterEnabled(SHRTIM1, s_tmr_id[unit]);
+    if (running) { SHRTIM_TIM_CounterDisable(SHRTIM1, s_tmr_id[unit]); }
+    rc = program_deadtime((unsigned)unit, rise_ns, fall_ns);
+    if (running) { SHRTIM_TIM_CounterEnable(SHRTIM1, s_tmr_id[unit]); }
+    return rc;
 }
 
 void shrtim_pwm_start(shrtim_unit_t unit)
@@ -1820,6 +1831,9 @@ int shrtim_exev_config(uint8_t ev, const shrtim_exev_cfg_t *cfg)
     if (!cfg->from_gpio && (cfg->chip_src > 2u)) {
         return SHRTIM_ERR_PARAM;
     }
+    if (cfg->fast_mode && ((cfg->sensitivity != 0u) || (cfg->filter != 0u))) {
+        return SHRTIM_ERR_PARAM;
+    }
 
     event = (uint32_t)1u << (ev - 1u); /* SHRTIM_EVENT_n bit value */
 
@@ -1904,7 +1918,7 @@ int shrtim_fault_attach(shrtim_unit_t unit, uint8_t mask,
     unsigned i;
 
     if ((unit == SHRTIM_UNIT_MASTER) || ((unsigned)unit >= SHRTIM_HAL_UNITS) ||
-        (mask > 0x3Fu)) {
+        (mask > 0x3Fu) || ((unsigned)out1 > 3u) || ((unsigned)out2 > 3u)) {
         return SHRTIM_ERR_PARAM;
     }
 
@@ -2061,6 +2075,8 @@ int shrtim_capture_read(shrtim_unit_t unit, uint32_t *cpt1, uint32_t *cpt2)
     uint32_t tmr;
     uint64_t saved1;
     uint64_t saved2;
+    volatile uint32_t *iden;
+    uint32_t capture_ie;
     uint32_t f1 = 0u;
     uint32_t f2 = 0u;
     volatile uint32_t spin;
@@ -2072,6 +2088,11 @@ int shrtim_capture_read(shrtim_unit_t unit, uint32_t *cpt1, uint32_t *cpt2)
 
     saved1 = SHRTIM_TIM_GetCaptureTrig(SHRTIM1, tmr, SHRTIM_CAPTUREUNIT_1);
     saved2 = SHRTIM_TIM_GetCaptureTrig(SHRTIM1, tmr, SHRTIM_CAPTUREUNIT_2);
+    iden = tmr_reg(&SHRTIM1->sMasterRegs.MIDEN, (unsigned)unit + 1u);
+    capture_ie = *iden & (SHRTIM_TXIDEN_CPT1IEN | SHRTIM_TXIDEN_CPT2IEN);
+    *iden &= ~(SHRTIM_TXIDEN_CPT1IEN | SHRTIM_TXIDEN_CPT2IEN);
+    *tmr_reg(&SHRTIM1->sMasterRegs.MINTCLR, (unsigned)unit + 1u) =
+        SHRTIM_TXINTCLR_CPT1IC | SHRTIM_TXINTCLR_CPT2IC;
 
     /* Writing the SW trigger bit fires a software capture. */
     SHRTIM_TIM_SetCaptureTrig(SHRTIM1, tmr, SHRTIM_CAPTUREUNIT_1,
@@ -2092,6 +2113,7 @@ int shrtim_capture_read(shrtim_unit_t unit, uint32_t *cpt1, uint32_t *cpt2)
     SHRTIM_TIM_SetCaptureTrig(SHRTIM1, tmr, SHRTIM_CAPTUREUNIT_2, saved2);
 
     if ((f1 == 0u) || (f2 == 0u)) {
+        *iden |= capture_ie;
         return SHRTIM_ERR_STATE;
     }
     if (cpt1 != NULL) {
@@ -2102,6 +2124,7 @@ int shrtim_capture_read(shrtim_unit_t unit, uint32_t *cpt1, uint32_t *cpt2)
     }
     SHRTIM_ClearFlag_CPT1(SHRTIM1, tmr);
     SHRTIM_ClearFlag_CPT2(SHRTIM1, tmr);
+    *iden |= capture_ie;
     return SHRTIM_OK;
 }
 
@@ -2119,6 +2142,7 @@ int shrtim_irq_hook(shrtim_unit_t unit, shrtim_evt_t evt,
         return SHRTIM_ERR_PARAM;
     }
 
+    if (evt == SHRTIM_EVT_MST_SYNC) { unit = SHRTIM_UNIT_MASTER; }
     /* Fault/system events are dispatched from the fault ISR with
      * SHRTIM_UNIT_MASTER regardless of the unit passed here. */
     if ((evt >= SHRTIM_EVT_FAULT1) && (evt <= SHRTIM_EVT_SYSFLT)) {
@@ -2127,8 +2151,10 @@ int shrtim_irq_hook(shrtim_unit_t unit, shrtim_evt_t evt,
         row = (unit == SHRTIM_UNIT_MASTER) ? SHRTIM_HAL_UNITS : (unsigned)unit;
     }
 
+    __disable_irq();
     s_cb[row][evt] = cb;
     s_cb_user[row][evt] = user;
+    __enable_irq();
     return SHRTIM_OK;
 }
 
@@ -2182,11 +2208,13 @@ void shrtim_isr_timer(shrtim_unit_t unit)
 
 void shrtim_isr_fault(void)
 {
+    uint32_t enable = SHRTIM1->sCommonRegs.INTEN;
     unsigned f;
 
     for (f = 0u; f < 6u; f++) {
         uint32_t active = 0u;
 
+        if ((enable & ((f < 5u) ? (1u << f) : SHRTIM_INTEN_FALT6IEN)) == 0u) { continue; }
         switch (f) {
         case 0u:
             active = SHRTIM_IsActiveFlag_FALT1(SHRTIM1);
@@ -2234,7 +2262,8 @@ void shrtim_isr_fault(void)
         }
     }
 
-    if (SHRTIM_IsActiveFlag_SYSFALT(SHRTIM1) != 0u) {
+    if (((enable & SHRTIM_INTEN_SYSFALTIEN) != 0u) &&
+        (SHRTIM_IsActiveFlag_SYSFALT(SHRTIM1) != 0u)) {
         SHRTIM_ClearFlag_SYSFALT(SHRTIM1);
         dispatch(SHRTIM_UNIT_MASTER, SHRTIM_EVT_SYSFLT);
     }
