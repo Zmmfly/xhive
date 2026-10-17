@@ -128,7 +128,7 @@ build/configuration directories, without replacing the SDK's normal host cache.
 | --- | --- | --- | --- |
 | M0 | Requirements, design, validation plan, and this worklog | Review scope and accepted decisions; whitespace check | Committed as `63e7132` |
 | M1a | Shared numerical types/core and linears build entry | Contract/quantization tests, SDK graph regression, full host group, strict C99 | Committed as `37d5961` |
-| M1b | Foundation matrix/vector operations | Four-variant Eigen references and failure tests, default host build | Implementation in progress |
+| M1b | Foundation matrix/vector operations | Four-variant Eigen references, contract/audit regressions, native-f32 ARM evidence | Ready for coordinating-agent review |
 | M2 | LU/solve/inverse/determinant, Cholesky, QR, LDLT, SVD | Per-family four-variant numerical and failure tests; host build | Implementation in progress |
 | M3 | Filters including scalar and matrix Kalman | Per-family reference/long-sequence/state tests; host build | Implementation in progress |
 | M4 | Control foundations, PI/PWM, VVVF | Transform/formula tests, limit/direction/state tests; host build | Implementation in progress |
@@ -284,8 +284,10 @@ owners**, not claims that their pending algorithms already pass tests.
 - f32 uses native float arithmetic. A double workspace member is only an exact
   storage container for a float result, not a hidden f64 computation.
 - Norm uses scaled sum-of-squares to avoid premature overflow. Fixed-point norm
-  scales by the maximum magnitude and may omit contributions below its stated
-  rounding threshold.
+  scales by the maximum magnitude. An initial exponent-gap omission branch was
+  later identified as unreachable for a single q15/q31 block and removed during
+  review; see the foundation follow-up below. It is not a current algorithmic
+  approximation option.
 
 #### Decompositions (decomposition owner)
 
@@ -414,3 +416,312 @@ This is not an ARM or whole-call-chain bound. `nm -u` reports only
 The owner used cached GoogleTest after `pkg-config gtest` failed; no package was
 downloaded by that node. Numeric source SHA-256 for that measurement:
 `a0fadd4e69fdca0e0ef927c6de8a29d709acdb0a1b51df7f8b2d5704a2aae270`.
+The coordinator committed this independent test node as `207eeca`
+(`test(linears): audit fixed-point rounding and boundary contracts`).
+
+### 2026-10-17 — foundation test baseline and early ARM object audit
+
+Before the f32 optimization described below, these commands passed:
+
+```sh
+xmake b
+xmake test -g xhive -v 'linears_test_basic_elementwise/basic_elementwise' 'linears_test_basic_products/basic_products' 'linears_test_basic_reductions/basic_reductions' 'linears_test_basic_contract/basic_contract'
+```
+
+**Confirmed:** 4 Xmake entries, **61 GoogleTest cases** (20 elementwise,
+12 products, 10 reductions, 19 contracts). Full log:
+`/tmp/xhive-fieldctrl-basic-rzX6xG.log`. The numerical owner separately reported
+the same 61 cases passing strict C99, O2, strict-aliasing and UBSan in an isolated
+build against Eigen and the actual quantized inputs. Foundation acceptance is
+held for the ARM f32 implementation improvement and rerun, not represented as
+final by this initial pass.
+
+Using the already installed **Arm GNU Toolchain 14.3.Rel1 / GCC 14.3.1**, the
+build agent compiled all seven then-present `linears/src/*.c` files to isolated
+ARM objects. Each compile used:
+
+```sh
+arm-none-eabi-gcc -std=c99 -pedantic-errors -O2 -fstrict-aliasing -Wall -Wextra -Werror -Wvla -Werror=vla -Walloca -Werror=alloca -fstack-usage -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard -I"$sdk/libs/linears/include" -c "$source" -o "$object"
+```
+
+**Confirmed:** 7 objects, 136 stack-usage entries, all classified `static`.
+Largest measured single-function frame: `linears_svd_f64`, **672 bytes**.
+Undefined-symbol inspection found no `malloc`, `calloc`, `realloc`, `free`,
+`alloca`, or `sbrk`/`_sbrk`. Objects, `.su`, source SHA-256 manifest, undefined
+symbols and disassembly are in
+`/home/zmmfly/prjs/xhive_testspace/fieldctrl/arm-linears-peSzBF`.
+This was object compilation, not an application link or hardware run; a
+single-frame maximum is not a call-chain stack bound.
+
+#### Confirmed ARM f32 performance issue and requested fix
+
+The coordinator requested instruction-level evidence for the original shared
+double-container foundation kernel. ARM `objdump -dr basic.o` confirmed that
+f32 results were numerically rounded in float, but each element still incurred
+software double conversion/comparison helpers on the single-FPU Cortex-M4:
+
+- `input_values` f32 branch: `0x444 __aeabi_f2d`, `0x454 __aeabi_dcmpun`,
+  `0x462 __aeabi_dcmpgt` inside the element loop.
+- `commit_result` f32 loop: `0x3a8 __aeabi_d2f` for every stored element.
+- f32 reduction loop: `0x8fe __aeabi_d2f`, native `vadd.f32` at `0x906`, then
+  `0x90e __aeabi_f2d` and double finite comparisons.
+
+This concrete overhead was sent to the numerical owner for a focused native-f32
+kernel/workspace-member change. The q input-validation branch (`kind>1`) instead
+calls `linears_fixed_from_i64`; source branches in `matrix_compute` and
+`reduction` route q computation only through integer helpers, not through the
+floating evaluators. Presence of f64 helpers somewhere in a mixed-format object
+is not evidence that q operations execute them. Final post-fix ARM and host
+results remain pending.
+
+### 2026-10-17 — initial filters and standalone control checks
+
+After the filter owner confirmed that all filter/Kalman source files were
+complete enough to compile, added only filters to the SDK map and Kconfig.
+The filters standalone entry imports linears production code but does not
+register linears tests. SDK graph assertions check that exact isolation,
+public dependency visibility, C++17/Eigen tests and production-package absence.
+
+```sh
+xmake f -P . -y -m debug --xhive_tests=y --xhive_cross_tests=n
+xmake b
+xmake test -g xhive -v 'filters_test_lowpass/lowpass' 'filters_test_fir/fir' 'filters_test_biquad/biquad' 'filters_test_highpass/highpass' 'xhive_test_sdk_entry/sdk_entry'
+```
+
+**Confirmed:** all 5 Xmake entries passed, with **72 filter GoogleTest cases**
+(20 low-pass, 20 FIR, 16 biquad, 16 high-pass). Log:
+`/tmp/xhive-fieldctrl-filters-initial-WIQfyE.log`. Remaining filter classes and
+Kalman tests have not been accepted by this partial run.
+
+Before registering control in the SDK root, validated its real standalone
+library entry with linears/filters production dependencies and an isolated
+external cache/build directory. No source stub or fake dependency was used.
+Commands ran from the new external work directory:
+
+```sh
+XMAKE_CONFIGDIR="$work" xmake f -P "$sdk/libs/fieldctrl" -y -m debug -o "$work/build"
+XMAKE_CONFIGDIR="$work" xmake test -P "$sdk/libs/fieldctrl" -g xhive -v 'fieldctrl_test_transforms/transforms' 'fieldctrl_test_pi_pwm/pi_pwm' 'fieldctrl_test_vvvf/vvvf'
+```
+
+**Confirmed:** 3 Xmake entries, **64 GoogleTest cases** (28 transforms,
+20 PI/PWM, 16 VVVF), all passed. Complete output is in
+`/home/zmmfly/prjs/xhive_testspace/fieldctrl/host-fieldctrl-base-wmKQDl/build-test.log`.
+This validates a host standalone entry and software formulas, not an ARM
+application or a motor. FOC/SMO/DTC runtime checks are not covered by this run.
+
+The control owner also reported a temporary C99/C++17 O2 ASan/UBSan build passing
+all 64 cases. Two changes were made before that acceptance: f32 trigonometry
+reduces to the nearest quarter turn before multiplying its small residual by
+2*pi, removing an observed roughly 3e-6 VVVF voltage error without widening
+tolerance; the f64 independent reference was changed from double to long double
+to remove approximately 5e-15 reference-side rounding. An initial temporary
+UBSan-only link failed because cached GoogleTest required ASan symbols; linking
+with both ASan and UBSan fixed the validation setup.
+
+### 2026-10-17 — M1b post-fix native-f32 acceptance
+
+The numerical owner replaced the shared double-container float path with a
+small twice-instantiated native float/double evaluator/reducer and added a
+`float` workspace member. Shape, alias, integer and failure-atomicity logic
+remain shared. This supersedes the earlier double-container design note.
+The overflow-size macro's zero divisor in an unevaluated expression was also
+made explicitly nonzero to avoid strict compiler diagnostics for `(0,0)`;
+constant-expression zero/overflow tests were retained.
+
+Executed successfully after those changes:
+
+```sh
+xmake b
+xmake test -g xhive -v 'linears_test_basic_elementwise/basic_elementwise' 'linears_test_basic_products/basic_products' 'linears_test_basic_reductions/basic_reductions' 'linears_test_basic_contract/basic_contract' 'linears_test_numeric_contract/numeric_contract' 'linears_test_audit_fixed_numeric/audit_fixed_numeric'
+```
+
+**Confirmed:** 6 Xmake entries, **104 GoogleTest cases** (61 foundation + 7
+numeric contracts + 36 independent audit), all passed. Log:
+`/tmp/xhive-fieldctrl-basic-native-f32-K77183.log`.
+
+Recompiled `basic.c` using the exact strict C99/O2/Cortex-M4 flags recorded in
+the early ARM audit. Results are in
+`/home/zmmfly/prjs/xhive_testspace/fieldctrl/arm-basic-native-f32-HfRecB`:
+
+- The entire resulting object has **no `__aeabi_f2d` or `__aeabi_d2f` undefined
+  symbols**. `commit_result` has no floating helper call.
+- `input_values` kind 0 now loops over `vldmia`, `vabs.f32`, `vcmp.f32` at
+  `0x3ca` onward. The double-comparison helpers are confined to the separate
+  kind-1 branch starting at `0x43c`; q values take the integer branch.
+- Source inspection confirms the native f32 kernel/reducer uses float operands,
+  intermediates, finiteness tests and workspace storage, not a double bridge.
+- All **64** reported stack entries are static; the largest single function is
+  `matrix_compute`, **264 bytes**. Object/disassembly and source hashes are
+  retained. This is compile/static-path evidence, not a measured MCU speedup.
+
+M1b worklog is ready for review together with the numerical owner's frozen
+foundation implementation/test files. Downstream integration files remain a
+separate milestone and must not be staged merely because their temporary tests
+have already run.
+
+### 2026-10-17 — independent decomposition regression
+
+The audit owner found a real q15 LDLT export bug: the legal symmetric input
+`[32767,128;128,-32767]` at exponent 16384 produces a negative D pivot that
+rounds to representable -32768. Previewing only its positive absolute maximum
+incorrectly returned RANGE; at exponent 0 the same mistake unnecessarily
+increased the block exponent and lost one precision bit. The decomposition
+owner changed shared output scaling to preview signed extrema.
+
+**Delegated before/after evidence:** isolated C99/C++17 O2 ASan/UBSan audit
+reports contain 26 tests with 2 failures before the fix
+(`/tmp/xhive-audit-decomp-cOgVUD/regression_before.xml`) and 26 with no failures
+after (`/tmp/xhive-audit-decomp-fixed-bDX3uE/regression_after.xml`). The audit
+covers four variants, extreme 1x1 SVD, wide rank-1 convergence budgets and null
+basis, singular LDLT failure atomicity, empty/overflow dimensions, metadata
+aliasing and capacity. No second confirmed defect was reported.
+
+The build agent subsequently executed:
+
+```sh
+xmake b
+xmake test -g xhive -v 'linears_test_audit_decomp_boundaries/audit_decomp_boundaries'
+```
+
+**Confirmed:** 1 Xmake entry, **26 GoogleTest cases in 6 suites**, all passed.
+Log: `/tmp/xhive-fieldctrl-audit-decomp-Mhq9PM.log`. This does not replace the
+full per-factorization numerical suite recorded next.
+
+### 2026-10-17 — full decomposition and basic-filter suites
+
+Ran the default `xmake b`, then one `xmake test -g xhive -v` invocation with these
+17 exact entries:
+
+```text
+linears_test_decomp_lu/decomp_lu
+linears_test_decomp_solve/decomp_solve
+linears_test_decomp_determinant/decomp_determinant
+linears_test_decomp_cholesky/decomp_cholesky
+linears_test_decomp_qr/decomp_qr
+linears_test_decomp_contract/decomp_contract
+linears_test_decomp_ldlt/decomp_ldlt
+linears_test_decomp_svd/decomp_svd
+linears_test_audit_decomp_boundaries/audit_decomp_boundaries
+filters_test_lowpass/lowpass
+filters_test_fir/fir
+filters_test_biquad/biquad
+filters_test_highpass/highpass
+filters_test_moving_average/moving_average
+filters_test_median/median
+filters_test_ema/ema
+filters_test_complementary/complementary
+```
+
+**Confirmed:** all 17 Xmake entries passed. GoogleTest totals were **424 passed,
+2 skipped, zero failed**: six core decomposition files 100 passed; LDLT 90
+passed; SVD 68 passed/2 skipped; independent decomposition audit 26 passed; eight
+basic-filter files 140 passed. Full log:
+`/tmp/xhive-fieldctrl-decomp-filters-Amb3X6.log`.
+
+SVD skips are precisely
+`Svd/0.FixedExtremeExponentsPreserveNormalizedFactors` (f32) and the same test
+under `Svd/1` (f64). This checks explicit fixed-point block exponents near
++/-15000; floating formats ignore that exponent and the test is inapplicable.
+Both q variants execute it. These are not skipped NaN/Inf or convergence tests.
+
+The decomposition owner separately reported strict GCC/Clang C99 and independent
+C99/C++17 public-header checks, plus ASan/UBSan core, LDLT and SVD runs. An initial
+Cholesky test fixture used Eigen `B*B^T` whose two triangles differed by floating
+rounding; it was changed to mirror one triangle explicitly, preserving the
+API's exact-symmetry contract rather than relaxing production validation.
+
+**Delegated audit frame detail:** the audit owner's non-instrumented host LDLT
+objects reported a maximum 272-byte frame, all static. SVD reported a maximum
+336-byte frame; some q entries were classified `dynamic,bounded` (320 or 304
+bytes), with no unbounded entry. This differs from the separate ARM result and
+must not be reported as “all host frames static.” The initial audit utility's
+all-static assertion was corrected to admit the compiler's bounded dynamic
+classification. q-only SVD/LDLT instantiations had only integer-core/stack-guard
+undefined symbols; no libm or allocator dependency.
+
+The basic-filter owner also reported 140/140 O2/strict-aliasing cases and the
+same families under ASan/UBSan. An O2 `maybe-uninitialized` warning on biquad's
+result was resolved by expressing the already validated nonzero section count
+as a `do/while` loop, not by adding an unreachable check or dummy initialization.
+GCC strict C99 accepted all six filter source files; a separate Clang check then
+found an anonymous `offsetof` type in matrix Kalman to be a C23 extension. That
+portability fix and final Eigen-based Kalman acceptance remain pending.
+
+### 2026-10-17 — foundation final-review follow-up
+
+A real strict-compiler diagnostic for `LINEARS_SIZE_MUL(0, runtime_count)` led
+the numerical owner to refine the size-macro guard while retaining constant
+expression behavior and checked arithmetic. The added
+`RuntimeAndLiteralZeroMacrosStayChecked` case exercises literal/runtime zero
+and an 8x8 boundary-value matrix.
+
+The build agent reran `xmake b` and the same six foundation/numeric/audit
+selectors used above: **105 GoogleTest cases in six Xmake entries passed**
+(62 foundation + 7 contracts + 36 audit), log
+`/tmp/xhive-fieldctrl-basic-final-J9hPaC.log`. This is a real intermediate result,
+not the final post-review count: the coordinator then requested removal of an
+unreachable fixed-norm branch and an additional maximum-raw-span regression.
+For one block exponent, nonzero q15/q31 raw magnitudes can span at most 15/31
+binary exponents, so the old `gap>32` skip could never execute. Its removal is
+review cleanup of dead logic, not a change in attainable numerical behavior.
+After removal, added two maximum-raw-span norm tests with
+`{INT16_MIN,1}` / `{INT32_MIN,1}` at shared exponents -100, 0 and 100.
+The build agent reran `xmake b` and all six foundation/numeric/audit selectors:
+**107 GoogleTest cases in six Xmake entries passed** (64 foundation + 7 numeric
+contracts + 36 independent numeric audit), log
+`/tmp/xhive-fieldctrl-basic-reviewed-c5PXn5.log`. This is the final reviewed M1b
+host result. The owner separately reran all 64 foundation cases under strict
+C99/O2/strict-aliasing/ASan/UBSan. f32 code was unchanged by this last cleanup;
+the prior ARM native-f32 disassembly observation still describes its code path.
+
+### Control review defects pending final verification
+
+The independent control reviewer reproduced three finite-input defects under
+ASan/UBSan without sanitizer diagnostics. Passing ordinary-scale baseline tests
+did not expose these numerical branches:
+
+- DTC floating subnormal flux `(2*denorm_min, denorm_min)` was assigned sector 2,
+  although its angle is 26.565 degrees and belongs to sector 1. Absolute
+  alpha/sqrt(3) rounding created a false boundary; the owner is normalizing the
+  comparison before sector selection.
+- FOC radial anti-windup used a dot product whose sign test underflowed at
+  ordinary finite tiny radii `2^-80` (f32) / `2^-600` (f64). Integral state could
+  continue growing under saturation. The speed-loop product sign test had the
+  same issue. The owner is replacing these with scale-safe sign decisions.
+- SVPWM failed common-scale invariance for alpha=bus=denorm_min, beta=0,
+  returning duties `(1,0.5,0.5)` instead of the normalized limited-vector result.
+  The coordinator authorized a narrow base implementation/test fix.
+
+The independent pre-fix control audit reported 16 cases: 8 passed and 8 failed
+in the floating variants; q variants passed these examples. Artifacts are in
+`/tmp/fieldctrl-xhive-audit-gzIbFd`. The earlier 64-case control baseline remains
+historical evidence, not acceptance of the pending repaired versions.
+
+### 2026-10-17 — isolated sanitizer checkpoint and output-path correction
+
+A separately configured Xmake ASan/UBSan/O2/strict-aliasing linears run completed
+successfully: **15 Xmake entries, 389 GoogleTest cases passed and the same two
+fixed-exponent-only floating SVD cases skipped**. This checkpoint preceded the
+two final maximum-raw-span norm tests. Compiler commands in the log confirm
+`-O2 -fstrict-aliasing -fsanitize=address,undefined
+-fno-sanitize-recover=all -fno-omit-frame-pointer` on production and test objects,
+plus C99/C++17. The isolated cache and full log are at
+`/home/zmmfly/prjs/xhive_testspace/fieldctrl/host-sanitized-QuOKXV`.
+
+**Confirmed environment error:** invoking Xmake 3.0.8 from that temporary
+working directory with `-P` pointing at the SDK and `-o` set to an absolute
+external build directory resulted in output paths being rebased twice. Actual
+objects/binaries landed at
+`/home/zmmfly/prjs/xhive_testspace/xhive_testspace/fieldctrl/host-sanitized-QuOKXV/build`,
+outside the specifically authorized application directory. The expected cache
+and log stayed in the correct directory. The build agent detected the mismatch
+in compiler commands and verified the unexpected directory, stopped using that
+configuration, and reported it to the coordinator before any cleanup.
+
+Only the newly generated, identified output tree is eligible for authorized
+relocation/cleanup; existing neighboring data must not be touched. Future
+isolated runs will keep cwd at the real source project, isolate only
+`XMAKE_CONFIGDIR`/build output, and assert resolved target paths before compiling.
+The earlier standalone-control output location is also being checked. This
+incident does not turn the executed test results into a hardware result or
+justify claiming the final suite complete; final post-fix regression is pending.

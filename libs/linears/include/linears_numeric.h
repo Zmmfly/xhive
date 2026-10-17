@@ -6,7 +6,10 @@
  * working value has 2^30 <= abs(mantissa) < 2^31 and represents
  * mantissa * 2^(exponent - 31). Zero is always {0, 0}. There are 31 significant
  * magnitude bits. Each arithmetic result is rounded to nearest, with exact
- * halfway cases rounded away from zero. No saturation or wraparound is used.
+ * halfway cases rounded away from zero. A successful primitive's rounding error
+ * is at most half an output mantissa unit (relative error <= 2^-31 for a nonzero
+ * normalized result). This is not a final error bound for a chain of operations
+ * or a cancellation-sensitive dot product. No saturation or wraparound is used.
  * Values outside LINEARS_EXPONENT_MIN..LINEARS_EXPONENT_MAX fail with RANGE.
  *
  * Inputs to arithmetic and comparison must be canonical working values produced
