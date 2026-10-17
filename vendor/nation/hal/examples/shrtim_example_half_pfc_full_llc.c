@@ -50,10 +50,12 @@
  *  - 约束：CENTER 模式共享同一个 master，所有 CENTER 单元必须同频（本例
  *    两腿始终同频）。PFC 为边沿模式且不锁相，不占用 master。
  *  - 在线调频：llc_freq() 依次更新两腿（每次都会搬 master 锚）；两次调用
- *    之间有短暂过渡窗口，失败回滚期间也不保证一致——“同频”是成功提交后
- *    的稳态约束。要求严格无毛刺时应在停波状态下改频。
+ *    之间有短暂过渡窗口，失败后部分更新状态也不保证一致——“同频”是全部
+ *    调用成功后的稳态约束（示例无自动回滚）。要求严格无毛刺时应在停波
+ *    状态下改频。
  *  - PA9/PA10 兼作 USART1：要同时保留两个串口引脚，PFC 也要迁走（PFC→E/F、
- *    LLC→C/D 之类），且 pinmux/故障引脚需随单元一起迁移。
+ *    LLC→C/D 之类），且输出 pinmux 与 fault_attach 的目标单元随迁移更新；
+ *    FLT1 是固定输入引脚，不随 PWM 单元迁移。
  * =====================================================================
  */
 
@@ -170,7 +172,8 @@ int shrtim_example_half_pfc_full_llc_init(void)
     /* 注：pinmux/fault/ADC 参数均为固定合法常量，失败只可能来自参数
      * 错误，故说明性忽略 (void)；pwm_init 等可因时序求解失败，必须检查。 */
 
-    /* 电流采样：PFC 电感电流 + LLC 谐振腔电流，均取导通窗口电中点。 */
+    /* 电流采样：PFC 电感电流 + LLC 谐振腔电流，均取名义逻辑脉宽中点
+     * （CMP1/2，未补偿死区/驱动延迟，实际采样位置需功率级校准）。 */
     rc = adc_midpoint_setup(1u, PFC_UNIT);
     if (rc != SHRTIM_OK)
     {
@@ -217,8 +220,9 @@ void shrtim_example_half_pfc_full_llc_stop(void)
  *
  * Refreshes the PFC current-sampling midpoint afterwards.
  *
- * @param[in] duty_x1000 PFC x1 duty in 0.1 % steps.
- * @return #SHRTIM_OK, or #SHRTIM_ERR_PARAM outside 0..1000.
+ * @param[in] duty_x1000 PFC x1 duty in 0.1 % steps (1..999; the range
+ *                  does not guarantee a pulse wider than the dead-time).
+ * @return #SHRTIM_OK, or #SHRTIM_ERR_PARAM outside 1..999.
  */
 int shrtim_example_half_pfc_full_llc_pfc_duty(uint32_t duty_x1000)
 {

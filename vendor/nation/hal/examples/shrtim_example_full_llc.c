@@ -37,7 +37,8 @@
  *    对 Q1(A1)+Q4(B2) / Q2(B1)+Q3(A2)（swap 已实测，见 demo T08）。
  *  - CENTER 模式下 pwm_init()/pwm_freq() 内部自动配置并跟随共享 master
  *    锚周期（硬件实测路径），示例不手写 master 周期；约束：CENTER 单元
- *    必须同频（两腿始终同频，满足）。
+ *    必须同频（本例两腿全部调用成功后保持同频；顺序更新及失败后的
+ *    部分更新状态不保证一致）。
  *  - 在线调频存在两腿先后更新的过渡窗口；严格无毛刺需求停波改频。
  *  - 软启动从最高频率（150 kHz）起步下降；调频钩子做了范围限幅。
  *  - PA9/PA10 兼作 USART1：需要串口时两桥臂整体迁移（pinmux 随单元走）。
@@ -219,10 +220,10 @@ int shrtim_example_full_llc_freq_set(uint32_t hz)
  *
  * This is the bookkeeping value of the last request where BOTH legs (and
  * the shared anchor) were updated successfully - not a live measurement,
- * and during the transient window or after a failed/rolled-back request
- * the legs may not match it. Callers must serialise control updates and
- * must not let another CENTER-mode user re-configure the shared master at
- * a different frequency.
+ * and during the transient window or after a failed/partially applied
+ * request the legs may not match it. Callers must serialise control
+ * updates and must not let another CENTER-mode user re-configure the
+ * shared master at a different frequency.
  *
  * @return Last committed frequency in Hz.
  */

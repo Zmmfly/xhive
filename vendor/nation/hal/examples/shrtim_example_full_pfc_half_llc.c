@@ -181,7 +181,8 @@ int shrtim_example_full_pfc_half_llc_init(void)
     /* 注：pinmux/fault 参数为固定合法常量，说明性忽略；pwm_init 可因
      * 时序求解失败，必须检查返回值。 */
 
-    /* 两路电流采样：PFC 桥臂 1 电流 + LLC 谐振腔电流，均取导通中点。 */
+    /* 两路电流采样：PFC 桥臂 1 电流 + LLC 谐振腔电流，均取名义逻辑脉宽
+     * 中点（CMP1/2，未补偿死区/驱动延迟，实际采样位置需功率级校准）。 */
     rc = adc_midpoint_setup(1u, PFC_LEG1_UNIT);
     if (rc != SHRTIM_OK)
     {
@@ -193,8 +194,10 @@ int shrtim_example_full_pfc_half_llc_init(void)
 /**
  * @brief Start both converters (PFC legs back-to-back, then the LLC).
  *
- * Starting the two PFC units from the same stopped state keeps their phase
- * offset constant; note this is co-phase, not 180 deg interleaved drive.
+ * Starting the two PFC units from the same stopped state leaves their
+ * inter-leg phase offset constant but uncontrolled: the legs are
+ * same-frequency and non-interleaved, with no controlled cross-leg phase
+ * relationship.
  */
 void shrtim_example_full_pfc_half_llc_start(void)
 {
@@ -217,8 +220,9 @@ void shrtim_example_full_pfc_half_llc_stop(void)
  * Both legs always share the duty so their (constant) phase offset is
  * preserved. The PFC sampling midpoint is refreshed afterwards.
  *
- * @param[in] duty_x1000 PFC x1 duty in 0.1 % steps.
- * @return #SHRTIM_OK, or #SHRTIM_ERR_PARAM outside 0..1000.
+ * @param[in] duty_x1000 PFC x1 duty in 0.1 % steps (1..999; the range
+ *                  does not guarantee a pulse wider than the dead-time).
+ * @return #SHRTIM_OK, or #SHRTIM_ERR_PARAM outside 1..999.
  */
 int shrtim_example_full_pfc_half_llc_pfc_duty(uint32_t duty_x1000)
 {

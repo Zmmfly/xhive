@@ -168,8 +168,10 @@ void shrtim_example_bridgeless_pfc_stop(void)
  *
  * Refreshes the current-sampling midpoint afterwards.
  *
- * @param[in] duty_x1000 Fast-leg x1 duty in 0.1 % steps.
- * @return #SHRTIM_OK, or #SHRTIM_ERR_PARAM outside 0..1000.
+ * @param[in] duty_x1000 Fast-leg x1 duty in 0.1 % steps (1..999; the
+ *                  range does not guarantee a pulse wider than the
+ *                  dead-time).
+ * @return #SHRTIM_OK, or #SHRTIM_ERR_PARAM outside 1..999.
  */
 int shrtim_example_bridgeless_pfc_fast_duty(uint32_t duty_x1000)
 {
