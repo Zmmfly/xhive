@@ -127,7 +127,7 @@ build/configuration directories, without replacing the SDK's normal host cache.
 | ID | Commit-sized scope | Required review/validation | State |
 | --- | --- | --- | --- |
 | M0 | Requirements, design, validation plan, and this worklog | Review scope and accepted decisions; whitespace check | Committed as `63e7132` |
-| M1a | Shared numerical types/core and linears build entry | Contract/quantization tests, SDK graph regression, full host group, strict C99 | Ready for coordinating-agent review |
+| M1a | Shared numerical types/core and linears build entry | Contract/quantization tests, SDK graph regression, full host group, strict C99 | Committed as `37d5961` |
 | M1b | Foundation matrix/vector operations | Four-variant Eigen references and failure tests, default host build | Implementation in progress |
 | M2 | LU/solve/inverse/determinant, Cholesky, QR, LDLT, SVD | Per-family four-variant numerical and failure tests; host build | Implementation in progress |
 | M3 | Filters including scalar and matrix Kalman | Per-family reference/long-sequence/state tests; host build | Implementation in progress |
@@ -267,3 +267,150 @@ library trees. `git diff --check` passed; the untracked
 `libs/linears/xmake.lua` was also checked with
 `git diff --no-index --check /dev/null libs/linears/xmake.lua` and produced no
 whitespace diagnostics (exit 1 denotes the new-file difference).
+The coordinator reviewed and committed M1a as `37d5961`
+(`feat(linears): add static fixed-point numeric foundation`).
+
+### 2026-10-17 — downstream decisions before implementation acceptance
+
+The following are **confirmed design reports from the named implementation
+owners**, not claims that their pending algorithms already pass tests.
+
+#### Foundation operations (numerical owner)
+
+- Raw copy preserves input bits and exponent with `memmove`; unlike computed
+  fixed-point results, it does not requantize or renormalize an existing block.
+  Computed results normalize their block exponent; zero uses exponent 0 and
+  identity uses exponent 1.
+- f32 uses native float arithmetic. A double workspace member is only an exact
+  storage container for a float result, not a hidden f64 computation.
+- Norm uses scaled sum-of-squares to avoid premature overflow. Fixed-point norm
+  scales by the maximum magnitude and may omit contributions below its stated
+  rounding threshold.
+
+#### Decompositions (decomposition owner)
+
+- Typed decomposition workspaces use `float`, `double`, or `linears_fixed_t`
+  arrays and element capacities. This deliberately differs from the foundation
+  API's union-unit pointer plus byte capacity.
+- No arbitrary 64-dimension or 128-sweep compile-time limit is retained.
+  Dimensions are bounded by checked size arithmetic and caller capacity;
+  Jacobi SVD is bounded by the caller's finite `max_sweeps` budget. The public
+  dimension-parameterized workspace macros give the required maximum storage.
+- LU separates L and U so a q block does not mix differently scaled factors.
+  Solve supports multiple right-hand sides without constructing an inverse;
+  determinant is a 1x1 matrix so it carries a fixed-point exponent.
+- Householder QR returns full `m*m` Q and `m*n` R for tall, square, or wide
+  matrices, including rank deficiency. Cholesky requires symmetry and positive
+  computed pivots. Output matrices are failure-atomic; permutation/block
+  metadata may be partially updated on a numerical failure as documented.
+- LDLT follows symmetric complete pivoting with 1x1/2x2 blocks (Bunch–Parlett /
+  Higham references in the library documentation). A shared q D exponent may
+  lose tiny pivots; success is not a condition-number guarantee.
+- SVD uses scaled cyclic one-sided Jacobi, transposes wide problems, returns
+  thin U/S/V, and completes numerical-zero columns by two-pass MGS. The owner
+  documents its zero threshold and does not claim LAPACK-grade relative
+  accuracy for the smallest singular values.
+- **Delegated check:** shared four-variant adapter compiled using
+  `cc -std=c99 -Wall -Wextra -Werror -pedantic` in
+  `/tmp/xhive-decomp-compile-qtpbJy`; this does not yet validate factorization
+  results.
+
+#### Filters (filter owner and Kalman design documents)
+
+- Low-pass/EMA uses caller-supplied dimensionless alpha in `[0,1]`; high-pass
+  uses `alpha*(previous_output + input - previous_input)`. No hidden sample-time
+  conversion or coefficient design is performed.
+- FIR coefficient order is increasing delay; normalized SOS uses transposed
+  direct form II and caller-owned tentative state. Moving average recomputes
+  its zero-padded finite window rather than retaining a drifting sum. Median
+  uses caller insertion-sort scratch and averages the two central elements for
+  an even window. Complementary filtering does not wrap angles.
+- A failed filter step preserves persistent state and output; scratch is
+  unspecified. Context/buffer ownership and serialization are caller contracts.
+- Kalman separates reset/predict/update, uses Joseph covariance in both scalar
+  and matrix forms, solves innovation equations without an inverse, and
+  symmetrizes stored covariance. Symmetrization is not PSD projection.
+  State/process PSD is a caller precondition; symmetry/diagonal signs and
+  measurement/innovation SPD are checked as documented. No automatic jitter or
+  regularization is added.
+
+#### Control (control owner)
+
+- Angles are electrical turns in `[0,1)`; electrical frequency is signed Hz.
+  Mechanical Hz converts through pole-pair count. Clarke is amplitude-invariant;
+  Park uses `d=alpha*cos+beta*sin`, `q=-alpha*sin+beta*cos`.
+- Fixed-point trigonometry uses a bounded 32-step CORDIC on the shared integer
+  scalar core. q15 and q31 internal integration/phase/prediction/flux state
+  retains normalized q31 working precision; only public outputs quantize to
+  q15. This prevents small per-sample increments disappearing in q15 state.
+- PI uses conditional integration; vector limiting is radial; SVPWM subtracts
+  max/min common mode. VVVF accepts explicit signed frequency and amplitude.
+- FOC rejects a joint integration increment when its dot product with the
+  saturation residual is positive and recomputes output. SMO uses the existing
+  low-pass filter (q31 internally even for q15), declared direction and discrete
+  low-pass phase compensation. Lock requires observable back-EMF/speed/current
+  conditions; standstill self-start is not claimed.
+- DTC uses actually applied voltage, flux/torque hysteresis, six-sector active
+  vectors, and chooses 000/111 zero state by the fewest transitions from the
+  previous switching state. Initial flux bias and low-speed integrator drift
+  are documented limitations.
+- Published references include Park (1929), Volder (1959), Åström/Hägglund
+  (1995), and van der Broeck (1988); exact citations are maintained in each
+  library's algorithm documentation.
+
+#### Build fixture preparation
+
+Created `.config` and `xmake.lua` only in the authorized external application
+folder. The fixture selects the three libraries, disables LTO, chooses the
+existing Cortex-M4 single-FPU configuration, enables `-fstack-usage`, rejects VLA
+and `alloca`, and requests a linker map. Its real API-use source is pending stable
+headers. **No cross configure/build or hardware action has run yet.**
+
+### 2026-10-17 — independent fixed-point audit test node
+
+The independent test owner added `libs/linears/test/audit_fixed_numeric.cc`
+without changing production code. The following SDK command passed:
+
+```sh
+xmake test -g xhive -v 'linears_test_audit_fixed_numeric/audit_fixed_numeric'
+```
+
+**Confirmed:** one Xmake entry, **36 GoogleTest cases in 11 suites**, all passed
+(44 ms GoogleTest runtime). Full output is retained at
+`/tmp/xhive-fieldctrl-audit-fixed-moKIhe.log`. The existing linears sources,
+including newly completed decomposition wrappers, compiled/linked for this run;
+the selected test exercises the numeric API, not decomposition correctness.
+
+Coverage includes all 65,536 q15 mantissas at three exponents (196,608 exact
+round trips), tie-away rounding, exponent gaps 31/32/33, cancellation,
+`INT64_MIN`, 4,000 multiply/divide references, 5,015 square-root references,
+500 mixed-exponent block exports, output atomicity, alias/alignment rejection,
+size overflow, and static workspace macros.
+
+**Delegated independent-owner check:** the same 36 cases passed an isolated
+C99/C++17 `-O2 -fstrict-aliasing -fsanitize=address,undefined
+-fno-sanitize-recover=all` build in 37 ms; XML is retained at
+`/tmp/xhive-audit-fixed-aVvjAd/results.xml`. No production numeric defect was
+reported by that audit.
+
+**Platform limitation:** this test oracle explicitly requires binary
+`long double` with at least 64 significand bits. Linux x86-64 meets that
+requirement. A host where `long double` equals 53-bit double (including the
+usual MSVC configuration) fails the oracle's compile-time assertion rather than
+silently skipping or weakening the audit. Other host platforms are unverified.
+
+Additional **delegated independent-owner evidence** on GCC/G++ 15.2.0:
+
+```sh
+cc -std=c99 -pedantic-errors -O2 -g -Wall -Wextra -Werror -Werror=vla -Werror=alloca -Wframe-larger-than=1024 -fstack-usage -fstrict-aliasing -Ilibs/linears/include -c libs/linears/src/numeric.c -o /tmp/xhive-audit-fixed-aVvjAd/numeric_plain.o
+```
+
+A plain C++17/O2/strict-aliasing audit binary also passed 36/36 cases (15 ms).
+Both XML reports contain 36 tests, zero failures/errors/disabled tests.
+Non-instrumented numerical-core `.su` entries are all static; the largest
+reported single-function frame is `export_block`, **112 bytes** on this host.
+This is not an ARM or whole-call-chain bound. `nm -u` reports only
+`__stack_chk_fail`, no heap/float helper; object `.data` and `.bss` are zero.
+The owner used cached GoogleTest after `pkg-config gtest` failed; no package was
+downloaded by that node. Numeric source SHA-256 for that measurement:
+`a0fadd4e69fdca0e0ef927c6de8a29d709acdb0a1b51df7f8b2d5704a2aae270`.
