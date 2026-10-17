@@ -44,13 +44,16 @@ xmake
 xmake test -g xhive -v
 ```
 
-The host test group contains the base64/bitmap/divsufsort GoogleTest cases, C2
-MMIO mock and C/C++ header/link checks, and the SDK entry/target-selection
-build-system regressions. Test
+The host test group contains the base64/bitmap/divsufsort/ezctrl GoogleTest cases,
+the linears/filters/fieldctrl numerical and software-control tests, C2 MMIO mock
+and C/C++ header/link checks, and the SDK entry/target-selection build-system
+regressions. Test
 targets are non-default: `xmake` builds libraries, while `xmake test` builds and
 runs the tests. The C2 checks use Python 3 and GCC/Clang-compatible `cc` and `c++`
 executables on `PATH`; the native test group does **not** invoke a RISC-V compiler.
-GoogleTest is managed by Xmake and may need downloading on the first configure.
+GoogleTest and the Eigen 3.4.0 numerical reference are managed by Xmake and may
+need downloading on the first configure. Eigen is a host-test dependency only;
+production and embedded targets do not depend on it.
 Kconfig tools from the application requirements above are not needed for these
 host checks. Lua regression scripts also use Python 3 for temporary-directory
 cleanup that does not traverse directory symlinks. Test workspaces must be
@@ -64,10 +67,11 @@ compatible host compilers and have not been validated.
 xmake test -v 'base64_test_*/*'
 xmake test -v 'divsufsort_test_*/*'
 xmake test -v 'ezctrl_test_*/*'
+xmake test -g xhive -v 'linears_test_*/*' 'filters_test_*/*' 'fieldctrl_test_*/*'
 xmake test -v 'xhive_test_c2/host'
 xmake test -v 'xhive_test_sdk_entry/sdk_entry'
 
-# A libraries-only build does not require GoogleTest or Python.
+# A libraries-only build does not require GoogleTest, Eigen, or Python.
 xmake f -P . -y --xhive_tests=n --xhive_cross_tests=n
 xmake
 # Re-enable host tests.
@@ -85,8 +89,10 @@ and `xhive_test_c2_full/full` selectors.
 
 ### Standalone library tests (optional)
 
-base64, bitmap, divsufsort, and ezctrl each load their own test definitions, so
-`-P` also works against a library directory. Use a subshell to isolate both the
+base64, bitmap, divsufsort, ezctrl, linears, filters, and fieldctrl each load their
+own test definitions, so `-P` also works against a library directory. Only the
+selected library's tests are registered; its production dependencies are loaded
+without their tests. Use a subshell to isolate both the
 working directory and the configuration cache (POSIX shell):
 
 ```sh
@@ -98,6 +104,27 @@ Standalone mode takes host options only (`-y -m debug`); SDK-root-only options
 such as `--xhive_tests` and `--xhive_cross_tests` do not apply there, and the
 compile-only cross targets are registered only in the SDK-root project. Prefer
 the SDK-root selectors above for day-to-day work.
+
+### Numerical and motor-control libraries
+
+[linears](libs/linears/README.md), [filters](libs/filters/README.md), and
+[fieldctrl](libs/fieldctrl/README.md) provide C99 `f32`, `f64`, `q15`, and `q31`
+APIs with caller-owned state/workspace and no dynamic allocation. Fixed-point
+values carry explicit binary exponents and use integer arithmetic. Select them
+in application Kconfig using `LIBS_ADD_LINEARS`, `LIBS_ADD_FILTERS`, or
+`LIBS_ADD_FIELDCTRL`; filters selects linears, and fieldctrl selects both.
+The SDK default host build includes all three.
+
+These libraries do not access motor hardware or implement board-level protection.
+The [worklog](docs/fieldctrl-worklog.md) distinguishes numerical tests, software
+plant simulations, and ARM compile/link checks from hardware validation. A
+[reproducible N32H474 compile/link fixture](libs/fieldctrl/test/compile/n32h474/README.md)
+preserves all four formats' public algorithm symbols; copy it to a fresh external
+application directory as documented there. It has no hardware-run instructions.
+The independent fixed-point audit requires binary `long double` with at least
+64 significand bits; the usual MSVC 53-bit `long double` does not meet that
+reference-precision requirement. Linux results do not establish compatibility
+with every host compiler.
 
 ### Optional cross-compiler checks
 

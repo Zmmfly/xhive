@@ -30,7 +30,7 @@ xmake test -g xhive -v
 - `xmake`：构建默认库目标，**不会自动构建或运行测试**。
 - `xmake test -g xhive -v`：构建并运行 `xhive` 主机测试组。
 - SDK 独立模式不生成某个板卡的固件；构建固件仍需使用应用工程。
-- 首次配置可能通过 Xmake 下载 GoogleTest，需保证依赖可获取。
+- 首次配置可能通过 Xmake 下载 GoogleTest 与 Eigen 3.4.0 数值参考库，需保证依赖可获取；Eigen 只用于主机测试。
 
 当前独立开发流程已在 Linux 上验证。其他主机平台需要兼容的编译器，尚未完成同等验证；不能假定默认 MSVC 环境可直接运行使用 GCC/Clang 参数的 C2 测试脚本。
 
@@ -55,7 +55,7 @@ xmake test -g xhive -v
 
 - Xmake ≥ 3.0.0。
 - 可用的主机编译工具链。
-- 关闭测试后，不要求 GoogleTest、Python 或嵌入式工具链。
+- 关闭测试后，不要求 GoogleTest、Eigen、Python 或嵌入式工具链。
 
 ### 运行主机测试
 
@@ -63,7 +63,7 @@ xmake test -g xhive -v
 
 - Python ≥ 3.10，用于 C2 软件检查和 Lua 回归脚本的安全临时目录清理。
 - `PATH` 中提供 GCC/Clang 兼容的 `cc`、`c++` 命令，供 C2 测试脚本使用。
-- GoogleTest，由 Xmake 的包管理器管理。
+- GoogleTest 与 Eigen 3.4.0，由 Xmake 的包管理器管理；生产库和嵌入式目标不依赖 Eigen。
 
 主机测试组不会调用 RISC-V 编译器。它不依赖应用工程使用的 `genconfig` 或 `menuconfig`。
 
@@ -101,6 +101,9 @@ xmake test -g xhive -v
 | ezctrl PID 可选项：微分先行/滤波、积分限幅/分离、设定值权重 | `ezctrl_test_pid_options/pid_options` |
 | ezctrl C++ 包装层 | `ezctrl_test_pid_cpp/pid_cpp` |
 | ezctrl C/C++ 头文件及链接检查 | `ezctrl_test_consumer/consumer` |
+| linears 四版基础运算、分解及数值边界 | `linears_test_*/*` |
+| filters 四版流式滤波、标量/矩阵 Kalman | `filters_test_*/*` |
+| fieldctrl 四版控制基础、VVVF、FOC/SMO、DTC 软件测试 | `fieldctrl_test_*/*` |
 | C2 MMIO mock、C/C++ 头文件及链接检查 | `xhive_test_c2/host` |
 | SDK 入口、配置隔离、错误传播与清理检查 | `xhive_test_sdk_entry/sdk_entry` |
 | 可选 MCU/RTOS 目标选择 | `xhive_test_target_selection/target_selection` |
@@ -117,7 +120,7 @@ xmake test -v 'xhive_test_sdk_entry/sdk_entry'
 
 ### 只用某个库自己的测试入口（可选）
 
-base64、bitmap、divsufsort、ezctrl 都在自身上下文加载测试定义，因此也可用 `-P` 直接针对库目录测试。用子 shell 同时隔离当前目录和配置缓存（POSIX shell）：
+base64、bitmap、divsufsort、ezctrl、linears、filters、fieldctrl 都在自身上下文加载测试定义，因此也可用 `-P` 直接针对库目录测试。独立入口只注册所选库的测试，加载其生产依赖时不会注册依赖库的测试。用子 shell 同时隔离当前目录和配置缓存（POSIX shell）：
 
 ```sh
 component="$PWD/libs/base64"   # 可换成 libs/bitmap、libs/divsufsort、libs/ezctrl
@@ -165,6 +168,20 @@ C2 脚本还支持 `--cc`、`--cxx`、`--clang` 参数，可显式选择对应�
 
 `tests/divsufsort.lua` 与 `tests/riscv_divsufsort.lua` 已删除：divsufsort 的主机覆盖由 `divsufsort_test_*/*` 提供，裸机编译检查由该库在 `xhive_cross` 组注册的对象目标提供。
 
+## 数值与电机控制算法库
+
+[linears](libs/linears/README.md)、[filters](libs/filters/README.md) 和 [fieldctrl](libs/fieldctrl/README.md) 提供 C99 的 `f32`、`f64`、`q15`、`q31` API。状态与工作区由调用者持有，不进行动态分配；定点数据带显式二进制指数，计算使用整数算术。各库头文件规定容量、对齐、别名与失败后的状态。
+
+应用通过 Kconfig 选择 `LIBS_ADD_LINEARS`、`LIBS_ADD_FILTERS`、`LIBS_ADD_FIELDCTRL`：filters 自动选择 linears，fieldctrl 自动选择两者。SDK 默认主机构建包含全部三个库。
+
+```sh
+xmake test -g xhive -v 'linears_test_*/*' 'filters_test_*/*' 'fieldctrl_test_*/*'
+```
+
+这些是软件算法库，不操作电机硬件，也不代替板级保护、参数整定和实机验证。具体的数值测试、软件电机模型和 ARM 编译/链接结果见[实现工作日志](docs/fieldctrl-worklog.md)；交叉链接成功不代表实板运行通过。[N32H474 编译/链接复现工程](libs/fieldctrl/test/compile/n32h474/README.md)保留四版全部公开算法符号，按说明复制到新的 SDK 外应用目录构建，不包含烧录或硬件运行命令。
+
+独立审计用例要求二进制 `long double` 至少有 64 位有效精度，常见 MSVC 的 53 位 `long double` 不满足该参考精度约束，不能把 Linux 测试结果视为全部主机平台兼容。
+
 ## 可选的 RISC-V 交叉检查
 
 交叉检查默认关闭，与主机测试分组独立。启用前需准备：
@@ -208,7 +225,7 @@ xmake f -P . -y -m debug --xhive_tests=y --xhive_cross_tests=n
 
 | 选项 | 默认值 | 用途 |
 | --- | --- | --- |
-| `xhive_tests` | `y` | 启用主机测试；在支持的平台上引入 GoogleTest |
+| `xhive_tests` | `y` | 启用主机测试；在支持的平台上引入 GoogleTest 与 Eigen |
 | `xhive_cross_tests` | `n` | 在 SDK 独立模式下注册可选交叉检查 |
 | `xhive_riscv_gcc` | `riscv-none-elf-gcc` | 指定交叉检查使用的 RISC-V GCC 可执行文件 |
 | `xhive_clang` | `clang` | 指定 C2 完整检查使用的 Clang 可执行文件 |

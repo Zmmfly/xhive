@@ -20,6 +20,40 @@ Evidence labels used below:
 - **Inferred:** a conclusion derived from identified evidence, not a new test.
 - **Unverified:** planned work or behavior not yet exercised.
 
+## Final verification snapshot
+
+Verified source revision: **`6f23ff1`**, after the M0–M6 implementation and
+independent-audit commits. Verification is complete; the reproducible fixture
+was committed as **`c06120d`**. The final results and entry-point documentation
+are recorded in this documentation commit.
+
+| New library | Xmake entries | GoogleTest passed | GoogleTest skipped |
+| --- | ---: | ---: | ---: |
+| linears | 15 | 391 | 2 |
+| filters | 10 | 201 | 0 |
+| fieldctrl | 10 | 250 | 0 |
+| New-library total | 35 | 842 | 2 |
+
+- Default SDK host build and the complete **52-entry** host group passed.
+  The new-library subset also passed with **O2 + strict aliasing + ASan/UBSan**.
+  The two skips are floating instantiations of a fixed-exponent-only SVD case,
+  not failed or untested fixed-point variants.
+- All three real standalone library entries passed their complete test sets.
+  An isolated `xhive_tests=n, xhive_cross_tests=n` configuration had zero test
+  targets/packages and built the default libraries successfully.
+- GCC 15.2.0 and Clang 21.1.8 accepted all **18 production C files** under strict
+  C99/O2/strict-aliasing/VLA/alloca diagnostics.
+- The checked-in-source ARM fixture reproduced a real Cortex-M4 hard-float
+  link retaining **292/292 public algorithm symbols**, with no unresolved or
+  matched heap-allocation symbols. Final reproduction ROM is **260,140 bytes**
+  of 262,144; data+bss is 1,128 bytes. All 390 library stack-usage entries are
+  static; largest individual frames are 648 / 448 / 584 bytes by library.
+- Native/sanitized and final reproduced ARM checks refer to identical SHA-256
+  content for all **51 production/header files**. Per-function stack evidence
+  is not a complete call-chain/WCET/interrupt bound.
+- **No board, inverter, or motor was flashed or run.** Physical control behavior,
+  tuning, protection and timing remain outside this task's evidence.
+
 ## Accepted requirements
 
 - Add independent `libs/linears`, `libs/filters`, and `libs/fieldctrl` libraries.
@@ -133,8 +167,8 @@ build/configuration directories, without replacing the SDK's normal host cache.
 | M3 | Filters including scalar and matrix Kalman | 10 entries / 201 cases, Eigen Kalman, strict GCC/Clang C99, full 42-entry SDK group | Committed as `70be7fa` |
 | M4 | Control foundations, PI/PWM, VVVF | 3 entries / 82 cases; default build and SDK graph isolation | Committed as `8ab6396` |
 | M5 | FOC and SMO | 2 entries / 74 cases, including software observer/handover scenarios | Committed as `6184b7e` |
-| M6 | DTC | 1 entry / 60 cases, including subnormal sector regression | Tests passed; separate commit pending |
-| M7 | Complete SDK integration and final regression | Full host group, default build, standalone entries, isolated ARM compile/link, heap/stack audit | Planned |
+| M6 | DTC | 1 entry / 60 cases, including subnormal sector regression | Committed as `5fa2c05`; independent control audit `6f23ff1` |
+| M7 | Complete SDK integration and final regression | Full host group, optimized sanitizers, standalone/disabled-test builds, reproduced ARM link and resource audit | Verification complete; fixture `c06120d`; final results recorded in this documentation commit |
 
 The coordinating agent may split a milestone into smaller coherent commits.
 No milestone is considered complete merely because files exist or a test selector
@@ -935,10 +969,10 @@ M5/M6 implementation files are frozen and ready for their separate commits.
 The existing final SDK run above covers M5's 74 and M6's 60 cases against the
 same algorithm hashes. Only the umbrella header and README links are being
 connected at each commit boundary; algorithm implementations are unchanged.
-The coordinator committed M5 as `6184b7e`. M6 remains reviewed and ready:
-its 60-case result above applies to the frozen DTC algorithm; only final umbrella
-and README navigation are being connected. The M6 hash will be recorded after
-its separate commit.
+The coordinator committed M5 as `6184b7e`, M6 as `5fa2c05`, and the four
+independent control-audit files as `6f23ff1`. The final umbrella includes the
+completed FOC/SMO/DTC headers. No algorithm change was needed for those final
+header/README navigation commits.
 
 ### 2026-10-17 — real Cortex-M4 application link and resource checks
 
@@ -1001,3 +1035,133 @@ Artifacts include `arm-link.log` (original failure), `arm-link-gc.log` (successf
 corrected build), source-hash sidecars, linker map, ELF identity, required/defined
 symbols and `dist/validation-report.json`. All remain in the authorized external
 application. **The ELF was not flashed or executed on a board or motor.**
+
+### 2026-10-17 — M7 final optimized, standalone and disabled-test gates
+
+After the final DTC umbrella integration, reran the default SDK build and the
+complete native host group. In a separate cache/output directory, reran the
+three new libraries with the following configuration from the **actual SDK
+root**, never from a different `-P` invoking directory:
+
+```sh
+work=/home/zmmfly/prjs/xhive_testspace/fieldctrl/host-verify-DXUdWt
+XMAKE_CONFIGDIR="$work" xmake f -P . -y -m debug -o "$work/build" \
+    --xhive_tests=y --xhive_cross_tests=n \
+    '--cxflags=-O2 -fstrict-aliasing -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer' \
+    '--cflags=-Werror=vla -Werror=alloca' \
+    '--ldflags=-fsanitize=address,undefined'
+XMAKE_CONFIGDIR="$work" xmake test -P . -j2 -g xhive -v \
+    'linears_test_*/*' 'filters_test_*/*' 'fieldctrl_test_*/*'
+```
+
+Resolved output paths were checked before building. Actual compiler commands
+contain the requested instrumentation/O2/strict-aliasing flags. Final normal
+and instrumented logs were parsed per test entry, not estimated from file counts:
+
+| Gate | Xmake entries | New-library GoogleTest passed / skipped |
+| --- | ---: | ---: |
+| Full SDK native group | 52 | 842 / 2 |
+| New-library optimized ASan/UBSan group | 35 | 842 / 2 |
+
+The per-library totals are the final snapshot table at the start of this log.
+No ASan/UBSan/runtime-error diagnostic was found in the final instrumented log.
+All 51 production/header file hashes were unchanged through those runs and
+subsequently matched current committed revision `6f23ff1`.
+Artifacts in `host-verify-DXUdWt` include `final-sdk-build.log`,
+`final-sdk-host.log`, `final-sanitized.log`, `final-summary.json`, and final
+before/after source manifests.
+
+Actual independent library entries were also configured and run completely.
+For each library, cwd was that library's real source directory, with an external
+cache/build directory under `standalone-final-y28JLe/<library>`:
+
+```sh
+XMAKE_CONFIGDIR="$work" xmake f -P . -y -m debug -o "$work/build"
+XMAKE_CONFIGDIR="$work" xmake test -P . -j2 -g xhive -v
+```
+
+Preflight loaded the saved Xmake configuration, asserted every target/object
+path was inside the assigned output root, and rejected dependency-library tests.
+Results: linears 15 entries / 391 passed / 2 skipped; filters 10 / 201 / 0;
+fieldctrl 10 / 250 / 0. Fieldctrl was rerun once more after the final umbrella
+change (`fieldctrl/final-umbrella.log`). These are real independent executions,
+not just successful target-graph parsing.
+
+An additional isolated configuration at `host-no-tests-iIFQmV` used
+`--xhive_tests=n --xhive_cross_tests=n`. Inspection verified zero registered test
+targets, zero global/host package requirements and zero target packages, while
+all three libraries remained selected by the default SDK aggregate. All 112
+returned object paths stayed inside its assigned output root. Its `xmake b -P .`
+completed successfully. No `nothing to test` result was counted as a passing
+runtime test; this gate verifies the intentionally test-free library build.
+
+The final strict-C99 check at revision `6f23ff1` compiled all 18 production C
+files with both GCC 15.2.0 and Clang 21.1.8:
+
+```sh
+for compiler in cc clang; do
+    "$compiler" -std=c99 -pedantic-errors -Wall -Wextra -Werror -Wvla -Walloca \
+        -O2 -fstrict-aliasing -Ilibs/linears/include -Ilibs/filters/include \
+        -Ilibs/fieldctrl/include -fsyntax-only libs/{linears,filters,fieldctrl}/src/*.c
+done
+```
+
+Both passed. Kconfig selections were evaluated in memory: enabling filters
+selected linears, and enabling fieldctrl selected both. The system `python3`
+initially lacked the `kconfiglib` module; instead of installing anything, the
+check used the existing `genconfig` launcher's recorded pipx interpreter
+(`/home/zmmfly/.local/share/pipx/venvs/kconfiglib/bin/python`). The selection check
+then passed without writing any configuration file.
+
+### Reproducible fixture preserved in the repository
+
+The coordinator granted ownership of
+`libs/fieldctrl/test/compile/n32h474/` for the final integration node. It contains
+only the tested `.config`, `xmake.lua`, four `.c` files, and a short README.
+The six build-input files were copied byte-for-byte from the successful external
+application. Their source/external SHA-256 correspondence is recorded in the
+fixture README; no build, cache, map, log or binary output was added to Git.
+There is no test generator and no new `.cc` file/test registration.
+The coordinator committed the seven-file fixture as `c06120d`
+(`test(fieldctrl): preserve reproducible N32H474 link fixture`).
+
+To validate the committed-source reproduction process itself, copied this
+fixture into a fresh authorized external directory,
+`/home/zmmfly/prjs/xhive_testspace/fieldctrl/reproduce-EgR2r0`, then configured and
+built it with the same documented per-command SDK/cache environment. Before
+build, all 162 firmware target/object paths were confirmed inside that directory
+and firmware packages were absent. The six payload files matched both the repo
+copy and original external application exactly.
+
+**Final reproduced ARM result:**
+
+- Compile/link and the subsequent quick rebuild at source revision `6f23ff1`
+  passed without changing library source/header hashes.
+- All **292** required algorithm symbols are defined; no unresolved or matched
+  allocator symbol is present.
+- Final ROM image is **260,140 / 262,144 bytes (99.24%)**, leaving 2,004 bytes;
+  text/data/bss are 260,040 / 100 / 1,028 bytes. All 390 library `.su` entries
+  remain static, with maximum single frames 648 / 448 / 584 bytes.
+- The final native/sanitized source manifest and reproduced ARM manifest match
+  exactly across **51 production/header files**.
+- ELF SHA-256:
+  `2249c1e50720ec2ede453b03b4b0c102dee329e26d5397bc913e6fa80cba7811`.
+- BIN SHA-256:
+  `c9f831084776c8f5bf1aa76eafe80c4a6322d0c33df07f218868f9788aa7f7f2`.
+- The original 260,180-byte image and this final reproduced 260,140-byte image
+  are not byte-identical. Both retained all algorithm roots and stayed within
+  the same memory limit; no bit-reproducible binary claim is made. The preserved
+  fixture guarantees the tested source/configuration inputs, not identical
+  compiler/debug/link layout across work directories or header snapshots.
+
+Final ARM details are in `reproduce-EgR2r0/dist/final-validation.json`, its ELF
+identity/symbol listings, source manifests and `final-recheck.log`. Neither
+image was flashed or executed on hardware. **M7 verification is complete**;
+the fixture is preserved in `c06120d`, and the final results are recorded in
+this documentation commit. No further source-code change is part of this work.
+
+Final staging review at `6f23ff1` confirmed only the three entry README files,
+this worklog, and the seven-file fixture remained changed/untracked. Tracked
+`git diff --check`, individual new-file whitespace checks, six-file payload
+byte-identity checks, and local Markdown-link resolution all passed. No agent
+other than the coordinator staged or committed these final files.
