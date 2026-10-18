@@ -20,11 +20,14 @@ there is no separately versioned upstream package:
 | [filters](filters/README.md) | Streaming filters and scalar/matrix Kalman estimation | `CONFIG_LIBS_ADD_FILTERS=y` (selects linears) |
 | [fieldctrl](fieldctrl/README.md) | Motor-control numerical primitives, VVVF, FOC/SMO, and DTC | `CONFIG_LIBS_ADD_FIELDCTRL=y` (selects linears and filters) |
 
-Each library provides `f32`, `f64`, `q15`, and `q31` APIs. Fixed-point values carry
-explicit binary exponents and use integer arithmetic. State and dimension-sized
-workspace belong to the caller; see each public header for capacity, alignment,
-aliasing, and failure contracts. These are software algorithms, not hardware
-motor drivers or substitutes for board-level protection.
+Each library provides `f32`, `f64`, `q15`, and `q31` APIs. q15/q31 signals are raw
+signed Q1.15/Q1.31 integers without exponent fields; working values and wide
+coefficients use explicit `int64_t` fixed-F31 storage. Q computation is integer-only.
+Matrices contain only `data`, `rows`, and `cols`, replacing the former BFP ABI.
+State and dimension-sized workspace belong to the caller; see each public header
+for capacity, alignment, aliasing, endpoint and range-error contracts. These are
+software algorithms, not hardware motor drivers or substitutes for board-level
+protection.
 
 The SDK's default host build includes all three. Their per-file GoogleTest
 entries share group `xhive`; Eigen 3.4.0 is a pinned host-test reference only:

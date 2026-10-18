@@ -1,6 +1,6 @@
 # linears / filters / fieldctrl implementation worklog
 
-## Current request — fixed-Q migration (2026-10-18)
+## Current status — fixed-Q migration complete (2026-10-18)
 
 The user has replaced the previous block-floating-point (BFP) requirement:
 **remove exponents from every Q-format interface and implementation, and migrate
@@ -12,8 +12,38 @@ or a floating-point wrapper. Native f32/f64 numerical behavior is retained.
 The BFP requirements, decisions, commits, test counts and ARM images below are
 **historical evidence only**, superseded for Q behavior by this request. In
 particular, the old 842 passed / 2 skipped result is **not a fixed-Q migration
-result**. Current requirements, pending decisions and new validation results
-are tracked in [the migration section](#2026-10-18-fixed-q-migration).
+result**. The current contract, completed validation and remaining limitations
+are recorded in [the migration section](#2026-10-18-fixed-q-migration).
+
+**Confirmed completion:** source migration and validation use `3e84626`; the
+updated fixture and preserved benchmark are committed as `26159e0`. Final
+results are recorded here. The default SDK build and all 54 SDK test entries
+passed. The 37-entry new-library subset and its O2/strict-aliasing ASan+UBSan
+run each recorded **1015 GoogleTest cases passed, 2 format-inapplicable SVD cases
+skipped**. All standalone and disabled-test gates passed. The new ARM image
+retained 292 algorithm functions,
+used 238,708 ROM bytes, and had no matched allocator symbols; 392 library stack
+entries were static. No board or motor was flashed or executed.
+
+**Compatibility:** replacing exponent-bearing scalars and four-field matrix
+descriptors is an intentional source/ABI break. Wide working values and
+coefficients now use `int64_t` with a constant 31 fractional bits.
+
+**Measured trade-offs:** on GCC 15.2.0 / AMD Ryzen 9 7945HX, CPU 0, seven paired
+host batches gave q15 matrix16 medians of 85,744.140 → 2,471.278 ns/call and VVVF
+939.840 → 494.409 ns/call. These compare the complete implementations, not
+isolated exponent overhead or MCU cycles; VVVF includes the CORDIC optimization.
+The ARM matrix descriptor shrank 16 → 12 bytes and exponent-bearing q15/q31
+scalar ABIs shrank 8 → 2/4 bytes, but matrix-element sizes did not change.
+Q15 Kalman update n=2,m=1 buffers grew 120 → 408 bytes for fixed-F31 work.
+There is no blanket RAM-reduction claim; these sizes and individual stack
+frames do not establish peak runtime RAM or complete call-chain bounds.
+
+**Accuracy limitation:** the documented raw-Q15 SMO acceleration/deceleration
+scenarios still fail the former 0.25 Hz peak / 0.03 Hz final-sample error gates.
+Passing numerical/quantization regressions does not change that fact. Use
+Q31/f32 where those legacy accuracy requirements apply. Q15 DTC's separately
+verified exact-time unit-basis result must not be conflated with SMO.
 
 ## Scope and evidence rules
 
@@ -1184,7 +1214,7 @@ other than the coordinator staged or committed these final files.
 
 ## 2026-10-18 fixed-Q migration
 
-### Request, scope, and compatibility boundary
+### Original request, scope, and compatibility boundary (historical plan)
 
 **Confirmed new requirement:** remove all Q-format exponents and update related
 production code, tests and consumers. This supersedes the earlier explicit-BFP
@@ -1216,8 +1246,8 @@ The migration begins from committed baseline `ab11032`.
 ### Frozen shared contract (coordinator confirmation)
 
 The coordinator approved the shared contract after the numeric proposal. These
-are **confirmed design requirements**, not yet claims that implementation or
-validation has completed:
+are **confirmed design requirements**; completed implementation and validation
+results are recorded below:
 
 - Public matrix storage is exactly `data`, `rows`, `cols`; public q15/q31 are
   `int16_t` F15 / `int32_t` F31 raw values.
@@ -1297,17 +1327,19 @@ Consequences to preserve in tests and documentation:
   must distinguish the preserved floating implementation and historical text
   from active Q storage/conversion paths.
 
-### New validation gates (not yet results)
+### Fixed-Q validation gates — completed results
 
 | Gate | Required evidence | State |
 | --- | --- | --- |
 | FQ0 requirements and plan | Historical BFP notice, coherent breaking-commit boundary, old snapshot identity | Committed as `23e22e2` |
-| FQ1 shared migration | Frozen raw-Q ABI/format; all three production APIs and related tests migrate together | Coherent native/default build and tests passed; review/commit pending |
-| FQ2 independent correctness review | Raw integer/rational oracles, Eigen on quantized inputs, float regressions, failure atomicity | Isolated owner/audit results reported; SDK acceptance pending |
-| FQ3 SDK and compiler regression | Default build/full host group, O2 strict-aliasing ASan/UBSan, GCC/Clang strict C99, standalone entries, tests-disabled build | New native/sanitizer/compiler gates passed; standalone/disabled-test gates pending |
-| FQ4 ARM and fixture | Three-field matrices/raw Q constants, representable calls, 292 retained APIs, heap/stack/architecture/source-hash checks | Not run for new Q |
-| FQ5 representative performance | Same-valued old/new matrix multiply, dot, FIR and control workloads; host timings and ARM hot-loop evidence | Old-only unified preflight and independent math comparison measured; full comparison pending |
-| FQ6 final documentation | Updated contracts/entry points and an exact new-results ledger; no old pass count presented as new | Planned |
+| FQ1 shared migration | Frozen raw-Q ABI/format; all three production APIs and related tests migrate together | Committed as `3e84626` |
+| FQ2 independent correctness review | Raw integer/rational oracles, Eigen on quantized inputs, float regressions, failure atomicity | Isolated and unified SDK/sanitizer checks passed; Q15 SMO limitation retained |
+| FQ3 SDK and compiler regression | Default build/full host group, O2 strict-aliasing ASan/UBSan, GCC/Clang strict C99, standalone entries, tests-disabled build | Verified against the fixed-Q migration |
+| FQ4 ARM and fixture | Three-field matrices/raw Q constants, representable calls, 292 retained APIs, heap/stack/architecture/source-hash checks | Verified; fixture and benchmark committed as `26159e0` |
+| FQ5 representative performance | Same-valued old/new matrix multiply, dot, FIR and control workloads; host timings and ARM hot-loop evidence | Seven paired host batches and ARM/ABI observations complete |
+| FQ6 final documentation | Updated contracts/entry points and an exact new-results ledger; no old pass count presented as new | Completed; final results recorded in this documentation update |
+
+#### Original validation plan (historical)
 
 ABI checks will establish raw scalar types and removal of public Q exponent
 fields, while implementation review checks the constant-width integer working
@@ -1645,4 +1677,197 @@ units** under `-std=c99 -pedantic-errors -Wall -Wextra -Werror -Wvla -Walloca
 -O2 -fstrict-aliasing`. Logs, exact output-path checks, count summaries and
 before/after source manifests remain in the two new gate directories. Final
 standalone/disabled-test, complete ARM fixture and paired performance gates
-are still pending at this checkpoint.
+were still pending at this initial checkpoint; the completed results follow.
+
+### Committed migration and scope classification
+
+The coordinator atomically committed the three-library production/header/test
+migration, associated library documentation and Kconfig help as `3e84626`
+(`refactor(numerics)!: migrate to exponent-free Q formats`). Its breaking-change
+contract names the three-field matrix, raw Q signals, fixed-F31 coefficients/
+work, per-unit caller responsibilities and removal of automatic rescaling.
+
+The captured 112-file validation manifest was checked against that commit.
+All **107 SDK production/header/registered-test/library-build files** match.
+The other five records are compile-fixture inputs: only the three deliberately
+uncommitted `*_calls.c` drafts differed, and they were not built by the SDK test
+selectors. This is an explicitly scoped match, not a claim that uncommitted
+fixture inputs were already in the breaking commit. The 57 production/header
+files used by later benchmark and ARM checks match the validated source content.
+`fixed-q-xhive-native-YrTGBq/commit-binding.json` records this distinction.
+
+A source scan's apparent `.exponent` hit in `numeric_contract.cc` was inspected:
+it is a SFINAE `HasExponent` probe whose negative static assertion proves the
+matrix member is absent. It was retained, not mistaken for legacy production
+storage. The later host benchmark's guarded BFP caller adapter is likewise
+restricted to the archived old implementation; it is neither production nor a
+registered current-SDK test/compatibility interface.
+
+### Completed standalone and no-tests gates
+
+Each real library project was configured from its own directory, with its cache
+and output under
+`fixed-q-xhive-standalone-97rhth/<library>`. Loaded-configuration preflight
+asserted output scope and rejected leaked dependency-library tests. Actual full
+runs passed: linears 17 entries / 460 cases / 2 skips; filters 10 / 278 / 0;
+fieldctrl 10 / 277 / 0. Logs remain in each subdirectory's `test.log`.
+
+A separate SDK configuration at `fixed-q-xhive-no-tests-oG3rYq` explicitly set
+`xhive_tests=n` and `xhive_cross_tests=n`. It had zero test targets and package
+requirements/target packages, still selected all three default libraries, and
+verified 114 output-path entries before `xmake b` passed. This tests the intended
+library-only build, not a `nothing to test` runtime pass.
+
+### Paired host performance measurements
+
+The final single C program and immutable before/after snapshots are in
+`fixed-q-xhive-comparison-ut5dAw`. Before is committed BFP `ab11032`; after is
+the 57-file fixed-Q production/header snapshot validated for `3e84626`.
+Both builds used GCC 15.2.0, C99, O2, strict aliasing, no LTO/fastmath/sanitizers,
+and the same workload source. Its only representation switch selects old BFP
+caller construction versus new raw caller construction; no production code is
+put into a compatibility mode.
+
+On an AMD Ryzen 9 7945HX, the runner pinned itself and its children to allowed
+logical CPU 0. Seven batches alternated before/after order; frequency policy
+was not changed. All **168 workload runs** passed the exact binary-fraction
+postconditions and every API-call status check. Initialization, warmup, output
+decoding and printing were outside the `CLOCK_MONOTONIC` timed loops. Raw CSVs,
+all min/median/max values, compiler/source/binary digests, CPU/affinity and load
+averages are in `paired-results.json` and `paired/`.
+
+Median host nanoseconds per public call:
+
+| Format / workload | Before BFP | After fixed-Q |
+| --- | ---: | ---: |
+| q15 matrix4 | 1525.116 | 100.930 |
+| q15 matrix16 | 85744.140 | 2471.278 |
+| q15 dot256 | 6305.799 | 122.051 |
+| q15 FIR16 | 348.398 | 36.884 |
+| q15 PI step | 88.134 | 15.024 |
+| q15 VVVF step | 939.840 | 494.409 |
+| q31 matrix4 | 1462.231 | 112.517 |
+| q31 matrix16 | 86743.515 | 3620.385 |
+| q31 dot256 | 6285.498 | 174.604 |
+| q31 FIR16 | 342.763 | 36.892 |
+| q31 PI step | 77.231 | 15.697 |
+| q31 VVVF step | 876.541 | 475.727 |
+
+These numbers characterize these selected, common representable workloads on
+this host. Spread was retained, not filtered to the best observation. They are
+not MCU cycle counts, universal speedups, or an isolated causal estimate of the
+exponent field's cost. In particular VVVF includes the separately verified
+CORDIC shift optimization. General old/new output quantization contracts differ;
+the exact-value workloads avoid that ambiguity for their checked results.
+
+ARM call observations support the algorithmic interpretation without claiming
+timing: new FIR steps call the fixed-F62 MAC in the tap loop and one final raw-Q
+quantizer, replacing old scalar import/normalize/multiply/add chains. New PI
+entry points use fixed-format construction, a shared wide-state step and a
+final raw export; the old repeated BFP imports/comparisons are absent. Full
+before/after call lists are in
+`fixed-q-xhive-arm-strict-I8NdmZ/fir-pi-call-comparison.json`; the earlier matrix,
+dot and CORDIC procedure/loop observations remain separate evidence.
+
+### Measured ARM ABI and storage trade-offs
+
+A compile-only probe emitted byte-array symbol sizes using the actual ARM GCC
+ABI and the old/new public size macros. It was never linked into firmware or
+run on a target. `memory_probe.c`, objects, symbol listings and
+`memory-comparison.json` are in the paired-comparison directory.
+
+| Storage item (bytes) | BFP baseline | Fixed-Q |
+| --- | ---: | ---: |
+| Matrix descriptor | 16 | 12 |
+| q15 scalar ABI | 8 | 2 |
+| q31 scalar ABI | 8 | 4 |
+| Shared working scalar | 8 | 8 |
+| Basic 4x4 workspace | 128 | 128 |
+| q15/q31 PI context | 40 | 32 |
+| Q moving-average context | 12 | 32 |
+| q15 context + 16-sample moving-average window | 140 | 64 |
+| q31 context + 16-sample moving-average window | 140 | 96 |
+| Kalman matrix state view | 40 | 32 |
+| q15 Kalman workspace view | 24 | 24 |
+| q15 Kalman predict n=2 buffers | 68 | 304 |
+| q31 Kalman predict n=2 buffers | 104 | 304 |
+| q15 Kalman update n=2,m=1 buffers | 120 | 408 |
+| q31 Kalman update n=2,m=1 buffers | 184 | 408 |
+| q15 Kalman update n=1,m=1 buffers | 52 | 184 |
+| q31 Kalman update n=1,m=1 buffers | 80 | 184 |
+
+The scalar ABI reductions refer to old exponent-bearing scalar structures.
+**Old matrix elements already used int16/int32 mantissas; their element byte
+sizes did not shrink.** The matrix descriptor lost its block exponent. Moving
+average trades an additional exact sum/context alignment for smaller raw signal
+storage. Q Kalman deliberately spends substantially more temporary memory for
+fixed-F31 headroom and precise working identity. These figures exclude caller
+allocation overhead and complete runtime stack use; there is no blanket claim
+that fixed-Q reduces RAM.
+
+### Updated fixture and complete ARM validation
+
+The three firmware caller files now use three-field matrix descriptors and raw
+Q constants. Q factorization/solve use `diag(1/4,3/8)` with `(1/8)*I`; inverse
+uses the separately verified `(3/4)` Hadamard matrix so its +/-2/3 result fits.
+Scalar gains are explicitly F31, and Q Kalman allocates the new typed working
+arrays/capacity macros. Control inputs use consistent small per-unit fractions.
+
+Actual host C99 and C++17 consumers compiled/linked these three files against
+real new production objects and returned zero from every probe aggregate.
+A separately instrumented consumer linked all 20 sanitizer-built production
+objects and also passed without diagnostics. Evidence is in
+`fixed-q-xhive-fixture-host-FRzak7`. This confirms executable, representable
+caller examples, not a full numerical suite or a board run.
+
+The new independent application `fixed-q-xhive-arm-9b2DGw` was configured and
+built from its own cwd with per-command `XHIVE_SDK_PATH` and `XMAKE_CONFIGDIR`.
+All 166 firmware output-path entries were verified inside that directory and
+no firmware dependency had a test package. At core commit
+`3e84626fb4c68086b3082f50d28817f7d3348f4e`, the real link passed:
+
+- **292/292** required public algorithm symbols were present as code symbols.
+  No unresolved or matched allocator symbols were found.
+- ELF32 ARM / EABI5 hard-float / 7E-M / VFPv4-D16 identity was inspected.
+- ROM image **238,708 / 262,144 bytes**; text/data/bss
+  **238,608 / 100 / 1,028 bytes**. Data+bss is not peak runtime RAM.
+- **392** library stack-usage entries were all `static`: linears 145 entries,
+  maximum single frame 656 bytes; filters 142, maximum 488; fieldctrl 105,
+  maximum 384. No whole-call-chain, libc/libm, interrupt nesting or WCET bound
+  is inferred from those per-function compiler records.
+- All 20 new production C files also passed a separate strict ARM C99/O2/
+  strict-aliasing/Werror/VLA/alloca compile in
+  `fixed-q-xhive-arm-strict-I8NdmZ`, not just the application's looser vendor
+  compile flags.
+- ELF SHA-256:
+  `45d0d8ffbed14033d31a18e618519babe6c492b6f5372db5cd58fc02bb5b676f`.
+- BIN SHA-256:
+  `31ac3b37c982f0b104850d13881e8216c4c913284b29ccfa6f66a659d0c60a2c`.
+
+`dist/validation-report.json`, identity/symbol listings, source manifests and
+`build.log` preserve the result. The unchanged 256 KiB/96 KiB regions were not
+increased, and no algorithm stub or hardware execution was used.
+
+### Minimal preserved performance/fixture reproduction
+
+The approved `host_benchmark.c` was copied byte-for-byte to the fixture's top
+level, outside `src/` and outside `.cc` discovery. SHA-256:
+`35c2e4b182443b514a39283d0b7aba2048022739ddb5a124fec6ef9930fae66c`.
+The BFP adapter is explicitly historical and only compiled against archived
+`ab11032` sources; there is no BFP switch in current production code. The fixture
+README gives the actual two-commit compile and alternating-affinity commands,
+compiler/CPU/batch details, exact checks and the VVVF attribution limitation.
+
+Those README commands were extracted and actually executed: the host replay
+at `fieldctrl-xhive-hostbench-fGzsRQ` rebuilt both pinned source versions and
+completed all 14 batches / 168 exact-result checks. The ARM replay at
+`fieldctrl-xhive-arm-PeMf4R`, including the top-level host program but not linking
+it into firmware, again built a 238,708-byte image. No replay performed hardware
+execution. The six firmware payload hashes match the measured new application;
+local links, new/tracked whitespace checks and the eight-file/no-`.cc` fixture
+inventory passed before its separate commit handoff. The coordinator committed
+the three updated firmware callers, host benchmark and fixture README as
+`26159e0` (`test(numerics): preserve fixed-Q build and performance reproducers`).
+The fixed-Q implementation, validation and preserved reproduction work is
+complete; final results and the retained Q15 SMO limitation are recorded in
+this documentation update.

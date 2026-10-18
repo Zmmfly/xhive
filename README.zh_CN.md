@@ -170,7 +170,11 @@ C2 脚本还支持 `--cc`、`--cxx`、`--clang` 参数，可显式选择对应�
 
 ## 数值与电机控制算法库
 
-[linears](libs/linears/README.md)、[filters](libs/filters/README.md) 和 [fieldctrl](libs/fieldctrl/README.md) 提供 C99 的 `f32`、`f64`、`q15`、`q31` API。状态与工作区由调用者持有，不进行动态分配；定点数据带显式二进制指数，计算使用整数算术。各库头文件规定容量、对齐、别名与失败后的状态。
+[linears](libs/linears/README.md)、[filters](libs/filters/README.md) 和 [fieldctrl](libs/fieldctrl/README.md) 提供 C99 的 `f32`、`f64`、`q15`、`q31` API。状态与工作区由调用者持有，不进行动态分配；q15/q31 信号分别是原始有符号 Q1.15/Q1.31 整数，不再携带逐值指数。需要更大范围的工作值和系数采用明确的 `int64_t`、固定 31 小数位格式，Q 计算保持纯整数。各库头文件规定容量、对齐、别名与失败后的状态。
+
+这替换了原 BFP API，属于源码与 ABI 不兼容变更：矩阵现在只有 `data`、`rows`、`cols` 三个字段，旧的尾数/指数标量和四字段矩阵初始化必须迁移。原始整数缩放、宽系数、端点舍入与越界返回规则以公共头文件为准。
+
+已记录的固定 Q15 SMO 加减速软件模型未保持原来的峰值误差 0.25 Hz、末拍误差 0.03 Hz 指标；需要该精度时选 Q31 或 f32。数值契约测试通过不等于这些 Q15 物理单位精度目标已经恢复。
 
 应用通过 Kconfig 选择 `LIBS_ADD_LINEARS`、`LIBS_ADD_FILTERS`、`LIBS_ADD_FIELDCTRL`：filters 自动选择 linears，fieldctrl 自动选择两者。SDK 默认主机构建包含全部三个库。
 
@@ -180,7 +184,7 @@ xmake test -g xhive -v 'linears_test_*/*' 'filters_test_*/*' 'fieldctrl_test_*/*
 
 这些是软件算法库，不操作电机硬件，也不代替板级保护、参数整定和实机验证。具体的数值测试、软件电机模型和 ARM 编译/链接结果见[实现工作日志](docs/fieldctrl-worklog.md)；交叉链接成功不代表实板运行通过。[N32H474 编译/链接复现工程](libs/fieldctrl/test/compile/n32h474/README.md)保留四版全部公开算法符号，按说明复制到新的 SDK 外应用目录构建，不包含烧录或硬件运行命令。
 
-独立审计用例要求二进制 `long double` 至少有 64 位有效精度，常见 MSVC 的 53 位 `long double` 不满足该参考精度约束，不能把 Linux 测试结果视为全部主机平台兼容。
+独立整数审计使用主机编译器的 `__int128` 作为参考，需要 GCC/Clang 提供 `__SIZEOF_INT128__`。这是主机测试要求，不是生产代码或 ARM 的依赖；生产 MAC 使用两个可移植的 64 位 limb。不能把 Linux 测试结果视为全部主机平台兼容。
 
 ## 可选的 RISC-V 交叉检查
 

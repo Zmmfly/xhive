@@ -109,11 +109,22 @@ the SDK-root selectors above for day-to-day work.
 
 [linears](libs/linears/README.md), [filters](libs/filters/README.md), and
 [fieldctrl](libs/fieldctrl/README.md) provide C99 `f32`, `f64`, `q15`, and `q31`
-APIs with caller-owned state/workspace and no dynamic allocation. Fixed-point
-values carry explicit binary exponents and use integer arithmetic. Select them
-in application Kconfig using `LIBS_ADD_LINEARS`, `LIBS_ADD_FILTERS`, or
+APIs with caller-owned state/workspace and no dynamic allocation. q15/q31
+signals are raw signed Q1.15/Q1.31 integers, without per-value exponents.
+Working values and coefficients needing more range use an explicitly documented
+`int64_t` format with 31 fractional bits; Q computation stays integer-only.
+Select them in application Kconfig using `LIBS_ADD_LINEARS`, `LIBS_ADD_FILTERS`, or
 `LIBS_ADD_FIELDCTRL`; filters selects linears, and fieldctrl selects both.
 The SDK default host build includes all three.
+
+This replaces the former BFP API and is source/ABI incompatible: matrices now
+contain only `data`, `rows`, and `cols`; old mantissa/exponent scalar and
+four-field matrix initializers must be migrated. Follow the public headers for
+raw scaling, wide coefficients, endpoint rounding and range-error contracts.
+The documented fixed-Q15 SMO acceleration/deceleration scenarios do not retain
+the former 0.25 Hz peak / 0.03 Hz final-sample error targets. Use Q31 or f32
+when that accuracy is required; passing numerical-contract tests does not mean
+those Q15 physical-unit targets were recovered.
 
 These libraries do not access motor hardware or implement board-level protection.
 The [worklog](docs/fieldctrl-worklog.md) distinguishes numerical tests, software
@@ -121,10 +132,11 @@ plant simulations, and ARM compile/link checks from hardware validation. A
 [reproducible N32H474 compile/link fixture](libs/fieldctrl/test/compile/n32h474/README.md)
 preserves all four formats' public algorithm symbols; copy it to a fresh external
 application directory as documented there. It has no hardware-run instructions.
-The independent fixed-point audit requires binary `long double` with at least
-64 significand bits; the usual MSVC 53-bit `long double` does not meet that
-reference-precision requirement. Linux results do not establish compatibility
-with every host compiler.
+The independent integer audit uses host-compiler `__int128` as its reference
+and requires GCC/Clang support advertised by `__SIZEOF_INT128__`. This is a
+host-test requirement, not a production or ARM dependency: production MAC uses
+two portable 64-bit limbs. Linux results do not establish compatibility with
+every host compiler.
 
 ### Optional cross-compiler checks
 
