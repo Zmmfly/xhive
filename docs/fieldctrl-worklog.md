@@ -1,5 +1,20 @@
 # linears / filters / fieldctrl implementation worklog
 
+## Current request — fixed-Q migration (2026-10-18)
+
+The user has replaced the previous block-floating-point (BFP) requirement:
+**remove exponents from every Q-format interface and implementation, and migrate
+all affected tests.** Public q15/q31 values are raw fixed-fraction integers;
+matrices contain only `data`, `rows`, and `cols`. Internal Q arithmetic must also
+use a constant fractional width, not hidden per-value exponents/renormalization
+or a floating-point wrapper. Native f32/f64 numerical behavior is retained.
+
+The BFP requirements, decisions, commits, test counts and ARM images below are
+**historical evidence only**, superseded for Q behavior by this request. In
+particular, the old 842 passed / 2 skipped result is **not a fixed-Q migration
+result**. Current requirements, pending decisions and new validation results
+are tracked in [the migration section](#2026-10-18-fixed-q-migration).
+
 ## Scope and evidence rules
 
 This log records the design decisions, milestone boundaries, actual checks, and
@@ -20,12 +35,13 @@ Evidence labels used below:
 - **Inferred:** a conclusion derived from identified evidence, not a new test.
 - **Unverified:** planned work or behavior not yet exercised.
 
-## Final verification snapshot
+## Historical BFP verification snapshot (superseded)
 
-Verified source revision: **`6f23ff1`**, after the M0–M6 implementation and
-independent-audit commits. Verification is complete; the reproducible fixture
-was committed as **`c06120d`**. The final results and entry-point documentation
-are recorded in this documentation commit.
+The following results verify the **old BFP source revision `6f23ff1`**, after
+the M0–M6 implementation and independent-audit commits. That phase's fixture
+was committed as `c06120d`, with final documentation at baseline `ab11032`.
+They are preserved for provenance and before/after comparison, not reused as
+proof that the new exponent-free Q implementation passes.
 
 | New library | Xmake entries | GoogleTest passed | GoogleTest skipped |
 | --- | ---: | ---: | ---: |
@@ -54,7 +70,7 @@ are recorded in this documentation commit.
 - **No board, inverter, or motor was flashed or run.** Physical control behavior,
   tuning, protection and timing remain outside this task's evidence.
 
-## Accepted requirements
+## Historical BFP requirements
 
 - Add independent `libs/linears`, `libs/filters`, and `libs/fieldctrl` libraries.
 - Expose all requested algorithms in `f32`, `f64`, `q15`, and `q31` forms.
@@ -87,7 +103,7 @@ The user's “determinant decomposition” requirement is interpreted as pivoted
 plus determinant evaluation, not a separate unnamed factorization. This was
 explicitly accepted before implementation.
 
-## Design decisions
+## Historical BFP design decisions
 
 ### Shared numerical contracts
 
@@ -1165,3 +1181,175 @@ this worklog, and the seven-file fixture remained changed/untracked. Tracked
 `git diff --check`, individual new-file whitespace checks, six-file payload
 byte-identity checks, and local Markdown-link resolution all passed. No agent
 other than the coordinator staged or committed these final files.
+
+## 2026-10-18 fixed-Q migration
+
+### Request, scope, and compatibility boundary
+
+**Confirmed new requirement:** remove all Q-format exponents and update related
+production code, tests and consumers. This supersedes the earlier explicit-BFP
+approval; retaining that representation for compatibility would violate the new
+request. Native f32/f64 algorithms and numerical behavior must remain intact.
+The migration begins from committed baseline `ab11032`.
+
+- Public q15 is an `int16_t` raw value with 15 fractional bits; public q31 is an
+  `int32_t` raw value with 31 fractional bits. A matrix descriptor has only
+  `data`, `rows`, and `cols`; callers and test initializers must be migrated.
+- The working Q representation has one constant fractional width. There must
+  be no hidden mantissa/exponent pair, per-value pack/normalize path, or Q
+  computation routed through float/double. Wider integer working values and
+  explicitly fixed-width coefficient/state types must document their format.
+- Allocation-free, caller-owned state/workspace, bounded stack, C99 production,
+  C++17 tests, host-only Eigen and independent contexts remain requirements.
+- This is an intentional source/ABI-breaking change. The coordinator will
+  commit the shared production/API/test migration as one logically complete
+  change across all three libraries, not a sequence of broken intermediate
+  library heads. No temporary BFP compatibility layer is added merely to split
+  commits. Independent audit, validation fixture and documentation can follow
+  in separate reviewed commits.
+- The build/worklog agent remains the only SDK-root Xmake operator. No active
+  half-migrated source tree will be compiled before owners declare a coherent
+  ready boundary. Agents do not stage/commit; the coordinator owns those actions.
+- Software tests and ARM compilation/linking only: no board or motor execution,
+  flashing, reference-demo edits, or new cross-toolchain installation.
+
+### Frozen shared contract (coordinator confirmation)
+
+The coordinator approved the shared contract after the numeric proposal. These
+are **confirmed design requirements**, not yet claims that implementation or
+validation has completed:
+
+- Public matrix storage is exactly `data`, `rows`, `cols`; public q15/q31 are
+  `int16_t` F15 / `int32_t` F31 raw values.
+- `linears_fixed_t` is `int64_t` with a constant 31 fractional bits, representing
+  values from `-2^32` through `2^32 - 2^-31`. Working ONE is raw 2,147,483,648.
+  There is no exponent field, normalized-mantissa representation, pack path, or
+  floating seed in Q computation.
+- Public Q output conversion accepts a working value only in `[-1,+1]`.
+  Exact +1 and the entire in-domain positive endpoint rounding cell map to
+  the maximum raw positive value, with at most one endpoint LSB error; this
+  rule is not restricted to an exact working value of one.
+  A genuinely larger value returns RANGE without modifying outputs. Q MAX
+  itself still means `(2^F-1)/2^F`, not mathematical one; inverse of 0.5 cannot
+  be represented publicly and must fail rather than silently scale or clip.
+- MAC uses two `uint64_t` limbs as a signed 128-bit accumulator at constant F62,
+  accumulating exact products before the defined final rounding. It does not
+  depend on ARM `__int128`. Basic raw-product loops must not import, normalize,
+  or invoke checked scalar conversion for every multiply/add.
+- Each matrix output uses one local 16-byte accumulator and then quantizes into
+  the existing 8-byte workspace unit. The whole caller workspace is not doubled
+  merely to hold accumulators for every output.
+- Parameters that genuinely need values beyond Q1, such as matrix scale/AXPBY
+  weights and SOS/PI coefficients, use the same explicit `int64_t` F31 type,
+  including q15 gains; there is no separate int32-F15 coefficient format.
+  Ordinary signal storage remains raw q15/q31. Float behavior is retained,
+  apart from removing its formerly ignored matrix exponent field.
+- Shared `mean_q15`/`mean_q31` operations consume the F62 sum and a `uint64_t`
+  count for the actual averaging requirement; rounding follows the same
+  constant-width integer contract.
+- One `lowpass_work_step` is shared by Q low-pass and SMO wide fixed-state
+  updates. This does not create a fifth family of public filter contexts.
+- Unclipped requested-voltage and unlocked-frequency diagnostics use explicit
+  wide F31 storage. A legitimate command above one must not prevent the normal
+  saturation path merely because its diagnostic could not fit raw Q1; limited
+  signal outputs remain raw q15/q31.
+
+Consequences to preserve in tests and documentation:
+
+- +1 is not exactly representable in signed Q1.15/Q1.31. The approved endpoint
+  export rule does not make MAX equal to one for input arithmetic or turn
+  coefficients/alpha into implicit identity operations.
+- LU/LDLT/QR/SVD factors, inverse results and gains can exceed the public Q1
+  range even when the inputs fit. Tests and ARM calls must select real
+  representable successful cases, and separately verify explicit overflow
+  failures. The reference must not secretly rescale/normalize its output.
+- Mathematical scaling inside an algorithm, such as a norm's ratio to its
+  maximum value or voltage-vector normalization, is distinct from changing the
+  working value's fractional width. The former may be required by the
+  algorithm; the latter/per-value exponent metadata is forbidden in Q paths.
+  Ordinary mathematical vector normalization and integer limb shifts are
+  allowed; dtype exponents and per-MAC representation normalization are not.
+- Native floating `frexp`/`ldexp` use is not Q exponent metadata. Source checks
+  must distinguish the preserved floating implementation and historical text
+  from active Q storage/conversion paths.
+
+### New validation gates (not yet results)
+
+| Gate | Required evidence | State |
+| --- | --- | --- |
+| FQ0 requirements and plan | Historical BFP notice, coherent breaking-commit boundary, old snapshot identity | Ready for documentation-only review |
+| FQ1 shared migration | Frozen raw-Q ABI/format; all three production APIs and related tests migrate together | Contract approved; implementation pending |
+| FQ2 independent correctness review | Raw integer/rational oracles, Eigen on quantized inputs, float regressions, failure atomicity | Planned |
+| FQ3 SDK and compiler regression | Default build/full host group, O2 strict-aliasing ASan/UBSan, GCC/Clang strict C99, standalone entries, tests-disabled build | Not run for new Q |
+| FQ4 ARM and fixture | Three-field matrices/raw Q constants, representable calls, 292 retained APIs, heap/stack/architecture/source-hash checks | Not run for new Q |
+| FQ5 representative performance | Same-valued old/new matrix multiply, dot, FIR and control workloads; host timings and ARM hot-loop evidence | Baseline source/objects preserved; timings pending |
+| FQ6 final documentation | Updated contracts/entry points and an exact new-results ledger; no old pass count presented as new | Planned |
+
+ABI checks will establish raw scalar types and removal of public Q exponent
+fields, while implementation review checks the constant-width integer working
+representation. Numerical checks use actual quantized inputs and independent
+raw-integer/rational or Eigen references, not production conversions as the
+oracle. Obsolete exponent cases must map to applicable raw MIN/MAX/LSB,
+headroom, rounding/underflow, overflow, alias/workspace and atomicity boundaries.
+Floating extreme-scale regressions remain. New entry/case counts will be counted
+from actual execution; preserving or reducing an old count is not a success
+criterion.
+
+The independent control reviewer has proposed mapping prior Q-exponent cases
+to raw endpoints/LSBs, angle wrap/CORDIC boundaries, valid unclipped commands,
+finite-bus anti-windup/recovery, long-running representable fixed-F31 integration,
+and consistent per-unit DTC quantities. At this checkpoint that is a **coverage
+plan only**: no migration audit code or new-Q validation has completed.
+
+For every new isolated Xmake run, cwd stays at the real source project, only
+`XMAKE_CONFIGDIR`/output roots move externally, and `config.load()` precedes
+resolved target/object path assertions. Every new temporary directory is unique,
+inside the authorized test space, and contains `-xhive-` in its name. Prior
+artifacts are not overwritten; no broad cleanup or reference-demo change is
+permitted.
+
+### Preserved before-migration baseline
+
+**Confirmed:** archived the committed baseline, not the potentially changing
+working tree, into the exclusive authorized directory:
+
+`/home/zmmfly/prjs/xhive_testspace/fieldctrl/fixed-q-xhive-baseline-WhgnPz`
+
+- Full revision: `ab11032235c9f94ecd7e7708cb1a72a0e5422966`.
+- `git archive` captured `LICENSE` and the complete three library trees,
+  including headers, implementation fragments, tests and the old fixture:
+  **118 regular files**. Extraction rejected links, absolute paths and traversal.
+- Archive SHA-256:
+  `5070e7cb709327dc328e9b63ceb0d8a445b1c9701da7ff0acd8b23ca01977006`.
+- `source-sha256.json` identifies every extracted file. All **51** old production
+  and header hashes match the previously verified ARM reproduction manifest.
+- `arm-before/basic.o`, `numeric.o` and their `objdump -dr` listings were copied
+  from that prior verified ARM build. `arm-artifacts.json` records original
+  paths and object digests. No prior artifact was modified and no target binary
+  was executed.
+
+The preserved source and old ARM objects are comparison inputs, not evidence
+for the new implementation. New benchmark wrappers/output will live outside
+this source snapshot. Representative workloads will keep dimensions, input
+values, iteration count, compiler/optimization and observable results comparable;
+all chosen numerical results must fit the new public Q range. Host measurements
+will identify the host and measurement method and cannot be reported as Cortex-M4
+cycles or an unmeasured MCU speedup. ARM disassembly will examine actual hot Q
+loop calls/instructions for old pack/bit-length/per-scalar normalize work versus
+the new constant-width arithmetic, not merely compare an entire mixed-format
+object's symbol inventory. No general-purpose performance framework is planned.
+
+### FQ0 execution ledger
+
+- Read the existing worklog and marked its completed BFP verification/requirements
+  as historical; the old evidence remains intact.
+- `git status --short` before snapshot creation produced no changes at the
+  reported baseline checkpoint.
+- Created and verified the committed-source/archive/object snapshot described
+  above. This was a read-only source extraction plus file preservation, not a
+  build or performance measurement.
+- The coordinator subsequently approved the shared fixed-F31/two-limb-MAC
+  contract recorded above and released the owners to migrate their files.
+- **New-Q build, runtime tests, sanitizer checks, ARM link and performance
+  comparison: not run.** They await coherent migrated sources. No old 842/2
+  result is counted toward these gates.
