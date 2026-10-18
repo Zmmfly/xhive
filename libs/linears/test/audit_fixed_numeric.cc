@@ -1,248 +1,511 @@
 #include "linears_numeric.h"
+#include "linears_work.h"
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <climits>
-#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <random>
+#include <type_traits>
 
 namespace {
 
-constexpr int32_t kHalf = INT32_C(1073741824);
-constexpr int32_t kFull = INT32_MAX;
-constexpr linears_fixed_t kZero{0, 0};
-constexpr linears_fixed_t kOne{kHalf, 1};
-constexpr linears_fixed_t kSentinel{INT32_C(0x13579bdf), -57};
-constexpr uint32_t kCanary = UINT32_C(0xc5a39e71);
+// Test-only native 128-bit arithmetic is independent of the production two-limb
+// implementation. The Linux/GCC-or-Clang host oracle is not an ARM dependency.
+#if !defined(__SIZEOF_INT128__)
+#error "This independent integer oracle requires host compiler __int128 support"
+#endif
+__extension__ typedef __int128 Wide;
+__extension__ typedef unsigned __int128 UWide;
+constexpr int64_t kOne = INT64_C(2147483648);
+constexpr int64_t kSentinel = INT64_C(0x123456789abcdef);
+constexpr uint64_t kGuard = UINT64_C(0xa517cb392ea06d84);
+constexpr Wide kWideMax = static_cast<Wide>((UWide{1} << 127) - 1);
+constexpr Wide kWideMin = -kWideMax - 1;
 
-// A binary long double with >=64 significant bits represents every 31x31-bit
-// product exactly. These tests deliberately do not use production normalization,
-// division, square-root, or quantization helpers to construct expected values.
-static_assert(std::numeric_limits<long double>::radix == 2,
-              "The independent numeric oracle requires binary long double");
-static_assert(std::numeric_limits<long double>::digits >= 64,
-              "The independent numeric oracle requires >=64 significant bits");
-
-long double AsReal(linears_fixed_t value) {
-    return std::ldexp(static_cast<long double>(value.mantissa), value.exponent - 31);
+UWide Magnitude(Wide value) {
+    return value < 0 ? static_cast<UWide>(-(value + 1)) + 1 : static_cast<UWide>(value);
 }
 
-linears_fixed_t RoundedReference(long double value) {
-    if (value == 0.0L) return kZero;
-    int exponent = 0;
-    const long double fraction = std::frexp(value, &exponent);
-    long double rounded = std::round(std::ldexp(fraction, 31));
-    if (std::fabs(rounded) == 2147483648.0L) {
-        rounded *= 0.5L;
-        ++exponent;
+Wide SignedMagnitude(UWide magnitude, bool negative) {
+    if (!negative || magnitude == 0) return static_cast<Wide>(magnitude);
+    return -static_cast<Wide>(magnitude - 1) - 1;
+}
+
+Wide RoundRatio(Wide numerator, Wide denominator) {
+    const bool negative = (numerator < 0) != (denominator < 0);
+    const UWide n = Magnitude(numerator), d = Magnitude(denominator);
+    UWide quotient = n / d;
+    const UWide remainder = n % d;
+    if (remainder >= d / 2 + d % 2) ++quotient;
+    return SignedMagnitude(quotient, negative);
+}
+
+linears_accum_t EncodeAccum(Wide value) {
+    const auto bits = static_cast<UWide>(value);
+    return {static_cast<uint64_t>(bits), static_cast<uint64_t>(bits >> 64)};
+}
+
+Wide DecodeAccum(linears_accum_t value) {
+    const UWide bits = (static_cast<UWide>(value.high) << 64) | value.low;
+    if ((value.high >> 63) == 0) return static_cast<Wide>(bits);
+    return -static_cast<Wide>(~bits) - 1;
+}
+
+bool SameAccum(linears_accum_t a, linears_accum_t b) {
+    return a.low == b.low && a.high == b.high;
+}
+
+int64_t RandomRaw(std::mt19937_64 &engine) {
+    const uint64_t bits = engine();
+    return bits <= INT64_MAX ? static_cast<int64_t>(bits)
+                             : -static_cast<int64_t>(~bits) - 1;
+}
+
+::testing::AssertionResult MatchesFixed(linears_status_t status, int64_t actual,
+                                        Wide expected, int64_t before = kSentinel) {
+    const bool fits = expected >= INT64_MIN && expected <= INT64_MAX;
+    const linears_status_t wanted = fits ? LINEARS_OK : LINEARS_ERROR_RANGE;
+    const int64_t raw = fits ? static_cast<int64_t>(expected) : before;
+    if (status == wanted && actual == raw) return ::testing::AssertionSuccess();
+    return ::testing::AssertionFailure() << "status=" << status << ", raw=" << actual
+        << "; expected status=" << wanted << ", raw=" << raw;
+}
+
+struct SignalResult { linears_status_t status; int64_t raw; };
+SignalResult SignalReference(Wide value, int fraction, int bits, int64_t before) {
+    const Wide one = Wide{1} << fraction;
+    if (value < -one || value > one) return {LINEARS_ERROR_RANGE, before};
+    Wide rounded = RoundRatio(value, Wide{1} << (fraction - bits));
+    const Wide maximum = (Wide{1} << bits) - 1;
+    if (rounded > maximum) rounded = maximum;
+    return {LINEARS_OK, static_cast<int64_t>(rounded)};
+}
+
+SignalResult MeanReference(Wide sum, uint64_t count, int bits, int64_t before) {
+    if (count == 0) return {LINEARS_ERROR_DOMAIN, before};
+    const Wide bound = static_cast<Wide>(count) * (Wide{1} << 62);
+    if (sum < -bound || sum > bound) return {LINEARS_ERROR_RANGE, before};
+    const Wide divisor = static_cast<Wide>(count) * (Wide{1} << (62 - bits));
+    Wide raw = RoundRatio(sum, divisor);
+    const Wide maximum = (Wide{1} << bits) - 1;
+    if (raw > maximum) raw = maximum;
+    return {LINEARS_OK, static_cast<int64_t>(raw)};
+}
+
+int64_t SqrtReference(int64_t raw) {
+    const UWide radicand = static_cast<UWide>(raw) * static_cast<uint64_t>(kOne);
+    uint64_t low = 0, high = UINT64_C(1) << 48;
+    // Binary search, not the production restoring-square-root recurrence.
+    while (high - low > 1) {
+        const uint64_t middle = low + (high - low) / 2;
+        if (static_cast<UWide>(middle) * middle <= radicand) low = middle;
+        else high = middle;
     }
-    return {static_cast<int32_t>(rounded), exponent};
+    const UWide midpoint_twice = static_cast<UWide>(low) * 2 + 1;
+    return static_cast<int64_t>(low + (4 * radicand >= midpoint_twice * midpoint_twice));
 }
 
-::testing::AssertionResult SameFixed(linears_fixed_t actual, linears_fixed_t expected) {
-    if (actual.mantissa == expected.mantissa && actual.exponent == expected.exponent)
-        return ::testing::AssertionSuccess();
-    return ::testing::AssertionFailure()
-           << "actual {" << actual.mantissa << ", " << actual.exponent
-           << "}, expected {" << expected.mantissa << ", " << expected.exponent << "}";
+template<class Operation>
+void AtomicFailure(linears_status_t expected, Operation operation) {
+    struct { uint64_t before; int64_t output; uint64_t after; } value{kGuard, kSentinel, kGuard};
+    EXPECT_EQ(operation(&value.output), expected);
+    EXPECT_EQ(value.output, kSentinel);
+    EXPECT_EQ(value.before, kGuard);
+    EXPECT_EQ(value.after, kGuard);
 }
 
-::testing::AssertionResult RoundedAs(linears_fixed_t actual, long double exact) {
-    return SameFixed(actual, RoundedReference(exact));
+using Binary = linears_status_t (*)(int64_t, int64_t, int64_t *);
+constexpr std::array<Binary, 4> kBinary{linears_fixed_add, linears_fixed_sub,
+                                      linears_fixed_mul, linears_fixed_div};
+constexpr std::array<int64_t, 21> kEdges{
+    INT64_MIN, INT64_MIN + 1, -INT64_C(4294967297), -INT64_C(4294967296), -INT64_C(4294967295),
+    -kOne - 1, -kOne, -kOne + 1, -3, -1, 0, 1, 3,
+    kOne - 1, kOne, kOne + 1, INT64_C(4294967295), INT64_C(4294967296), INT64_C(4294967297), INT64_MAX - 1, INT64_MAX};
+
+TEST(AuditFixedRepresentation, RawTypesAndInvariantBinaryPoint) {
+    static_assert(std::is_same<linears_q15_t, int16_t>::value, "q15 is raw F15");
+    static_assert(std::is_same<linears_q31_t, int32_t>::value, "q31 is raw F31");
+    static_assert(std::is_same<linears_fixed_t, int64_t>::value, "working format is raw F31");
+    static_assert(sizeof(linears_workspace_unit_t) == sizeof(int64_t), "basic scratch must remain eight bytes per output");
+    EXPECT_EQ(LINEARS_FIXED_ONE, kOne);
+    linears_matrix_t matrix{nullptr, 0, 0};
+    EXPECT_EQ(matrix.data, nullptr);
+    EXPECT_EQ(matrix.rows, size_t{0}); EXPECT_EQ(matrix.cols, size_t{0});
 }
 
-linears_fixed_t RandomCanonical(std::minstd_rand &random, int exponent_span) {
-    const int32_t magnitude = kHalf + static_cast<int32_t>(random() % kHalf);
-    const int sign = random() % 2 == 0 ? 1 : -1;
-    const int exponent = static_cast<int>(random() % (2 * exponent_span + 1)) - exponent_span;
-    return {sign * magnitude, exponent};
-}
-
-struct GuardedScalar {
-    uint32_t before = kCanary;
-    linears_fixed_t value = kSentinel;
-    uint32_t after = kCanary;
-};
-
-template <typename Operation>
-void ExpectAtomicScalarFailure(linears_status_t expected, Operation operation) {
-    GuardedScalar guarded;
-    EXPECT_EQ(operation(&guarded.value), expected);
-    EXPECT_TRUE(SameFixed(guarded.value, kSentinel));
-    EXPECT_EQ(guarded.before, kCanary);
-    EXPECT_EQ(guarded.after, kCanary);
-}
-
-template <typename Integer, size_t Count>
-std::array<Integer, Count> ExportReference(const std::array<linears_fixed_t, Count> &input,
-                                         int *exponent) {
-    long double peak = 0.0L;
-    for (const auto value : input) peak = std::fmax(peak, std::fabs(AsReal(value)));
-    *exponent = 0;
-    if (peak != 0.0L) (void)std::frexp(peak, exponent);
-    constexpr int bits = std::numeric_limits<Integer>::digits;
-    for (const auto value : input) {
-        const long double rounded = std::round(std::ldexp(AsReal(value), bits - *exponent));
-        if (rounded > static_cast<long double>(std::numeric_limits<Integer>::max())) {
-            ++*exponent;
-            break;
-        }
+TEST(AuditFixedImport, EveryInt16RawCodeRoundTripsExactly) {
+    for (int raw = INT16_MIN; raw <= INT16_MAX; ++raw) {
+        const int64_t working = linears_fixed_from_q15(static_cast<int16_t>(raw));
+        ASSERT_EQ(working, static_cast<int64_t>(raw) * 65536) << raw;
+        int16_t restored = 123;
+        ASSERT_EQ(linears_fixed_to_q15(working, &restored), LINEARS_OK);
+        ASSERT_EQ(restored, raw);
     }
-    std::array<Integer, Count> expected{};
-    for (size_t index = 0; index < Count; ++index)
-        expected[index] = static_cast<Integer>(
-            std::round(std::ldexp(AsReal(input[index]), bits - *exponent)));
-    return expected;
 }
 
-using BinaryOperation = linears_status_t (*)(linears_fixed_t, linears_fixed_t, linears_fixed_t *);
-constexpr std::array<BinaryOperation, 4> kBinaryOperations{
-    linears_fixed_add, linears_fixed_sub, linears_fixed_mul, linears_fixed_div};
+TEST(AuditFixedImport, Q31SignExtensionAndBoundariesRoundTrip) {
+    constexpr std::array<int32_t, 13> samples{INT32_MIN, INT32_MIN + 1, -1073741825,
+        -1073741824, -3, -1, 0, 1, 3, 1073741824, 1073741825, INT32_MAX - 1, INT32_MAX};
+    for (const int32_t raw : samples) {
+        EXPECT_EQ(linears_fixed_from_q31(raw), static_cast<int64_t>(raw));
+        int32_t restored = 123;
+        ASSERT_EQ(linears_fixed_to_q31(linears_fixed_from_q31(raw), &restored), LINEARS_OK);
+        EXPECT_EQ(restored, raw);
+    }
+}
 
-TEST(AuditFixedImport, EveryInt16MantissaRoundTripsAtThreeScales) {
-    for (const int exponent : {-32, 0, 31}) {
-        for (int raw = INT16_MIN; raw <= INT16_MAX; ++raw) {
-            const linears_q15_t input{static_cast<int16_t>(raw), exponent};
-            linears_fixed_t value = kSentinel;
-            ASSERT_EQ(linears_fixed_from_q15(input, &value), LINEARS_OK)
-                << "raw=" << raw << ", exponent=" << exponent;
-            const long double exact = std::ldexp(static_cast<long double>(raw), exponent - 15);
-            ASSERT_TRUE(RoundedAs(value, exact)) << "raw=" << raw << ", exponent=" << exponent;
-            ASSERT_EQ(AsReal(value), exact);
+TEST(AuditFixedImport, IntegerRangeIsDistinctFromSignalRange) {
+    constexpr std::array<int64_t, 12> integers{INT64_MIN, -INT64_C(4294967297),
+        -INT64_C(4294967296), -INT64_C(4294967295), -2, -1, 0, 1, 2,
+        INT64_C(4294967295), INT64_C(4294967296), INT64_MAX};
+    for (const auto integer : integers) {
+        int64_t result = kSentinel;
+        const auto status = linears_fixed_from_int(integer, &result);
+        ASSERT_TRUE(MatchesFixed(status, result, static_cast<Wide>(integer) * kOne));
+    }
+    EXPECT_EQ(linears_fixed_from_int(0, nullptr), LINEARS_ERROR_ARGUMENT);
+}
+
+TEST(AuditFixedAddSubtract, ExactFullWidthAndWorkingOverflow) {
+    for (const auto a : kEdges) for (const auto b : kEdges) {
+        int64_t result = kSentinel;
+        auto status = linears_fixed_add(a, b, &result);
+        ASSERT_TRUE(MatchesFixed(status, result, static_cast<Wide>(a) + b)) << a << "," << b;
+        result = kSentinel;
+        status = linears_fixed_sub(a, b, &result);
+        ASSERT_TRUE(MatchesFixed(status, result, static_cast<Wide>(a) - b)) << a << "," << b;
+    }
+}
+
+TEST(AuditFixedAddSubtract, LargeCancellationRetainsSmallRawResiduals) {
+    for (const int64_t residual : {INT64_C(1), INT64_C(7), kOne - 1}) {
+        int64_t result = kSentinel;
+        ASSERT_EQ(linears_fixed_sub(INT64_MAX, INT64_MAX - residual, &result), LINEARS_OK);
+        EXPECT_EQ(result, residual);
+        ASSERT_EQ(linears_fixed_add(INT64_MIN + residual, INT64_MAX, &result), LINEARS_OK);
+        EXPECT_EQ(result, residual - 1);
+    }
+    int64_t result = kSentinel;
+    ASSERT_EQ(linears_fixed_sub(INT64_MIN, INT64_MIN, &result), LINEARS_OK);
+    EXPECT_EQ(result, 0);
+}
+
+TEST(AuditFixedMultiply, EverySignedExtremePairMatchesExactProduct) {
+    for (const auto a : kEdges) for (const auto b : kEdges) {
+        int64_t result = kSentinel;
+        const auto status = linears_fixed_mul(a, b, &result);
+        ASSERT_TRUE(MatchesFixed(status, result, RoundRatio(static_cast<Wide>(a) * b, kOne))) << a << "," << b;
+    }
+}
+
+TEST(AuditFixedMultiply, MidpointNeighborsAndCarryRoundOnceAwayFromZero) {
+    for (const int sign : {-1, 1}) for (const int64_t raw : {kOne / 2 - 1, kOne / 2, kOne / 2 + 1}) {
+        int64_t result = kSentinel;
+        ASSERT_EQ(linears_fixed_mul(sign, raw, &result), LINEARS_OK);
+        EXPECT_EQ(result, raw < kOne / 2 ? 0 : sign);
+    }
+    const int64_t a = (INT64_C(1) << 40) + 65537;
+    const int64_t b = (INT64_C(1) << 36) - 65535;
+    int64_t result = kSentinel;
+    const auto status = linears_fixed_mul(a, b, &result);
+    ASSERT_TRUE(MatchesFixed(status, result, RoundRatio(static_cast<Wide>(a) * b, kOne)));
+}
+
+TEST(AuditFixedDivide, SignedExtremesAndHalfwayQuotients) {
+    for (const auto a : kEdges) for (const auto b : kEdges) if (b != 0) {
+        int64_t result = kSentinel;
+        const auto status = linears_fixed_div(a, b, &result);
+        ASSERT_TRUE(MatchesFixed(status, result, RoundRatio(static_cast<Wide>(a) * kOne, b))) << a << "," << b;
+    }
+    for (const int sign : {-1, 1}) {
+        int64_t result = kSentinel;
+        ASSERT_EQ(linears_fixed_div(sign, 2 * kOne, &result), LINEARS_OK);
+        EXPECT_EQ(result, sign);
+        ASSERT_EQ(linears_fixed_div(sign, 2 * kOne + 1, &result), LINEARS_OK);
+        EXPECT_EQ(result, 0);
+        ASSERT_EQ(linears_fixed_div(sign, 2 * kOne - 1, &result), LINEARS_OK);
+        EXPECT_EQ(result, sign);
+    }
+}
+
+TEST(AuditFixedMultiplyDivide, IntermediateProductMayOverflowWorkingButFinalValueFits) {
+    for (const int64_t value : {INT64_MIN, INT64_MIN + 1, INT64_MAX - 1, INT64_MAX}) {
+        int64_t result = kSentinel;
+        ASSERT_EQ(linears_fixed_muldiv(value, value, value, &result), LINEARS_OK);
+        EXPECT_EQ(result, value);
+    }
+    int64_t result = kSentinel;
+    ASSERT_EQ(linears_fixed_muldiv(1, kOne / 2, kOne, &result), LINEARS_OK);
+    EXPECT_EQ(result, 1);
+    ASSERT_EQ(linears_fixed_muldiv(-1, kOne / 2, kOne, &result), LINEARS_OK);
+    EXPECT_EQ(result, -1);
+    // Rounding the intermediate product first would erase this result.
+    ASSERT_EQ(linears_fixed_muldiv(1, 1, 1, &result), LINEARS_OK);
+    EXPECT_EQ(result, 1);
+}
+
+TEST(AuditFixedMultiplyDivide, DeterministicFullWidthRationalOracle) {
+    std::mt19937_64 engine(0x583a17);
+    for (int i = 0; i < 4000; ++i) {
+        const int64_t a = RandomRaw(engine) / (INT64_C(1) << (engine() % 48));
+        const int64_t b = RandomRaw(engine) / (INT64_C(1) << (engine() % 48));
+        int64_t divisor = RandomRaw(engine) / (INT64_C(1) << (engine() % 48));
+        if (divisor == 0) divisor = 1;
+        int64_t result = kSentinel;
+        auto status = linears_fixed_mul(a, b, &result);
+        ASSERT_TRUE(MatchesFixed(status, result, RoundRatio(static_cast<Wide>(a) * b, kOne))) << i;
+        result = kSentinel;
+        status = linears_fixed_div(a, divisor, &result);
+        ASSERT_TRUE(MatchesFixed(status, result, RoundRatio(static_cast<Wide>(a) * kOne, divisor))) << i;
+        result = kSentinel;
+        status = linears_fixed_muldiv(a, b, divisor, &result);
+        ASSERT_TRUE(MatchesFixed(status, result, RoundRatio(static_cast<Wide>(a) * b, divisor))) << i;
+    }
+}
+
+TEST(AuditFixedSquareRoot, TinyInputsExactSquaresAndInt64Maximum) {
+    constexpr std::array<int64_t, 16> samples{0, 1, 2, 3, 4, kOne / 4,
+        kOne - 1, kOne, kOne + 1, 4 * kOne, (INT64_C(1) << 33) - 1,
+        INT64_C(1) << 33, (INT64_C(1) << 33) + 1, INT64_C(1) << 62, INT64_MAX - 1, INT64_MAX};
+    for (const auto raw : samples) {
+        int64_t result = kSentinel;
+        ASSERT_EQ(linears_fixed_sqrt(raw, &result), LINEARS_OK);
+        EXPECT_EQ(result, SqrtReference(raw)) << raw;
+    }
+    for (const int64_t integer : {INT64_C(1), INT64_C(7), INT64_C(65535)}) {
+        int64_t result = kSentinel;
+        const int64_t square = integer * integer * kOne;
+        ASSERT_EQ(linears_fixed_sqrt(square, &result), LINEARS_OK);
+        EXPECT_EQ(result, integer * kOne);
+    }
+}
+
+TEST(AuditFixedSquareRoot, IndependentBinarySearchOnFullWorkingDomain) {
+    std::mt19937_64 engine(0x2591ad);
+    for (int i = 0; i < 3000; ++i) {
+        const int64_t raw = static_cast<int64_t>(engine() & INT64_MAX);
+        int64_t result = kSentinel;
+        ASSERT_EQ(linears_fixed_sqrt(raw, &result), LINEARS_OK);
+        ASSERT_EQ(result, SqrtReference(raw)) << raw;
+    }
+}
+
+TEST(AuditFixedOrdering, EveryInt64ValueIsValidAndOrderingDoesNotRescale) {
+    for (const auto a : kEdges) for (const auto b : kEdges)
+        EXPECT_EQ(linears_fixed_compare(a, b), (a > b) - (a < b));
+    for (const auto value : kEdges) {
+        int64_t output = kSentinel;
+        auto status = linears_fixed_neg(value, &output);
+        EXPECT_TRUE(MatchesFixed(status, output, -static_cast<Wide>(value)));
+        output = kSentinel;
+        status = linears_fixed_abs(value, &output);
+        const Wide expected = value < 0 ? -static_cast<Wide>(value) : value;
+        EXPECT_TRUE(MatchesFixed(status, output, expected));
+    }
+}
+
+TEST(AuditFixedQuantize, ClosedDomainAndPositiveEndpointGapAreMonotone) {
+    constexpr std::array<int64_t, 18> inputs{INT64_MIN, -kOne - 1, -kOne, -kOne + 1,
+        -32769, -32768, -32767, 0, 32767, 32768, 32769,
+        kOne - 32769, kOne - 32768, kOne - 32767, kOne - 1, kOne, kOne + 1, INT64_MAX};
+    for (const auto raw : inputs) {
+        int16_t q15 = 123; int32_t q31 = 456;
+        const auto ref15 = SignalReference(raw, 31, 15, q15);
+        const auto ref31 = SignalReference(raw, 31, 31, q31);
+        ASSERT_EQ(linears_fixed_to_q15(raw, &q15), ref15.status);
+        ASSERT_EQ(linears_fixed_to_q31(raw, &q31), ref31.status);
+        EXPECT_EQ(q15, ref15.raw) << raw;
+        EXPECT_EQ(q31, ref31.raw) << raw;
+    }
+}
+
+TEST(AuditFixedQuantize, EveryQ15RoundingMidpointAndItsNeighbors) {
+    for (int64_t code = INT16_MIN; code < INT16_MAX; ++code) {
+        const int64_t midpoint = code * 65536 + 32768;
+        for (const int64_t delta : {-1, 0, 1}) {
+            const int64_t raw = midpoint + delta;
             int16_t output = 123;
-            ASSERT_EQ(linears_fixed_to_q15(value, exponent, &output), LINEARS_OK);
-            ASSERT_EQ(output, raw) << "raw=" << raw << ", exponent=" << exponent;
+            const auto expected = SignalReference(raw, 31, 15, output);
+            ASSERT_EQ(linears_fixed_to_q15(raw, &output), expected.status);
+            ASSERT_EQ(output, expected.raw) << code << "," << delta;
         }
     }
 }
 
-TEST(AuditFixedImport, Q31SignsNormalizationAndRawIntMinRoundTrip) {
-    constexpr std::array<int32_t, 17> mantissas{
-        INT32_MIN, -kFull, -kHalf - 1, -kHalf, -kHalf + 1, -536870912, -3, -1,
-        0, 1, 3, 536870912, kHalf - 1, kHalf, kHalf + 1, kFull - 1, kFull};
-    for (const int exponent : {-100, -1, 0, 1, 100}) {
-        for (const int32_t raw : mantissas) {
-            linears_fixed_t value = kSentinel;
-            ASSERT_EQ(linears_fixed_from_q31({raw, exponent}, &value), LINEARS_OK);
-            const long double exact = std::ldexp(static_cast<long double>(raw), exponent - 31);
-            ASSERT_TRUE(RoundedAs(value, exact)) << "raw=" << raw << ", exponent=" << exponent;
-            ASSERT_EQ(AsReal(value), exact);
-            int32_t output = 123;
-            ASSERT_EQ(linears_fixed_to_q31(value, exponent, &output), LINEARS_OK);
-            ASSERT_EQ(output, raw);
-        }
+TEST(AuditFixedAccumulator, CarryBorrowAndSignedBitPatternsAreExact) {
+    constexpr std::array<linears_accum_t, 7> starts{{
+        {0, 0}, {UINT64_MAX, 0}, {0, 1}, {0, UINT64_MAX},
+        {UINT64_MAX, UINT64_MAX}, {UINT64_MAX - 1, UINT64_MAX >> 1}, {1, UINT64_C(1) << 63}}};
+    for (const auto initial : starts) for (const int64_t term : {-1, 1}) {
+        auto actual = initial;
+        ASSERT_EQ(linears_fixed_mac(&actual, term, 1), LINEARS_OK);
+        EXPECT_TRUE(SameAccum(actual, EncodeAccum(DecodeAccum(initial) + term)));
+        actual = initial;
+        ASSERT_EQ(linears_fixed_msu(&actual, term, 1), LINEARS_OK);
+        EXPECT_TRUE(SameAccum(actual, EncodeAccum(DecodeAccum(initial) - term)));
     }
-    linears_fixed_t minimum{};
-    ASSERT_EQ(linears_fixed_from_q31({INT32_MIN, 0}, &minimum), LINEARS_OK);
-    EXPECT_TRUE(SameFixed(minimum, {-kHalf, 1}));
 }
 
-TEST(AuditFixedImport, EveryDenominatorAndInt64ExtremesUseIndependentMath) {
-    constexpr std::array<int64_t, 17> integers{
-        INT64_MIN, INT64_MIN + 1, -INT64_C(4294967295), -INT64_C(2147483649),
-        -INT64_C(2147483648), -INT64_C(2147483647), -17, -1, 0, 1, 17,
-        INT64_C(2147483647), INT64_C(2147483648), INT64_C(2147483649),
-        INT64_C(4294967295), INT64_MAX - 1, INT64_MAX};
-    for (int fractional_bits = 0; fractional_bits <= 63; ++fractional_bits) {
-        for (const auto raw : integers) {
-            for (const int exponent : {-20, 0, 20}) {
-                linears_fixed_t output = kSentinel;
-                ASSERT_EQ(linears_fixed_from_i64(raw, fractional_bits, exponent, &output), LINEARS_OK);
-                ASSERT_TRUE(RoundedAs(output, std::ldexp(static_cast<long double>(raw),
-                                                        exponent - fractional_bits)))
-                    << "raw=" << raw << ", denominator=" << fractional_bits;
+TEST(AuditFixedAccumulator, Signed128OverflowPreservesBothLimbs) {
+    for (const bool subtract : {false, true}) {
+        auto accumulator = EncodeAccum(subtract ? kWideMin : kWideMax);
+        const auto before = accumulator;
+        const auto status = subtract ? linears_fixed_msu(&accumulator, 1, 1)
+                                     : linears_fixed_mac(&accumulator, 1, 1);
+        EXPECT_EQ(status, LINEARS_ERROR_RANGE);
+        EXPECT_TRUE(SameAccum(accumulator, before));
+    }
+    linears_accum_t accumulator{0, 0};
+    ASSERT_EQ(linears_fixed_mac(&accumulator, INT64_MIN, INT64_MIN), LINEARS_OK);
+    EXPECT_TRUE(SameAccum(accumulator, EncodeAccum(Wide{1} << 126)));
+    const auto before = accumulator;
+    EXPECT_EQ(linears_fixed_mac(&accumulator, INT64_MIN, INT64_MIN), LINEARS_ERROR_RANGE);
+    EXPECT_TRUE(SameAccum(accumulator, before));
+    accumulator = {0, 0};
+    ASSERT_EQ(linears_fixed_msu(&accumulator, INT64_MIN, INT64_MIN), LINEARS_OK);
+    ASSERT_EQ(linears_fixed_msu(&accumulator, INT64_MIN, INT64_MIN), LINEARS_OK);
+    EXPECT_TRUE(SameAccum(accumulator, EncodeAccum(kWideMin)));
+    EXPECT_EQ(linears_fixed_msu(&accumulator, 1, 1), LINEARS_ERROR_RANGE);
+    EXPECT_TRUE(SameAccum(accumulator, EncodeAccum(kWideMin)));
+}
+
+TEST(AuditFixedAccumulator, MacAndMsuMatchIndependentSigned128Arithmetic) {
+    std::mt19937_64 engine(0x785ae1);
+    Wide exact = 0;
+    linears_accum_t accumulator{0, 0};
+    for (int i = 0; i < 4000; ++i) {
+        const int64_t a = RandomRaw(engine), b = RandomRaw(engine);
+        const bool subtract = (engine() & 1) != 0;
+        Wide term = static_cast<Wide>(a) * b;
+        if (subtract) term = -term;
+        const bool overflow = (term > 0 && exact > kWideMax - term) ||
+                              (term < 0 && exact < kWideMin - term);
+        const auto before = accumulator;
+        const auto status = subtract ? linears_fixed_msu(&accumulator, a, b)
+                                     : linears_fixed_mac(&accumulator, a, b);
+        ASSERT_EQ(status, overflow ? LINEARS_ERROR_RANGE : LINEARS_OK);
+        if (overflow) {
+            ASSERT_TRUE(SameAccum(accumulator, before));
+        } else {
+            exact += term;
+            ASSERT_TRUE(SameAccum(accumulator, EncodeAccum(exact)));
+        }
+    }
+}
+
+TEST(AuditFixedAccumulator, HugeProductsCancelBeforeFinalRounding) {
+    for (const int sign : {-1, 1}) {
+        linears_accum_t accumulator{0, 0};
+        ASSERT_EQ(linears_fixed_mac(&accumulator, INT64_MIN, INT64_MIN), LINEARS_OK);
+        ASSERT_EQ(linears_fixed_mac(&accumulator, sign, kOne / 2), LINEARS_OK);
+        ASSERT_EQ(linears_fixed_msu(&accumulator, INT64_MIN, INT64_MIN), LINEARS_OK);
+        EXPECT_TRUE(SameAccum(accumulator, EncodeAccum(static_cast<Wide>(sign) * (kOne / 2))));
+        int64_t working = kSentinel;
+        ASSERT_EQ(linears_accum_to_fixed(accumulator, &working), LINEARS_OK);
+        EXPECT_EQ(working, sign);
+    }
+    linears_accum_t sum{0, 0};
+    ASSERT_EQ(linears_fixed_mac(&sum, 1, kOne / 2), LINEARS_OK);
+    ASSERT_EQ(linears_fixed_mac(&sum, 1, kOne / 2), LINEARS_OK);
+    int64_t output = kSentinel;
+    ASSERT_EQ(linears_accum_to_fixed(sum, &output), LINEARS_OK);
+    EXPECT_EQ(output, 1); // Separately rounded products would incorrectly add to 2.
+}
+
+TEST(AuditFixedAccumulator, WorkingExportChecksRoundedInt64Boundary) {
+    const Wide upper = static_cast<Wide>(INT64_MAX) * kOne;
+    const Wide lower = static_cast<Wide>(INT64_MIN) * kOne;
+    const std::array<Wide, 12> inputs{kWideMin, kWideMax, lower - kOne / 2,
+        lower - kOne / 2 + 1, lower, lower + kOne / 2, -Wide{kOne} / 2,
+        Wide{kOne} / 2, upper, upper + kOne / 2 - 1, upper + kOne / 2, upper + kOne};
+    for (const auto raw : inputs) {
+        int64_t output = kSentinel;
+        const auto status = linears_accum_to_fixed(EncodeAccum(raw), &output);
+        ASSERT_TRUE(MatchesFixed(status, output, RoundRatio(raw, kOne)));
+    }
+}
+
+TEST(AuditFixedAccumulator, ExactF62DomainCheckPrecedesAnyWorkingRounding) {
+    const Wide one = Wide{1} << 62;
+    const std::array<Wide, 8> values{-one - 1, -one, -one + 1, -1, 1, one - 1, one, one + 1};
+    for (const auto raw : values) {
+        int16_t q15 = 123; int32_t q31 = 456;
+        const auto expected15 = SignalReference(raw, 62, 15, q15);
+        const auto expected31 = SignalReference(raw, 62, 31, q31);
+        ASSERT_EQ(linears_accum_to_q15(EncodeAccum(raw), &q15), expected15.status);
+        ASSERT_EQ(linears_accum_to_q31(EncodeAccum(raw), &q31), expected31.status);
+        EXPECT_EQ(q15, expected15.raw); EXPECT_EQ(q31, expected31.raw);
+    }
+    int64_t rounded = kSentinel;
+    ASSERT_EQ(linears_accum_to_fixed(EncodeAccum(one + 1), &rounded), LINEARS_OK);
+    EXPECT_EQ(rounded, kOne);
+    int32_t output = 123;
+    EXPECT_EQ(linears_accum_to_q31(EncodeAccum(one + 1), &output), LINEARS_ERROR_RANGE);
+    EXPECT_EQ(output, 123);
+}
+
+TEST(AuditFixedAccumulator, DirectQExportRoundsOnlyOnceAtBothBinaryPoints) {
+    for (const int bits : {15, 31}) {
+        const Wide step = Wide{1} << (62 - bits);
+        for (const int64_t code : {INT64_C(0), INT64_C(1), INT64_C(17), INT64_C(32766), INT64_C(32767)}) {
+            for (const int delta : {-1, 0, 1}) for (const int sign : {-1, 1}) {
+                const Wide raw = sign * (code * step + step / 2 + delta);
+                const auto reference = SignalReference(raw, 62, bits, 123);
+                if (bits == 15) {
+                    int16_t output = 123;
+                    ASSERT_EQ(linears_accum_to_q15(EncodeAccum(raw), &output), reference.status);
+                    ASSERT_EQ(output, reference.raw);
+                } else {
+                    int32_t output = 123;
+                    ASSERT_EQ(linears_accum_to_q31(EncodeAccum(raw), &output), reference.status);
+                    ASSERT_EQ(output, reference.raw);
+                }
             }
         }
     }
+    // Just below a q15 midpoint, first rounding to F31 would create a false tie.
+    const Wide raw = (Wide{1} << 46) - 1;
+    int16_t output = 123;
+    ASSERT_EQ(linears_accum_to_q15(EncodeAccum(raw), &output), LINEARS_OK);
+    EXPECT_EQ(output, 0);
 }
 
-TEST(AuditFixedImport, HalfwayRoundsAwayFromZeroAndCarryRenormalizes) {
-    struct Case { int64_t input; linears_fixed_t expected; };
-    constexpr std::array<Case, 6> cases{{
-        {INT64_C(2147483649), {kHalf + 1, 32}},
-        {INT64_C(4294967297), {kHalf, 33}},
-        {INT64_C(4294967298), {kHalf + 1, 33}},
-        {INT64_C(4294967299), {kHalf + 1, 33}},
-        {INT64_C(4294967295), {kHalf, 33}},
-        {INT64_MAX, {kHalf, 64}},
-    }};
-    for (const auto &item : cases) {
-        for (const int sign : {-1, 1}) {
-            linears_fixed_t output{};
-            ASSERT_EQ(linears_fixed_from_i64(sign * item.input, 0, 0, &output), LINEARS_OK);
-            EXPECT_TRUE(SameFixed(output, {sign * item.expected.mantissa, item.expected.exponent}));
-        }
-    }
-    linears_fixed_t output{};
-    ASSERT_EQ(linears_fixed_from_i64(INT64_MIN, 63, 0, &output), LINEARS_OK);
-    EXPECT_TRUE(SameFixed(output, {-kHalf, 1}));
-}
-
-TEST(AuditFixedImport, ValidityRejectsNoncanonicalZeroAndIntMin) {
-    for (const auto value : std::array<linears_fixed_t, 7>{{
-             kZero, kOne, {-kHalf, 1}, {kFull, LINEARS_EXPONENT_MIN},
-             {-kFull, LINEARS_EXPONENT_MIN}, {kHalf, LINEARS_EXPONENT_MAX},
-             {-kHalf, LINEARS_EXPONENT_MAX}}})
-        EXPECT_NE(linears_fixed_valid(value), 0);
-    for (const auto value : std::array<linears_fixed_t, 8>{{
-             {0, 1}, {0, LINEARS_EXPONENT_MIN}, {1, 0}, {-1, 0},
-             {kHalf - 1, 0}, {INT32_MIN, 0},
-             {kHalf, LINEARS_EXPONENT_MIN - 1}, {kHalf, LINEARS_EXPONENT_MAX + 1}}})
-        EXPECT_EQ(linears_fixed_valid(value), 0) << value.mantissa << ", " << value.exponent;
-}
-
-TEST(AuditFixedAddSubtract, HalfwaySignsAndNormalizationBoundary) {
-    for (const int sign : {-1, 1}) {
-        linears_fixed_t result{};
-        ASSERT_EQ(linears_fixed_add({sign * kHalf, 0}, {sign * kHalf, -31}, &result), LINEARS_OK);
-        EXPECT_TRUE(SameFixed(result, {sign * (kHalf + 1), 0}));
-        ASSERT_EQ(linears_fixed_add({sign * kFull, 0}, {sign * kHalf, -31}, &result), LINEARS_OK);
-        EXPECT_TRUE(SameFixed(result, {sign * kHalf, 1}));
-        // At a power of two, subtraction enters the finer neighboring binade.
-        ASSERT_EQ(linears_fixed_sub({sign * kHalf, 0}, {sign * kHalf, -31}, &result), LINEARS_OK);
-        EXPECT_TRUE(SameFixed(result, {sign * kFull, -1}));
-    }
-}
-
-TEST(AuditFixedAddSubtract, CatastrophicCancellationRetainsTheExactResidual) {
-    for (const int exponent : {-100, 0, 100}) {
-        for (const int sign : {-1, 1}) {
-            linears_fixed_t output{};
-            const linears_fixed_t a{sign * (kHalf + 1), exponent};
-            const linears_fixed_t b{sign * kHalf, exponent};
-            ASSERT_EQ(linears_fixed_sub(a, b, &output), LINEARS_OK);
-            EXPECT_TRUE(SameFixed(output, {sign * kHalf, exponent - 30}));
-            ASSERT_EQ(linears_fixed_add(a, {-b.mantissa, b.exponent}, &output), LINEARS_OK);
-            EXPECT_TRUE(RoundedAs(output, AsReal(a) - AsReal(b)));
-            const linears_fixed_t lower{sign * kFull, exponent - 1};
-            ASSERT_EQ(linears_fixed_sub(b, lower, &output), LINEARS_OK);
-            EXPECT_TRUE(SameFixed(output, {sign * kHalf, exponent - 31}));
-            ASSERT_EQ(linears_fixed_sub(a, a, &output), LINEARS_OK);
-            EXPECT_TRUE(SameFixed(output, kZero));
+TEST(AuditFixedMean, FullUnsignedCountsCheckExactDomainBeforeDivision) {
+    for (const uint64_t count : {UINT64_C(1), UINT64_C(3), UINT64_C(1) << 63, UINT64_MAX - 1, UINT64_MAX}) {
+        const Wide edge = static_cast<Wide>(count) * (Wide{1} << 62);
+        const std::array<Wide, 9> values{-edge - 1, -edge, -edge + 1, -1, 0, 1, edge - 1, edge, edge + 1};
+        for (const auto value : values) {
+            int16_t q15 = 123; int32_t q31 = 456;
+            const auto ref15 = MeanReference(value, count, 15, q15);
+            const auto ref31 = MeanReference(value, count, 31, q31);
+            ASSERT_EQ(linears_accum_mean_q15(EncodeAccum(value), count, &q15), ref15.status);
+            ASSERT_EQ(linears_accum_mean_q31(EncodeAccum(value), count, &q31), ref31.status);
+            ASSERT_EQ(q15, ref15.raw) << count;
+            ASSERT_EQ(q31, ref31.raw) << count;
         }
     }
 }
 
-TEST(AuditFixedAddSubtract, AlignmentDistancesAndOperandOrderMatchMath) {
-    constexpr std::array<int, 12> distances{0, 1, 2, 15, 29, 30, 31, 32, 33, 34, 64, 80};
-    for (const int distance : distances) {
-        for (const int32_t ma : {kHalf, kHalf + 1, kFull}) {
-            for (const int32_t mb : {kHalf, kHalf + 1, kFull}) {
-                for (const int sign_a : {-1, 1}) {
-                    for (const int sign_b : {-1, 1}) {
-                        const linears_fixed_t a{sign_a * ma, 3};
-                        const linears_fixed_t b{sign_b * mb, 3 - distance};
-                        linears_fixed_t output{};
-                        ASSERT_EQ(linears_fixed_add(a, b, &output), LINEARS_OK);
-                        ASSERT_TRUE(RoundedAs(output, AsReal(a) + AsReal(b))) << "distance=" << distance;
-                        ASSERT_EQ(linears_fixed_add(b, a, &output), LINEARS_OK);
-                        ASSERT_TRUE(RoundedAs(output, AsReal(a) + AsReal(b)));
-                        ASSERT_EQ(linears_fixed_sub(a, b, &output), LINEARS_OK);
-                        ASSERT_TRUE(RoundedAs(output, AsReal(a) - AsReal(b)));
+TEST(AuditFixedMean, OddCountsAndMidpointNeighborsRoundOnlyTheFinalRational) {
+    for (const int bits : {15, 31}) {
+        const Wide step = Wide{1} << (62 - bits);
+        for (const uint64_t count : {UINT64_C(1), UINT64_C(3), UINT64_C(17), UINT64_MAX}) {
+            for (const int64_t code : {INT64_C(0), INT64_C(1), INT64_C(32766)}) {
+                for (const int delta : {-1, 0, 1}) for (const int sign : {-1, 1}) {
+                    const Wide value = sign * ((code * step + step / 2) * count + delta);
+                    const auto expected = MeanReference(value, count, bits, 123);
+                    if (bits == 15) {
+                        int16_t raw = 123;
+                        ASSERT_EQ(linears_accum_mean_q15(EncodeAccum(value), count, &raw), expected.status);
+                        ASSERT_EQ(raw, expected.raw);
+                    } else {
+                        int32_t raw = 123;
+                        ASSERT_EQ(linears_accum_mean_q31(EncodeAccum(value), count, &raw), expected.status);
+                        ASSERT_EQ(raw, expected.raw);
                     }
                 }
             }
@@ -250,571 +513,263 @@ TEST(AuditFixedAddSubtract, AlignmentDistancesAndOperandOrderMatchMath) {
     }
 }
 
-TEST(AuditFixedAddSubtract, WorkingPrecisionIsNotAnExactFractionalAccumulator) {
-    const linears_fixed_t half_ulp{kHalf, -31};
-    linears_fixed_t sum{};
-    linears_fixed_t residual{};
-    ASSERT_EQ(linears_fixed_add({kHalf, 0}, half_ulp, &sum), LINEARS_OK);
-    ASSERT_EQ(linears_fixed_sub(sum, {kHalf, 0}, &residual), LINEARS_OK);
-    EXPECT_TRUE(SameFixed(residual, {kHalf, -30}));
-    EXPECT_NE(AsReal(residual), AsReal(half_ulp));
-}
-
-TEST(AuditFixedMultiplyDivide, ProductsAndQuotientsMatchIndependentMath) {
-    std::minstd_rand random(92741);
-    for (int iteration = 0; iteration < 4000; ++iteration) {
-        const auto a = RandomCanonical(random, 100);
-        const auto b = RandomCanonical(random, 100);
-        linears_fixed_t output{};
-        ASSERT_EQ(linears_fixed_mul(a, b, &output), LINEARS_OK);
-        ASSERT_TRUE(RoundedAs(output, AsReal(a) * AsReal(b))) << "iteration=" << iteration;
-        ASSERT_EQ(linears_fixed_div(a, b, &output), LINEARS_OK);
-        ASSERT_TRUE(RoundedAs(output, AsReal(a) / AsReal(b))) << "iteration=" << iteration;
+TEST(AuditFixedMean, Random128SumsAndUint64DivisorsMatchOneExactDivision) {
+    std::mt19937_64 engine(0x918427);
+    for (int i = 0; i < 3000; ++i) {
+        const linears_accum_t value{engine(), engine()};
+        const uint64_t count = engine() | UINT64_C(1);
+        const Wide exact = DecodeAccum(value);
+        int16_t q15 = 123; int32_t q31 = 456;
+        const auto ref15 = MeanReference(exact, count, 15, q15);
+        const auto ref31 = MeanReference(exact, count, 31, q31);
+        ASSERT_EQ(linears_accum_mean_q15(value, count, &q15), ref15.status);
+        ASSERT_EQ(linears_accum_mean_q31(value, count, &q31), ref31.status);
+        ASSERT_EQ(q15, ref15.raw); ASSERT_EQ(q31, ref31.raw);
     }
+    int16_t q15 = 123; int32_t q31 = 456;
+    EXPECT_EQ(linears_accum_mean_q15({0, 0}, 0, &q15), LINEARS_ERROR_DOMAIN);
+    EXPECT_EQ(linears_accum_mean_q31({0, 0}, 0, &q31), LINEARS_ERROR_DOMAIN);
+    EXPECT_EQ(q15, 123); EXPECT_EQ(q31, 456);
+    EXPECT_EQ(linears_accum_mean_q15({0, 0}, 1, nullptr), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_accum_mean_q31({0, 0}, 1, nullptr), LINEARS_ERROR_ARGUMENT);
 }
 
-TEST(AuditFixedMultiplyDivide, ProductMidpointsRoundAwayForBothSigns) {
-    for (const int sign_a : {-1, 1}) {
-        for (const int sign_b : {-1, 1}) {
-            const linears_fixed_t a{sign_a * (kHalf + 1), 0};
-            const linears_fixed_t b{sign_b * INT32_C(1610612736), 0};
-            linears_fixed_t output{};
-            ASSERT_EQ(linears_fixed_mul(a, b, &output), LINEARS_OK);
-            EXPECT_TRUE(SameFixed(output, {sign_a * sign_b * INT32_C(1610612738), -1}));
-            EXPECT_TRUE(RoundedAs(output, AsReal(a) * AsReal(b)));
-        }
-    }
+TEST(AuditFixedAtomicFailure, ArgumentsDomainsAndUnaryOverflowKeepSentinels) {
+    for (const auto operation : kBinary) EXPECT_EQ(operation(kOne, kOne, nullptr), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_fixed_muldiv(1, 1, 1, nullptr), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_fixed_sqrt(0, nullptr), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_fixed_neg(0, nullptr), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_fixed_abs(0, nullptr), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_fixed_to_q15(0, nullptr), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_fixed_to_q31(0, nullptr), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_fixed_mac(nullptr, 0, 0), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_fixed_msu(nullptr, 0, 0), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_accum_to_fixed({0, 0}, nullptr), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_accum_to_q15({0, 0}, nullptr), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_accum_to_q31({0, 0}, nullptr), LINEARS_ERROR_ARGUMENT);
+    AtomicFailure(LINEARS_ERROR_DOMAIN, [](auto *out) { return linears_fixed_div(0, 0, out); });
+    AtomicFailure(LINEARS_ERROR_DOMAIN, [](auto *out) { return linears_fixed_muldiv(INT64_MIN, INT64_MIN, 0, out); });
+    for (const int64_t negative : {INT64_MIN, -kOne, INT64_C(-1)})
+        AtomicFailure(LINEARS_ERROR_DOMAIN, [=](auto *out) { return linears_fixed_sqrt(negative, out); });
+    AtomicFailure(LINEARS_ERROR_RANGE, [](auto *out) { return linears_fixed_neg(INT64_MIN, out); });
+    AtomicFailure(LINEARS_ERROR_RANGE, [](auto *out) { return linears_fixed_abs(INT64_MIN, out); });
+    AtomicFailure(LINEARS_ERROR_RANGE, [](auto *out) { return linears_fixed_add(INT64_MAX, 1, out); });
+    AtomicFailure(LINEARS_ERROR_RANGE, [](auto *out) { return linears_fixed_sub(INT64_MIN, 1, out); });
 }
 
-TEST(AuditFixedMultiplyDivide, DivisionNearHalfwayAndExactIdentities) {
-    for (const int sign : {-1, 1}) {
-        linears_fixed_t output{};
-        // 2^61/(2^31-1) = 2^30 + 1/2 + 1/(2*(2^31-1)).
-        ASSERT_EQ(linears_fixed_div({sign * kHalf, 0}, {kFull, 0}, &output), LINEARS_OK);
-        EXPECT_TRUE(SameFixed(output, {sign * (kHalf + 1), 0}));
-        ASSERT_EQ(linears_fixed_div({sign * kHalf, 0}, {kFull - 2, 0}, &output), LINEARS_OK);
-        EXPECT_TRUE(SameFixed(output, {sign * (kHalf + 2), 0}));
-        for (const int exponent : {-100, 0, 100}) {
-            const linears_fixed_t value{sign * kFull, exponent};
-            ASSERT_EQ(linears_fixed_div(value, value, &output), LINEARS_OK);
-            EXPECT_TRUE(SameFixed(output, kOne));
-            ASSERT_EQ(linears_fixed_mul(value, kOne, &output), LINEARS_OK);
-            EXPECT_TRUE(SameFixed(output, value));
-            ASSERT_EQ(linears_fixed_div(value, kOne, &output), LINEARS_OK);
-            EXPECT_TRUE(SameFixed(output, value));
-        }
-    }
-}
-
-TEST(AuditFixedSquareRoot, NegativeOddAndEvenExponentsMatchIndependentMath) {
-    for (int exponent = -101; exponent <= 101; ++exponent) {
-        for (const int32_t mantissa : {kHalf, kHalf + 1, INT32_C(1610612736), kFull - 1, kFull}) {
-            const linears_fixed_t value{mantissa, exponent};
-            linears_fixed_t result{};
-            ASSERT_EQ(linears_fixed_sqrt(value, &result), LINEARS_OK);
-            ASSERT_TRUE(RoundedAs(result, std::sqrt(AsReal(value))))
-                << "mantissa=" << mantissa << ", exponent=" << exponent;
-        }
-    }
-    std::minstd_rand random(75431);
-    for (int iteration = 0; iteration < 4000; ++iteration) {
-        auto value = RandomCanonical(random, 100);
-        if (value.mantissa < 0) value.mantissa = -value.mantissa;
-        linears_fixed_t result{};
-        ASSERT_EQ(linears_fixed_sqrt(value, &result), LINEARS_OK);
-        ASSERT_TRUE(RoundedAs(result, std::sqrt(AsReal(value)))) << "iteration=" << iteration;
-    }
-}
-
-TEST(AuditFixedSquareRoot, ExactSquaresAndExponentExtremes) {
-    linears_fixed_t result{};
-    ASSERT_EQ(linears_fixed_sqrt(kZero, &result), LINEARS_OK);
-    EXPECT_TRUE(SameFixed(result, kZero));
-    for (const int exponent : {LINEARS_EXPONENT_MIN, -101, -1, 1, 101,
-                               LINEARS_EXPONENT_MAX - 1, LINEARS_EXPONENT_MAX}) {
-        const linears_fixed_t value{kHalf, exponent};
-        ASSERT_EQ(linears_fixed_sqrt(value, &result), LINEARS_OK);
-        if (exponent % 2 != 0) {
-            EXPECT_TRUE(SameFixed(result, {kHalf, (exponent + 1) / 2}));
-        } else {
-            EXPECT_TRUE(SameFixed(result, {INT32_C(1518500250), exponent / 2}));
-        }
-    }
-}
-
-TEST(AuditFixedOrdering, SignZeroAndHugeExponentDifferences) {
-    constexpr std::array<linears_fixed_t, 9> increasing{{
-        {-kFull, LINEARS_EXPONENT_MAX}, {-kHalf, LINEARS_EXPONENT_MAX},
-        {-kFull, LINEARS_EXPONENT_MIN}, {-kHalf, LINEARS_EXPONENT_MIN}, kZero,
-        {kHalf, LINEARS_EXPONENT_MIN}, {kFull, LINEARS_EXPONENT_MIN},
-        {kHalf, LINEARS_EXPONENT_MAX}, {kFull, LINEARS_EXPONENT_MAX}}};
-    for (size_t a = 0; a < increasing.size(); ++a)
-        for (size_t b = 0; b < increasing.size(); ++b)
-            EXPECT_EQ(linears_fixed_compare(increasing[a], increasing[b]),
-                      (a > b) - (a < b)) << "a=" << a << ", b=" << b;
-    std::minstd_rand random(2347);
-    for (int iteration = 0; iteration < 1000; ++iteration) {
-        const auto a = RandomCanonical(random, 100);
-        const auto b = RandomCanonical(random, 100);
-        EXPECT_EQ(linears_fixed_compare(a, b), (AsReal(a) > AsReal(b)) - (AsReal(a) < AsReal(b)));
-    }
-}
-
-TEST(AuditFixedOrdering, NegationAndAbsoluteValueDoNotChangeMagnitudeOrScale) {
-    for (const int exponent : {LINEARS_EXPONENT_MIN, -1, 0, 1, LINEARS_EXPONENT_MAX}) {
-        for (const int32_t mantissa : {-kFull, -kHalf, kHalf, kFull}) {
-            const linears_fixed_t value{mantissa, exponent};
-            linears_fixed_t output{};
-            ASSERT_EQ(linears_fixed_neg(value, &output), LINEARS_OK);
-            EXPECT_TRUE(SameFixed(output, {-mantissa, exponent}));
-            ASSERT_EQ(linears_fixed_abs(value, &output), LINEARS_OK);
-            EXPECT_TRUE(SameFixed(output, {mantissa < 0 ? -mantissa : mantissa, exponent}));
-        }
-    }
-    linears_fixed_t output{};
-    ASSERT_EQ(linears_fixed_neg(kZero, &output), LINEARS_OK);
-    EXPECT_TRUE(SameFixed(output, kZero));
-    ASSERT_EQ(linears_fixed_abs(kZero, &output), LINEARS_OK);
-    EXPECT_TRUE(SameFixed(output, kZero));
-}
-
-TEST(AuditFixedQuantize, Q15HalfwayAndSignedStorageBoundaries) {
-    struct Case { linears_fixed_t value; linears_status_t status; int16_t output; };
-    constexpr std::array<Case, 13> cases{{
-        {{kHalf, -15}, LINEARS_OK, 1},
-        {{-kHalf, -15}, LINEARS_OK, -1},
-        {{kHalf, -16}, LINEARS_OK, 0},
-        {{-kHalf, -16}, LINEARS_OK, 0},
-        {{INT32_C(0x7fff7fff), 0}, LINEARS_OK, INT16_MAX},
-        {{INT32_C(0x7fff8000), 0}, LINEARS_ERROR_RANGE, 0},
-        {{-INT32_C(0x7fff8000), 0}, LINEARS_OK, INT16_MIN},
-        {{-kFull, 0}, LINEARS_OK, INT16_MIN},
-        {{kHalf, 1}, LINEARS_ERROR_RANGE, 0},
-        {{-kHalf, 1}, LINEARS_OK, INT16_MIN},
-        {{-(kHalf + 16383), 1}, LINEARS_OK, INT16_MIN},
-        {{-(kHalf + 16384), 1}, LINEARS_ERROR_RANGE, 0},
-        {{kFull, 1}, LINEARS_ERROR_RANGE, 0},
-    }};
-    for (const auto &item : cases) {
-        int16_t output = 117;
-        ASSERT_EQ(linears_fixed_to_q15(item.value, 0, &output), item.status);
-        EXPECT_EQ(output, item.status == LINEARS_OK ? item.output : 117);
-    }
-}
-
-TEST(AuditFixedQuantize, Q31HalfwayAndSignedStorageBoundaries) {
-    struct Case { linears_fixed_t value; int exponent; linears_status_t status; int32_t output; };
-    constexpr std::array<Case, 10> cases{{
-        {{kHalf + 1, 0}, 1, LINEARS_OK, 536870913},
-        {{-kHalf - 1, 0}, 1, LINEARS_OK, -536870913},
-        {{kHalf, -31}, 0, LINEARS_OK, 1},
-        {{-kHalf, -31}, 0, LINEARS_OK, -1},
-        {{kHalf, -32}, 0, LINEARS_OK, 0},
-        {{-kHalf, -32}, 0, LINEARS_OK, 0},
-        {{kFull, 0}, 0, LINEARS_OK, INT32_MAX},
-        {{-kHalf, 1}, 0, LINEARS_OK, INT32_MIN},
-        {{kHalf, 1}, 0, LINEARS_ERROR_RANGE, 0},
-        {{-kHalf - 1, 1}, 0, LINEARS_ERROR_RANGE, 0},
-    }};
-    for (const auto &item : cases) {
-        int32_t output = 119;
-        ASSERT_EQ(linears_fixed_to_q31(item.value, item.exponent, &output), item.status);
-        EXPECT_EQ(output, item.status == LINEARS_OK ? item.output : 119);
-    }
-}
-
-TEST(AuditFixedQuantize, DifferentScalesMatchMathAndUnderflowToZero) {
-    std::minstd_rand random(21431);
-    for (int iteration = 0; iteration < 3000; ++iteration) {
-        const auto value = RandomCanonical(random, 30);
-        const int exponent = static_cast<int>(random() % 81) - 40;
-        const long double exact15 = std::round(std::ldexp(AsReal(value), 15 - exponent));
-        const long double exact31 = std::round(std::ldexp(AsReal(value), 31 - exponent));
-        int16_t q15 = 123;
-        int32_t q31 = 123;
-        const bool fits15 = exact15 >= INT16_MIN && exact15 <= INT16_MAX;
-        const bool fits31 = exact31 >= INT32_MIN && exact31 <= INT32_MAX;
-        ASSERT_EQ(linears_fixed_to_q15(value, exponent, &q15),
-                  fits15 ? LINEARS_OK : LINEARS_ERROR_RANGE);
-        ASSERT_EQ(q15, fits15 ? static_cast<int16_t>(exact15) : 123);
-        ASSERT_EQ(linears_fixed_to_q31(value, exponent, &q31),
-                  fits31 ? LINEARS_OK : LINEARS_ERROR_RANGE);
-        ASSERT_EQ(q31, fits31 ? static_cast<int32_t>(exact31) : 123);
-    }
-    for (const int sign : {-1, 1}) {
-        const linears_fixed_t tiny{sign * kFull, LINEARS_EXPONENT_MIN};
-        int16_t q15 = 1;
-        int32_t q31 = 1;
-        ASSERT_EQ(linears_fixed_to_q15(tiny, LINEARS_EXPONENT_MAX, &q15), LINEARS_OK);
-        ASSERT_EQ(linears_fixed_to_q31(tiny, LINEARS_EXPONENT_MAX, &q31), LINEARS_OK);
-        EXPECT_EQ(q15, 0);
-        EXPECT_EQ(q31, 0);
-    }
-}
-
-TEST(AuditFixedExport, PositiveQ15RoundingCarryRescalesEveryElement) {
-    constexpr std::array<linears_fixed_t, 5> input{{
-        {kHalf, 0}, {INT32_C(0x7fff8000), 0}, {-kHalf, 0}, {kFull, -40}, kZero}};
-    std::array<int16_t, input.size()> output{};
-    int exponent = 999;
-    ASSERT_EQ(linears_fixed_export_q15(input.data(), input.size(), output.data(), &exponent), LINEARS_OK);
-    EXPECT_EQ(exponent, 1);
-    EXPECT_EQ(output, (std::array<int16_t, 5>{8192, 16384, -8192, 0, 0}));
-    int reference_exponent = 999;
-    EXPECT_EQ(output, ExportReference<int16_t>(input, &reference_exponent));
-    EXPECT_EQ(exponent, reference_exponent);
-}
-
-TEST(AuditFixedExport, NegativeQ15LimitDoesNotForcePositiveCarry) {
-    constexpr std::array<linears_fixed_t, 3> input{{{-kFull, 0}, {kHalf, 0}, kZero}};
-    std::array<int16_t, input.size()> output{};
-    int exponent = 999;
-    ASSERT_EQ(linears_fixed_export_q15(input.data(), input.size(), output.data(), &exponent), LINEARS_OK);
-    EXPECT_EQ(exponent, 0);
-    EXPECT_EQ(output, (std::array<int16_t, 3>{INT16_MIN, 16384, 0}));
-}
-
-TEST(AuditFixedExport, SharedExponentBlocksMatchMathAndQuantizationError) {
-    std::minstd_rand random(71341);
-    for (int iteration = 0; iteration < 500; ++iteration) {
-        std::array<linears_fixed_t, 17> input{};
-        for (auto &value : input) value = RandomCanonical(random, 24);
-        input[3] = kZero;
-        std::array<int16_t, input.size()> q15{};
-        std::array<int32_t, input.size()> q31{};
-        int exponent15 = 999;
-        int exponent31 = 999;
-        int reference15 = 999;
-        int reference31 = 999;
-        const auto expected15 = ExportReference<int16_t>(input, &reference15);
-        const auto expected31 = ExportReference<int32_t>(input, &reference31);
-        ASSERT_EQ(linears_fixed_export_q15(input.data(), input.size(), q15.data(), &exponent15), LINEARS_OK);
-        ASSERT_EQ(linears_fixed_export_q31(input.data(), input.size(), q31.data(), &exponent31), LINEARS_OK);
-        ASSERT_EQ(exponent15, reference15);
-        ASSERT_EQ(exponent31, reference31);
-        ASSERT_EQ(q15, expected15);
-        ASSERT_EQ(q31, expected31);
-        for (size_t index = 0; index < input.size(); ++index) {
-            const long double restored15 = std::ldexp(static_cast<long double>(q15[index]), exponent15 - 15);
-            const long double restored31 = std::ldexp(static_cast<long double>(q31[index]), exponent31 - 31);
-            ASSERT_LE(std::fabs(restored15 - AsReal(input[index])), std::ldexp(0.5L, exponent15 - 15));
-            ASSERT_LE(std::fabs(restored31 - AsReal(input[index])), std::ldexp(0.5L, exponent31 - 31));
-        }
-    }
-}
-
-TEST(AuditFixedExport, Q31EqualScaleRoundTripsExactly) {
-    for (const int exponent : {-100, 0, 100}) {
-        const std::array<linears_fixed_t, 5> input{{
-            {-kFull, exponent}, {-kHalf, exponent}, kZero, {kHalf, exponent}, {kFull, exponent}}};
-        std::array<int32_t, input.size()> output{};
-        int exported_exponent = 999;
-        ASSERT_EQ(linears_fixed_export_q31(input.data(), input.size(), output.data(), &exported_exponent), LINEARS_OK);
-        EXPECT_EQ(exported_exponent, exponent);
-        for (size_t index = 0; index < input.size(); ++index) {
-            linears_fixed_t restored{};
-            ASSERT_EQ(linears_fixed_from_q31({output[index], exported_exponent}, &restored), LINEARS_OK);
-            EXPECT_TRUE(SameFixed(restored, input[index]));
-        }
-    }
-}
-
-TEST(AuditFixedExport, EmptyAndAllZeroBlocksHaveExponentZero) {
-    int exponent = 456;
-    ASSERT_EQ(linears_fixed_export_q15(nullptr, 0, nullptr, &exponent), LINEARS_OK);
-    EXPECT_EQ(exponent, 0);
-    exponent = 456;
-    ASSERT_EQ(linears_fixed_export_q31(nullptr, 0, nullptr, &exponent), LINEARS_OK);
-    EXPECT_EQ(exponent, 0);
-    const std::array<linears_fixed_t, 3> zeros{};
-    std::array<int16_t, 3> q15{1, 2, 3};
-    std::array<int32_t, 3> q31{1, 2, 3};
-    ASSERT_EQ(linears_fixed_export_q15(zeros.data(), zeros.size(), q15.data(), &exponent), LINEARS_OK);
-    EXPECT_EQ(q15, (std::array<int16_t, 3>{}));
-    EXPECT_EQ(exponent, 0);
-    exponent = 456;
-    ASSERT_EQ(linears_fixed_export_q31(zeros.data(), zeros.size(), q31.data(), &exponent), LINEARS_OK);
-    EXPECT_EQ(q31, (std::array<int32_t, 3>{}));
-    EXPECT_EQ(exponent, 0);
-}
-
-TEST(AuditFixedAtomicFailure, ImportsPreserveOutputForArgumentAndRangeFailures) {
-    for (const int bits : {-1, 64, INT_MIN, INT_MAX})
-        ExpectAtomicScalarFailure(LINEARS_ERROR_ARGUMENT, [bits](auto *out) {
-            return linears_fixed_from_i64(1, bits, 0, out);
-        });
-    for (const int exponent : {LINEARS_EXPONENT_MIN - 1, LINEARS_EXPONENT_MAX + 1, INT_MIN, INT_MAX}) {
-        ExpectAtomicScalarFailure(LINEARS_ERROR_RANGE, [exponent](auto *out) {
-            return linears_fixed_from_i64(0, 0, exponent, out);
-        });
-        ExpectAtomicScalarFailure(LINEARS_ERROR_RANGE, [exponent](auto *out) {
-            return linears_fixed_from_q15({1, exponent}, out);
-        });
-        ExpectAtomicScalarFailure(LINEARS_ERROR_RANGE, [exponent](auto *out) {
-            return linears_fixed_from_q31({1, exponent}, out);
-        });
-    }
-    ExpectAtomicScalarFailure(LINEARS_ERROR_RANGE, [](auto *out) {
-        return linears_fixed_from_i64(1, 63, LINEARS_EXPONENT_MIN, out);
-    });
-    ExpectAtomicScalarFailure(LINEARS_ERROR_RANGE, [](auto *out) {
-        return linears_fixed_from_q15({1, LINEARS_EXPONENT_MIN}, out);
-    });
-    ExpectAtomicScalarFailure(LINEARS_ERROR_RANGE, [](auto *out) {
-        return linears_fixed_from_q31({INT32_MIN, LINEARS_EXPONENT_MAX}, out);
-    });
-    EXPECT_EQ(linears_fixed_from_i64(0, 0, 0, nullptr), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_from_q15({0, 0}, nullptr), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_from_q31({0, 0}, nullptr), LINEARS_ERROR_ARGUMENT);
-}
-
-TEST(AuditFixedAtomicFailure, ArithmeticRejectsNoncanonicalOperandsWithoutWriting) {
-    constexpr std::array<linears_fixed_t, 7> invalid{{
-        {0, 1}, {1, 0}, {-1, 0}, {kHalf - 1, 0}, {INT32_MIN, 0},
-        {kHalf, LINEARS_EXPONENT_MIN - 1}, {kHalf, LINEARS_EXPONENT_MAX + 1}}};
-    for (const auto value : invalid) {
-        for (const auto operation : kBinaryOperations) {
-            ExpectAtomicScalarFailure(LINEARS_ERROR_ARGUMENT, [=](auto *out) { return operation(value, kOne, out); });
-            ExpectAtomicScalarFailure(LINEARS_ERROR_ARGUMENT, [=](auto *out) { return operation(kOne, value, out); });
-        }
-        ExpectAtomicScalarFailure(LINEARS_ERROR_ARGUMENT, [=](auto *out) { return linears_fixed_sqrt(value, out); });
-        ExpectAtomicScalarFailure(LINEARS_ERROR_ARGUMENT, [=](auto *out) { return linears_fixed_neg(value, out); });
-        ExpectAtomicScalarFailure(LINEARS_ERROR_ARGUMENT, [=](auto *out) { return linears_fixed_abs(value, out); });
-    }
-    for (const auto operation : kBinaryOperations)
-        EXPECT_EQ(operation(kOne, kOne, nullptr), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_sqrt(kOne, nullptr), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_neg(kOne, nullptr), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_abs(kOne, nullptr), LINEARS_ERROR_ARGUMENT);
-}
-
-TEST(AuditFixedAtomicFailure, RangeAndDomainFailuresPreserveScalarAndCanaries) {
-    const linears_fixed_t largest{kFull, LINEARS_EXPONENT_MAX};
-    const linears_fixed_t smallest{kHalf, LINEARS_EXPONENT_MIN};
-    ExpectAtomicScalarFailure(LINEARS_ERROR_RANGE, [=](auto *out) { return linears_fixed_add(largest, largest, out); });
-    ExpectAtomicScalarFailure(LINEARS_ERROR_RANGE, [=](auto *out) {
-        return linears_fixed_sub({kHalf + 1, LINEARS_EXPONENT_MIN}, smallest, out);
-    });
-    ExpectAtomicScalarFailure(LINEARS_ERROR_RANGE, [=](auto *out) { return linears_fixed_mul(largest, largest, out); });
-    ExpectAtomicScalarFailure(LINEARS_ERROR_RANGE, [=](auto *out) { return linears_fixed_mul(smallest, smallest, out); });
-    ExpectAtomicScalarFailure(LINEARS_ERROR_RANGE, [=](auto *out) { return linears_fixed_div(largest, smallest, out); });
-    ExpectAtomicScalarFailure(LINEARS_ERROR_RANGE, [=](auto *out) { return linears_fixed_div(smallest, largest, out); });
-    ExpectAtomicScalarFailure(LINEARS_ERROR_DOMAIN, [](auto *out) { return linears_fixed_div(kOne, kZero, out); });
-    ExpectAtomicScalarFailure(LINEARS_ERROR_DOMAIN, [](auto *out) { return linears_fixed_div(kZero, kZero, out); });
-    ExpectAtomicScalarFailure(LINEARS_ERROR_DOMAIN, [](auto *out) { return linears_fixed_sqrt({-kHalf, 1}, out); });
-}
-
-TEST(AuditFixedAtomicFailure, QuantizationRejectsArgumentsWithoutWriting) {
-    for (const auto value : std::array<linears_fixed_t, 3>{{{0, 1}, {1, 0}, {INT32_MIN, 0}}}) {
-        int16_t q15 = 321;
-        int32_t q31 = 654;
-        EXPECT_EQ(linears_fixed_to_q15(value, 0, &q15), LINEARS_ERROR_ARGUMENT);
-        EXPECT_EQ(linears_fixed_to_q31(value, 0, &q31), LINEARS_ERROR_ARGUMENT);
-        EXPECT_EQ(q15, 321);
-        EXPECT_EQ(q31, 654);
-    }
-    for (const int exponent : {LINEARS_EXPONENT_MIN - 1, LINEARS_EXPONENT_MAX + 1, INT_MIN, INT_MAX}) {
-        int16_t q15 = 321;
-        int32_t q31 = 654;
-        EXPECT_EQ(linears_fixed_to_q15(kZero, exponent, &q15), LINEARS_ERROR_RANGE);
-        EXPECT_EQ(linears_fixed_to_q31(kZero, exponent, &q31), LINEARS_ERROR_RANGE);
-        EXPECT_EQ(q15, 321);
-        EXPECT_EQ(q31, 654);
-    }
-    EXPECT_EQ(linears_fixed_to_q15(kOne, 0, nullptr), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_to_q31(kOne, 0, nullptr), LINEARS_ERROR_ARGUMENT);
-}
-
-TEST(AuditFixedAtomicFailure, ExportValidatesTheLastElementBeforeAnyWrite) {
-    const std::array<linears_fixed_t, 4> input{{kOne, kZero, {kHalf, -10}, {1, 0}}};
-    const std::array<int16_t, 6> before15{61, 62, 63, 64, 65, 66};
-    const std::array<int32_t, 6> before31{71, 72, 73, 74, 75, 76};
-    auto out15 = before15;
-    auto out31 = before31;
-    int exponent = 77;
-    EXPECT_EQ(linears_fixed_export_q15(input.data(), input.size(), out15.data() + 1, &exponent), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(out15, before15);
-    EXPECT_EQ(exponent, 77);
-    EXPECT_EQ(linears_fixed_export_q31(input.data(), input.size(), out31.data() + 1, &exponent), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(out31, before31);
-    EXPECT_EQ(exponent, 77);
-    const std::array<linears_fixed_t, 3> carry_overflow{{
-        {kHalf, LINEARS_EXPONENT_MAX}, kZero, {kFull, LINEARS_EXPONENT_MAX}}};
-    EXPECT_EQ(linears_fixed_export_q15(carry_overflow.data(), carry_overflow.size(), out15.data() + 1, &exponent),
-              LINEARS_ERROR_RANGE);
-    EXPECT_EQ(out15, before15);
-    EXPECT_EQ(exponent, 77);
-}
-
-TEST(AuditFixedAliasing, ScalarsAllowOutputToReplaceEitherByValueOperand) {
-    const linears_fixed_t a{kHalf + 17, 2};
-    const linears_fixed_t b{-kHalf - 31, -1};
-    const std::array<long double, 4> expected{
-        AsReal(a) + AsReal(b), AsReal(a) - AsReal(b), AsReal(a) * AsReal(b), AsReal(a) / AsReal(b)};
-    for (size_t index = 0; index < kBinaryOperations.size(); ++index) {
-        auto left = a;
-        auto right = b;
-        ASSERT_EQ(kBinaryOperations[index](left, right, &left), LINEARS_OK);
-        EXPECT_TRUE(RoundedAs(left, expected[index]));
+TEST(AuditFixedAliasing, ScalarOutputsMayReplaceInputsAndFailuresDoNotReplaceThem) {
+    const int64_t a = kOne + 17, b = -kOne / 2 + 31;
+    const std::array<Wide, 4> expected{Wide{a} + b, Wide{a} - b,
+        RoundRatio(Wide{a} * b, kOne), RoundRatio(Wide{a} * kOne, b)};
+    for (size_t i = 0; i < kBinary.size(); ++i) {
+        int64_t left = a, right = b;
+        auto status = kBinary[i](left, right, &left);
+        EXPECT_TRUE(MatchesFixed(status, left, expected[i], a));
         left = a;
-        ASSERT_EQ(kBinaryOperations[index](left, right, &right), LINEARS_OK);
-        EXPECT_TRUE(RoundedAs(right, expected[index]));
+        status = kBinary[i](left, right, &right);
+        EXPECT_TRUE(MatchesFixed(status, right, expected[i], b));
     }
-    auto value = a;
+    int64_t value = INT64_MIN;
+    EXPECT_EQ(linears_fixed_neg(value, &value), LINEARS_ERROR_RANGE);
+    EXPECT_EQ(value, INT64_MIN);
+    value = INT64_MAX;
+    ASSERT_EQ(linears_fixed_muldiv(value, value, value, &value), LINEARS_OK);
+    EXPECT_EQ(value, INT64_MAX);
+    value = kOne;
     ASSERT_EQ(linears_fixed_sqrt(value, &value), LINEARS_OK);
-    EXPECT_TRUE(RoundedAs(value, std::sqrt(AsReal(a))));
-    value = b;
-    ASSERT_EQ(linears_fixed_abs(value, &value), LINEARS_OK);
-    EXPECT_TRUE(SameFixed(value, {-b.mantissa, b.exponent}));
-    ASSERT_EQ(linears_fixed_neg(value, &value), LINEARS_OK);
-    EXPECT_TRUE(SameFixed(value, b));
-    value = {kFull, LINEARS_EXPONENT_MAX};
-    EXPECT_EQ(linears_fixed_add(value, value, &value), LINEARS_ERROR_RANGE);
-    EXPECT_TRUE(SameFixed(value, {kFull, LINEARS_EXPONENT_MAX}));
+    EXPECT_EQ(value, kOne);
 }
 
-TEST(AuditFixedAliasing, ExportRejectsInputOutputAndExponentOverlapsAtomically) {
-    std::array<linears_fixed_t, 4> values{{kOne, {kHalf, 0}, {-kHalf, 0}, kZero}};
-    const auto before = values;
-    std::array<int16_t, 4> q15{41, 42, 43, 44};
-    std::array<int32_t, 4> q31{51, 52, 53, 54};
-    const auto before15 = q15;
-    const auto before31 = q31;
-    int exponent = 71;
+TEST(AuditFixedExport, MixedRawValuesUseIndependentEndpointQuantization) {
+    constexpr std::array<int64_t, 11> values{-kOne, -kOne + 1, -65536, -32768, -1,
+        0, 1, 32768, 65536, kOne - 1, kOne};
+    std::array<int16_t, values.size() + 2> q15{}; q15.fill(123);
+    std::array<int32_t, values.size() + 2> q31{}; q31.fill(456);
+    ASSERT_EQ(linears_fixed_export_q15(values.data(), values.size(), q15.data() + 1), LINEARS_OK);
+    ASSERT_EQ(linears_fixed_export_q31(values.data(), values.size(), q31.data() + 1), LINEARS_OK);
+    for (size_t i = 0; i < values.size(); ++i) {
+        EXPECT_EQ(q15[i + 1], SignalReference(values[i], 31, 15, 0).raw);
+        EXPECT_EQ(q31[i + 1], SignalReference(values[i], 31, 31, 0).raw);
+    }
+    EXPECT_EQ(q15.front(), 123); EXPECT_EQ(q15.back(), 123);
+    EXPECT_EQ(q31.front(), 456); EXPECT_EQ(q31.back(), 456);
+    EXPECT_EQ(linears_fixed_export_q15(nullptr, 0, nullptr), LINEARS_OK);
+    EXPECT_EQ(linears_fixed_export_q31(nullptr, 0, nullptr), LINEARS_OK);
+}
+
+TEST(AuditFixedExport, ALastOutOfDomainValueCannotPartiallyWriteTheArray) {
+    for (const int64_t invalid : {-kOne - 1, kOne + 1, INT64_MIN, INT64_MAX}) {
+        const std::array<int64_t, 4> values{kOne, -kOne, 0, invalid};
+        std::array<int16_t, 6> q15{61, 62, 63, 64, 65, 66};
+        std::array<int32_t, 6> q31{71, 72, 73, 74, 75, 76};
+        const auto before15 = q15; const auto before31 = q31;
+        EXPECT_EQ(linears_fixed_export_q15(values.data(), values.size(), q15.data() + 1), LINEARS_ERROR_RANGE);
+        EXPECT_EQ(linears_fixed_export_q31(values.data(), values.size(), q31.data() + 1), LINEARS_ERROR_RANGE);
+        EXPECT_EQ(q15, before15); EXPECT_EQ(q31, before31);
+    }
+}
+
+TEST(AuditFixedStorage, CountOverflowNullAlignmentAndOverlapsAreAtomic) {
+    std::array<int64_t, 4> values{kOne, -kOne, 0, 1};
+    const auto original = values;
+    int16_t q15 = 123; int32_t q31 = 456;
+    for (const size_t count : {SIZE_MAX / sizeof(int64_t) + 1, SIZE_MAX}) {
+        EXPECT_EQ(linears_fixed_export_q15(values.data(), count, &q15), LINEARS_ERROR_SIZE);
+        EXPECT_EQ(linears_fixed_export_q31(values.data(), count, &q31), LINEARS_ERROR_SIZE);
+    }
     for (const size_t offset : {size_t{0}, size_t{1}, size_t{3}}) {
-        EXPECT_EQ(linears_fixed_export_q15(values.data(), values.size(),
-                  reinterpret_cast<int16_t *>(values.data() + offset), &exponent), LINEARS_ERROR_ALIAS);
-        EXPECT_EQ(linears_fixed_export_q31(values.data(), values.size(),
-                  reinterpret_cast<int32_t *>(values.data() + offset), &exponent), LINEARS_ERROR_ALIAS);
-        EXPECT_EQ(std::memcmp(values.data(), before.data(), sizeof(values)), 0);
-        EXPECT_EQ(exponent, 71);
+        EXPECT_EQ(linears_fixed_export_q15(values.data(), 4, reinterpret_cast<int16_t *>(values.data() + offset)), LINEARS_ERROR_ALIAS);
+        EXPECT_EQ(linears_fixed_export_q31(values.data(), 4, reinterpret_cast<int32_t *>(values.data() + offset)), LINEARS_ERROR_ALIAS);
+        EXPECT_EQ(values, original);
     }
-    EXPECT_EQ(linears_fixed_export_q15(values.data(), values.size(), q15.data(), &values.back().exponent), LINEARS_ERROR_ALIAS);
-    EXPECT_EQ(linears_fixed_export_q31(values.data(), values.size(), q31.data(), &values.back().exponent), LINEARS_ERROR_ALIAS);
-    EXPECT_EQ(std::memcmp(values.data(), before.data(), sizeof(values)), 0);
-    EXPECT_EQ(q15, before15);
-    EXPECT_EQ(q31, before31);
-    alignas(linears_workspace_unit_t) std::array<int, 4> overlapped{81, 82, 83, 84};
-    const auto original = overlapped;
-    EXPECT_EQ(linears_fixed_export_q15(values.data(), values.size(),
-              reinterpret_cast<int16_t *>(overlapped.data()), overlapped.data()), LINEARS_ERROR_ALIAS);
-    EXPECT_EQ(overlapped, original);
-    EXPECT_EQ(linears_fixed_export_q31(values.data(), values.size(),
-              reinterpret_cast<int32_t *>(overlapped.data()), overlapped.data() + 3), LINEARS_ERROR_ALIAS);
-    EXPECT_EQ(overlapped, original);
-}
-
-TEST(AuditFixedAliasing, AdjacentDisjointObjectsAndOutputCanariesAreAccepted) {
-    struct Adjacent {
-        std::array<linears_fixed_t, 3> input;
-        std::array<int32_t, 3> output;
-        int exponent;
-        uint32_t canary;
-    } data{{{{kHalf, 0}, {-kHalf, 0}, kZero}}, {{11, 12, 13}}, 37, kCanary};
-    const auto before_input = data.input;
-    ASSERT_EQ(linears_fixed_export_q31(data.input.data(), data.input.size(), data.output.data(), &data.exponent), LINEARS_OK);
-    EXPECT_EQ(data.output, (std::array<int32_t, 3>{kHalf, -kHalf, 0}));
-    EXPECT_EQ(data.exponent, 0);
-    EXPECT_EQ(data.canary, kCanary);
-    EXPECT_EQ(std::memcmp(data.input.data(), before_input.data(), sizeof(data.input)), 0);
-    std::array<int16_t, 5> out15{11, 12, 13, 14, 15};
-    ASSERT_EQ(linears_fixed_export_q15(data.input.data(), data.input.size(), out15.data() + 1, &data.exponent), LINEARS_OK);
-    EXPECT_EQ(out15, (std::array<int16_t, 5>{11, 16384, -16384, 0, 15}));
-}
-
-TEST(AuditFixedStorage, ExportRejectsCountOverflowBeforeReadingBeyondOneElement) {
-    const linears_fixed_t input = kOne;
-    for (const size_t count : {SIZE_MAX / sizeof(linears_fixed_t) + 1, SIZE_MAX / sizeof(int32_t) + 1, SIZE_MAX}) {
-        int16_t q15 = 123;
-        int32_t q31 = 456;
-        int exponent = 789;
-        EXPECT_EQ(linears_fixed_export_q15(&input, count, &q15, &exponent), LINEARS_ERROR_SIZE);
-        EXPECT_EQ(linears_fixed_export_q31(&input, count, &q31, &exponent), LINEARS_ERROR_SIZE);
-        EXPECT_EQ(q15, 123);
-        EXPECT_EQ(q31, 456);
-        EXPECT_EQ(exponent, 789);
-        EXPECT_TRUE(SameFixed(input, kOne));
-    }
-}
-
-TEST(AuditFixedStorage, ExportRejectsNullAndMisalignedBuffersAtomically) {
-    const linears_fixed_t input = kOne;
-    int16_t q15 = 123;
-    int32_t q31 = 456;
-    int exponent = 789;
-    EXPECT_EQ(linears_fixed_export_q15(nullptr, 1, &q15, &exponent), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_export_q31(nullptr, 1, &q31, &exponent), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_export_q15(&input, 1, nullptr, &exponent), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_export_q31(&input, 1, nullptr, &exponent), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_export_q15(&input, 1, &q15, nullptr), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_export_q31(&input, 1, &q31, nullptr), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_export_q15(nullptr, 0, nullptr, nullptr), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_export_q31(nullptr, 0, nullptr, nullptr), LINEARS_ERROR_ARGUMENT);
-    alignas(linears_workspace_unit_t) std::array<unsigned char, 64> bytes{};
-    bytes.fill(0xa7);
+    EXPECT_EQ(linears_fixed_export_q15(nullptr, 1, &q15), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_fixed_export_q31(nullptr, 1, &q31), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_fixed_export_q15(values.data(), 1, nullptr), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_fixed_export_q31(values.data(), 1, nullptr), LINEARS_ERROR_ARGUMENT);
+    alignas(int64_t) std::array<unsigned char, 64> bytes{}; bytes.fill(0x5a);
     const auto before = bytes;
-    const auto *bad_input = reinterpret_cast<const linears_fixed_t *>(bytes.data() + 1);
-    auto *bad_exponent = reinterpret_cast<int *>(bytes.data() + 1);
-    EXPECT_EQ(linears_fixed_export_q15(bad_input, 1, &q15, &exponent), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_export_q31(bad_input, 1, &q31, &exponent), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_export_q15(&input, 1, reinterpret_cast<int16_t *>(bytes.data() + 1), &exponent), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_export_q31(&input, 1, reinterpret_cast<int32_t *>(bytes.data() + 1), &exponent), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_export_q15(&input, 1, &q15, bad_exponent), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(linears_fixed_export_q31(&input, 1, &q31, bad_exponent), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(bytes, before);
-    EXPECT_EQ(q15, 123);
-    EXPECT_EQ(q31, 456);
-    EXPECT_EQ(exponent, 789);
+    EXPECT_EQ(linears_fixed_export_q15(reinterpret_cast<const int64_t *>(bytes.data() + 1), 1, &q15), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_fixed_export_q31(reinterpret_cast<const int64_t *>(bytes.data() + 1), 1, &q31), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_fixed_export_q15(values.data(), 1, reinterpret_cast<int16_t *>(bytes.data() + 1)), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(linears_fixed_export_q31(values.data(), 1, reinterpret_cast<int32_t *>(bytes.data() + 1)), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(bytes, before); EXPECT_EQ(q15, 123); EXPECT_EQ(q31, 456);
 }
 
-TEST(AuditFixedStorage, WorkspaceBoundsAreConstantExpressionsAndDoNotWrap) {
+TEST(AuditFixedStorage, StaticWorkspaceCapacityDoesNotGrowToTheAccumulatorSize) {
     constexpr size_t unit = sizeof(linears_workspace_unit_t);
     constexpr size_t bytes = LINEARS_BASIC_WORKSPACE_BYTES(3, 7);
-    constexpr size_t units = LINEARS_WORKSPACE_UNITS(bytes);
-    static_assert(bytes == 21 * unit, "Basic workspace must cover every working element");
-    static_assert(units == 21, "An exact byte multiple must not require an extra unit");
-    static_assert(LINEARS_BASIC_WORKSPACE_BYTES(SIZE_MAX, 0) == 0, "Empty matrices need no workspace");
-    static_assert(LINEARS_BASIC_WORKSPACE_BYTES(0, SIZE_MAX) == 0, "Empty matrices need no workspace");
-    static_assert(LINEARS_SIZE_MUL(SIZE_MAX, 2) == SIZE_MAX, "Multiplication overflow must be explicit");
-    static_assert(LINEARS_SIZE_ADD(SIZE_MAX, 1) == SIZE_MAX, "Addition overflow must be explicit");
-    static_assert(LINEARS_WORKSPACE_UNITS(SIZE_MAX) == SIZE_MAX, "Invalid size must propagate");
-    std::array<linears_workspace_unit_t, units> workspace{};
+    static_assert(unit == 8, "one bounded local accumulator, not one per output");
+    static_assert(bytes == 21 * unit, "output workspace formula");
+    static_assert(LINEARS_BASIC_WORKSPACE_BYTES(0, SIZE_MAX) == 0, "empty output");
+    static_assert(LINEARS_BASIC_WORKSPACE_BYTES(SIZE_MAX, 0) == 0, "empty output");
+    static_assert(LINEARS_SIZE_MUL(SIZE_MAX, 2) == SIZE_MAX, "checked multiply");
+    static_assert(LINEARS_SIZE_ADD(SIZE_MAX, 1) == SIZE_MAX, "checked addition");
+    static_assert(LINEARS_WORKSPACE_UNITS(SIZE_MAX) == SIZE_MAX, "invalid size propagates");
+    std::array<linears_workspace_unit_t, LINEARS_WORKSPACE_UNITS(bytes)> workspace{};
     EXPECT_EQ(sizeof(workspace), bytes);
-    EXPECT_GE(alignof(decltype(workspace)), alignof(linears_fixed_t));
     EXPECT_GE(alignof(decltype(workspace)), alignof(int64_t));
-    EXPECT_GE(alignof(decltype(workspace)), alignof(double));
+    for (size_t required = 0; required < 3 * unit; ++required) {
+        const size_t capacity = LINEARS_WORKSPACE_UNITS(required) * unit;
+        EXPECT_GE(capacity, required); EXPECT_LT(capacity - required, unit);
+    }
     EXPECT_EQ(LINEARS_BASIC_WORKSPACE_BYTES(SIZE_MAX / unit + 1, 1), SIZE_MAX);
-    EXPECT_EQ(LINEARS_BASIC_WORKSPACE_BYTES(SIZE_MAX, SIZE_MAX), SIZE_MAX);
-    EXPECT_EQ(LINEARS_SIZE_ADD(SIZE_MAX - 7, 7), SIZE_MAX);
-    EXPECT_EQ(LINEARS_SIZE_ADD(SIZE_MAX - 7, 6), SIZE_MAX - 1);
-    for (size_t requested = 0; requested <= 3 * unit; ++requested) {
-        const size_t capacity = LINEARS_WORKSPACE_UNITS(requested) * unit;
-        EXPECT_GE(capacity, requested);
-        EXPECT_LT(capacity - requested, unit);
-    }
-    EXPECT_EQ(LINEARS_WORKSPACE_UNITS(SIZE_MAX - 1),
-              (SIZE_MAX - 1) / unit + ((SIZE_MAX - 1) % unit != 0));
 }
 
-TEST(AuditFixedExponentBoundary, ZeroAndCancellationDoNotRaiseSpuriousRangeErrors) {
-    for (const int exponent : {LINEARS_EXPONENT_MIN, LINEARS_EXPONENT_MAX}) {
-        const linears_fixed_t value{kFull, exponent};
-        linears_fixed_t result = kSentinel;
-        ASSERT_EQ(linears_fixed_add(value, kZero, &result), LINEARS_OK);
-        EXPECT_TRUE(SameFixed(result, value));
-        ASSERT_EQ(linears_fixed_sub(value, value, &result), LINEARS_OK);
-        EXPECT_TRUE(SameFixed(result, kZero));
-        ASSERT_EQ(linears_fixed_add(value, {-value.mantissa, value.exponent}, &result), LINEARS_OK);
-        EXPECT_TRUE(SameFixed(result, kZero));
-        ASSERT_EQ(linears_fixed_mul(value, kZero, &result), LINEARS_OK);
-        EXPECT_TRUE(SameFixed(result, kZero));
-        ASSERT_EQ(linears_fixed_div(kZero, value, &result), LINEARS_OK);
-        EXPECT_TRUE(SameFixed(result, kZero));
-        ASSERT_EQ(linears_fixed_div(value, value, &result), LINEARS_OK);
-        EXPECT_TRUE(SameFixed(result, kOne));
-        ASSERT_EQ(linears_fixed_from_i64(0, 63, exponent, &result), LINEARS_OK);
-        EXPECT_TRUE(SameFixed(result, kZero));
-    }
+#define AUDIT_RAW_FORMAT(Name, Suffix, RawType, Bits) \
+    struct Name { \
+        using Raw = RawType; static constexpr int bits = Bits; \
+        static linears_status_t dot(const linears_matrix_t *a, const linears_matrix_t *b, Raw *out) { return linears_dot_##Suffix(a,b,out); } \
+        static linears_status_t norm(const linears_matrix_t *a, Raw *out) { return linears_norm_##Suffix(a,out); } \
+        static linears_status_t mul(const linears_matrix_t *a, const linears_matrix_t *b, linears_matrix_t *out, linears_workspace_unit_t *w, size_t bytes) { return linears_mul_##Suffix(a,b,out,w,bytes); } \
+        static linears_status_t scale(int64_t gain, const linears_matrix_t *a, linears_matrix_t *out, linears_workspace_unit_t *w, size_t bytes) { return linears_scale_##Suffix(gain,a,out,w,bytes); } \
+        static linears_status_t axpby(int64_t alpha, const linears_matrix_t *a, int64_t beta, const linears_matrix_t *b, linears_matrix_t *out, linears_workspace_unit_t *w, size_t bytes) { return linears_axpby_##Suffix(alpha,a,beta,b,out,w,bytes); } \
+    };
+AUDIT_RAW_FORMAT(RawQ15, q15, int16_t, 15)
+AUDIT_RAW_FORMAT(RawQ31, q31, int32_t, 31)
+#undef AUDIT_RAW_FORMAT
+using RawFormats = ::testing::Types<RawQ15, RawQ31>;
+template<class F> class AuditRawMac : public ::testing::Test {};
+TYPED_TEST_SUITE(AuditRawMac, RawFormats);
+
+TYPED_TEST(AuditRawMac, DotAllowsLargePartialSumsToCancelBeforeSignalExport) {
+    using F = TypeParam; using Raw = typename F::Raw;
+    constexpr Raw minimum = std::numeric_limits<Raw>::min(), maximum = std::numeric_limits<Raw>::max();
+    std::array<Raw, 4> a{minimum, minimum, minimum, minimum};
+    std::array<Raw, 4> b{minimum, minimum, maximum, maximum};
+    linears_matrix_t am{a.data(), 1, 4}, bm{b.data(), 1, 4};
+    Raw result = 123;
+    ASSERT_EQ(F::dot(&am, &bm, &result), LINEARS_OK);
+    EXPECT_EQ(result, 2);
+    b = {minimum, maximum, minimum, maximum};
+    ASSERT_EQ(F::dot(&am, &bm, &result), LINEARS_OK);
+    EXPECT_EQ(result, 2);
 }
 
-}  // namespace
+TYPED_TEST(AuditRawMac, DotRoundsOnceAndRejectsAnExactResultOneProductBitOutsideRange) {
+    using F = TypeParam; using Raw = typename F::Raw;
+    constexpr Raw half = static_cast<Raw>(INT64_C(1) << (F::bits - 1));
+    std::array<Raw, 2> a{1, 1}, b{half, half};
+    linears_matrix_t am{a.data(), 1, 2}, bm{b.data(), 1, 2};
+    Raw result = 123;
+    ASSERT_EQ(F::dot(&am, &bm, &result), LINEARS_OK);
+    EXPECT_EQ(result, 1);
+    a = {std::numeric_limits<Raw>::min(), 1}; b = a;
+    result = 123;
+    EXPECT_EQ(F::dot(&am, &bm, &result), LINEARS_ERROR_RANGE);
+    EXPECT_EQ(result, 123);
+    // sqrt(1 + one product bit) is also outside the exact signal domain,
+    // even though premature working rounding could make it appear to be one.
+    EXPECT_EQ(F::norm(&am, &result), LINEARS_ERROR_RANGE);
+    EXPECT_EQ(result, 123);
+    a[1] = 0;
+    ASSERT_EQ(F::norm(&am, &result), LINEARS_OK);
+    EXPECT_EQ(result, std::numeric_limits<Raw>::max());
+}
+
+TYPED_TEST(AuditRawMac, MatrixLateRangeFailureKeepsAllOutputsAndWorkspaceGuards) {
+    using F = TypeParam; using Raw = typename F::Raw;
+    constexpr Raw minimum = std::numeric_limits<Raw>::min();
+    constexpr Raw quarter = static_cast<Raw>(INT64_C(1) << (F::bits - 2));
+    std::array<Raw, 4> a{quarter, 0, minimum, minimum};
+    std::array<Raw, 2> b{minimum, minimum};
+    std::array<Raw, 4> output{37, 101, 102, 37}; const auto before = output;
+    linears_matrix_t am{a.data(), 2, 2}, bm{b.data(), 2, 1}, out{output.data() + 1, 2, 1};
+    std::array<linears_workspace_unit_t, 4> work{};
+    work.front().integer = 91; work.back().integer = 92;
+    ASSERT_EQ(F::mul(&am, &bm, &out, work.data() + 1, LINEARS_BASIC_WORKSPACE_BYTES(2, 1)), LINEARS_ERROR_RANGE);
+    EXPECT_EQ(output, before);
+    EXPECT_EQ(work.front().integer, 91); EXPECT_EQ(work.back().integer, 92);
+    EXPECT_EQ(out.data, output.data() + 1); EXPECT_EQ(out.rows, size_t{2}); EXPECT_EQ(out.cols, size_t{1});
+}
+
+TYPED_TEST(AuditRawMac, CoefficientsAboveOneUseWideF31NotSignalRawScaling) {
+    using F = TypeParam; using Raw = typename F::Raw;
+    constexpr Raw quarter = static_cast<Raw>(INT64_C(1) << (F::bits - 2));
+    Raw input = quarter, output = 123;
+    linears_matrix_t a{&input, 1, 1}, out{&output, 1, 1};
+    std::array<linears_workspace_unit_t, 1> work{};
+    ASSERT_EQ(F::scale(2 * kOne, &a, &out, work.data(), sizeof(work)), LINEARS_OK);
+    EXPECT_EQ(output, static_cast<Raw>(quarter * 2));
+    ASSERT_EQ(F::axpby(8 * kOne, &a, -7 * kOne, &a, &out, work.data(), sizeof(work)), LINEARS_OK);
+    EXPECT_EQ(output, quarter);
+    input = 1;
+    ASSERT_EQ(F::axpby(kOne / 2, &a, kOne / 2, &a, &out, work.data(), sizeof(work)), LINEARS_OK);
+    EXPECT_EQ(output, 1); // Two half-ULP products round once, not separately to two.
+}
+
+TEST(AuditWorkingMatrix, PrefixOverflowIsCheckedEvenWhenTheFinalRealSumWouldFit) {
+    std::array<int64_t, 4> left{INT64_MIN, INT64_MIN, INT64_MIN, INT64_MIN};
+    std::array<int64_t, 4> right{INT64_MIN, INT64_MIN, INT64_MAX, INT64_MAX};
+    linears_matrix_t a{left.data(), 1, 4}, b{right.data(), 4, 1};
+    int64_t result = kSentinel;
+    linears_matrix_t out{&result, 1, 1};
+    std::array<linears_workspace_unit_t, 3> work{};
+    work.front().integer = 91; work.back().integer = 92;
+    // The first two exact products total +2^127, outside signed 128 bits.
+    EXPECT_EQ(linears_mul_fixed(&a, &b, &out, work.data() + 1, sizeof(work[1])), LINEARS_ERROR_RANGE);
+    EXPECT_EQ(result, kSentinel);
+    EXPECT_EQ(work.front().integer, 91); EXPECT_EQ(work.back().integer, 92);
+    // The same mathematical terms in a safe prefix order sum to 2^64 F62,
+    // hence 2^33 F31 (= real four), which is legal in working matrices.
+    right = {INT64_MIN, INT64_MAX, INT64_MIN, INT64_MAX};
+    ASSERT_EQ(linears_mul_fixed(&a, &b, &out, work.data() + 1, sizeof(work[1])), LINEARS_OK);
+    EXPECT_EQ(result, 4 * kOne);
+    EXPECT_EQ(work.front().integer, 91); EXPECT_EQ(work.back().integer, 92);
+}
+
+TEST(AuditWorkingMatrix, ExactUnitsAndLargeCoefficientCancellationDoNotNarrowToSignals) {
+    std::array<int64_t, 4> identity{};
+    linears_matrix_t id{identity.data(), 2, 2};
+    ASSERT_EQ(linears_identity_fixed(&id), LINEARS_OK);
+    EXPECT_EQ(identity, (std::array<int64_t, 4>{kOne, 0, 0, kOne}));
+    int64_t lhs = 2 * kOne, rhs = kOne, result = kSentinel;
+    linears_matrix_t a{&lhs, 1, 1}, b{&rhs, 1, 1}, out{&result, 1, 1};
+    std::array<linears_workspace_unit_t, 1> work{};
+    ASSERT_EQ(linears_mul_fixed(&a, &b, &out, work.data(), sizeof(work)), LINEARS_OK);
+    EXPECT_EQ(result, 2 * kOne);
+    lhs = rhs = INT64_MAX;
+    ASSERT_EQ(linears_axpby_fixed(INT64_MAX, &a, -INT64_MAX, &b, &out, work.data(), sizeof(work)), LINEARS_OK);
+    EXPECT_EQ(result, 0);
+}
+
+} // namespace

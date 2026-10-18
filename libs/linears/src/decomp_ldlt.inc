@@ -96,14 +96,17 @@ static linears_status_t D_LOCAL(ldlt_factor)(D_SCALAR *work, size_t n,
                 }
             }
         }
+        if (status != LINEARS_OK) {
+            return status;
+        }
         if (D_CMP(diagonal_max, D_ZERO) == 0 &&
             D_CMP(off_diagonal_max, D_ZERO) == 0) {
             return LINEARS_ERROR_SINGULAR;
         }
         single_pivot = D_CMP(diagonal_max, off_diagonal_max) >= 0;
         if (!single_pivot) {
-            /* The ratio is below one. Avoid scaling the off-diagonal maximum
-             * down past the fixed working exponent limit just to compare it. */
+            /* The ratio is below one. Do not round alpha times a tiny pivot
+             * to zero merely to decide whether a 2-by-2 block is needed. */
             D_SCALAR ratio = D_DIV(diagonal_max, off_diagonal_max);
             if (status != LINEARS_OK) {
                 return status;
@@ -121,8 +124,13 @@ static linears_status_t D_LOCAL(ldlt_factor)(D_SCALAR *work, size_t n,
             }
             for (i = k + 1; i < n; ++i) {
                 for (j = i; j < n; ++j) {
+#if D_FIXED
+                    D_SCALAR updated = D_LOCAL(sub_product)(work[j * n + i],
+                        work[j * n + k], work[k * n + i], &status);
+#else
                     D_SCALAR product = D_MUL(work[j * n + k], work[k * n + i]);
                     D_SCALAR updated = D_SUB(work[j * n + i], product);
+#endif
                     work[j * n + i] = updated;
                     work[i * n + j] = updated;
                 }
@@ -142,28 +150,45 @@ static linears_status_t D_LOCAL(ldlt_factor)(D_SCALAR *work, size_t n,
             b = work[k * n + k + 1];
             a = D_DIV(work[k * n + k], b);
             c = D_DIV(work[(k + 1) * n + k + 1], b);
+#if D_FIXED
+            delta = D_LOCAL(sub_product)(D_ONE, a, c, &status);
+            delta = D_NEG(delta);
+#else
             delta = D_MUL(a, c);
             delta = D_SUB(delta, D_ONE);
+#endif
 
             /* Divide by b before forming the determinant. Since |a|, |c| <
              * alpha, delta stays away from zero; b*b is never evaluated. */
             for (i = k + 2; i < n; ++i) {
                 D_SCALAR x = D_DIV(work[i * n + k], b);
                 D_SCALAR y = D_DIV(work[i * n + k + 1], b);
+#if D_FIXED
+                D_SCALAR first = D_LOCAL(sub_product)(y, c, x, &status);
+                D_SCALAR second = D_LOCAL(sub_product)(x, a, y, &status);
+                first = D_NEG(first);
+                second = D_NEG(second);
+#else
                 D_SCALAR first = D_MUL(c, x);
                 D_SCALAR second = D_MUL(a, y);
                 first = D_SUB(first, y);
                 second = D_SUB(second, x);
+#endif
                 work[i * n + k] = D_DIV(first, delta);
                 work[i * n + k + 1] = D_DIV(second, delta);
             }
             for (i = k + 2; i < n; ++i) {
                 for (j = i; j < n; ++j) {
+#if D_FIXED
+                    D_SCALAR updated = D_LOCAL(dot_sub)(work[j * n + i],
+                        &work[j * n + k], 1, &work[k * n + i], n, 2, &status);
+#else
                     D_SCALAR first = D_MUL(work[j * n + k], work[k * n + i]);
                     D_SCALAR second = D_MUL(work[j * n + k + 1],
                                              work[(k + 1) * n + i]);
                     D_SCALAR updated = D_SUB(work[j * n + i], first);
                     updated = D_SUB(updated, second);
+#endif
                     work[j * n + i] = updated;
                     work[i * n + j] = updated;
                 }
@@ -192,8 +217,6 @@ linears_status_t D_NAME(ldlt)(const linears_matrix_t *a, linears_matrix_t *l,
     size_t permutation_bytes;
     size_t i;
     size_t j;
-    int exponent_l;
-    int exponent_d;
 
     status = D_LOCAL(descriptors)(matrices, 3);
     if (status != LINEARS_OK) {
@@ -270,16 +293,16 @@ linears_status_t D_NAME(ldlt)(const linears_matrix_t *a, linears_matrix_t *l,
             }
         }
     }
-    status = D_LOCAL(output_exponent_bounds)(minimum_l, maximum_l, &exponent_l);
+    status = D_LOCAL(output_bounds)(minimum_l, maximum_l);
     if (status != LINEARS_OK) {
         return status;
     }
-    status = D_LOCAL(output_exponent_bounds)(minimum_d, maximum_d, &exponent_d);
+    status = D_LOCAL(output_bounds)(minimum_d, maximum_d);
     if (status != LINEARS_OK) {
         return status;
     }
 
-    /* Both output exponents are preflighted before either matrix is written. */
+    /* Both factor ranges are preflighted before either matrix is written. */
     for (i = 0; i < n; ++i) {
         for (j = 0; j < n; ++j) {
             D_SCALAR value_l = D_ZERO;
@@ -296,11 +319,9 @@ linears_status_t D_NAME(ldlt)(const linears_matrix_t *a, linears_matrix_t *l,
             } else if (blocks[i] == 2 && j == i + 1) {
                 value_d = workspace.data[i * n + j];
             }
-            D_LOCAL(store)(l, i * n + j, value_l, exponent_l);
-            D_LOCAL(store)(d, i * n + j, value_d, exponent_d);
+            D_LOCAL(store)(l, i * n + j, value_l);
+            D_LOCAL(store)(d, i * n + j, value_d);
         }
     }
-    l->exponent = exponent_l;
-    d->exponent = exponent_d;
     return LINEARS_OK;
 }

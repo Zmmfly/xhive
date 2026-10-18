@@ -13,8 +13,16 @@
  * strictly positive. Matrix P and Q must be symmetric positive semidefinite;
  * this is a caller precondition (only symmetry and diagonal signs are checked).
  * R must be symmetric positive definite and is checked by Cholesky. Floating
- * values must be finite. q15/q31 values and rounding follow linears_numeric.h;
- * scalars have individual exponents, matrices have one shared block exponent.
+ * values must be finite. q15/q31 are signed raw integers divided by 2^15/2^31.
+ * Their binary points never change. Integer working arithmetic is wide F31;
+ * signal output policy and nearest-away rounding follow linears_numeric.h.
+ * Scalar final F62 expressions are range-checked before signal rounding.
+ * Matrix filters range-check their computed/rounded F31 estimates/covariances,
+ * not the ideal unrounded full expression. A conversion input outside [-1,+1]
+ * fails; exact +1 maps to MAX, which remains 1 minus one signal LSB. Matrix
+ * working-rounding error is separate from this endpoint error: an ideal value
+ * slightly above +1 can round to working ONE and then map to MAX successfully.
+ * Raw zero measurement noise fails.
  * Covariance uses the Joseph form, followed by matrix symmetrization, not a
  * positive-semidefinite projection. See KALMAN.md for limits and provenance.
  */
@@ -53,26 +61,26 @@ typedef struct {
 } filters_kalman_scalar_f64_t;
 
 /**
- * @brief Caller-owned q15 scalar estimate and variance with separate exponents.
+ * @brief Caller-owned fixed-F15 scalar estimate and variance.
  *
- * Each field represents mantissa * 2^(exponent-15). Initialize with reset;
- * retain and serialize the object for all calls. Failures preserve both fields.
- * Arithmetic is integer-only and successful operations may change exponents.
+ * Each int16_t field represents raw/32768, in [-1,1-2^-15]. Initialize with
+ * reset; retain and serialize the object for all calls. Failures preserve both
+ * fields. Working arithmetic is integer-only F31 with no scale metadata.
  */
 typedef struct {
-    linears_q15_t estimate; /**< State in physical units at its own binary scale. */
+    linears_q15_t estimate; /**< State in caller-selected units, raw/32768. */
     linears_q15_t covariance; /**< Nonnegative variance in squared state units. */
 } filters_kalman_scalar_q15_t;
 
 /**
- * @brief Caller-owned q31 scalar estimate and variance with separate exponents.
+ * @brief Caller-owned fixed-F31 scalar estimate and variance.
  *
- * Each field represents mantissa * 2^(exponent-31). Initialize with reset;
- * retain and serialize the object for all calls. Failures preserve both fields.
- * Arithmetic is integer-only and successful operations may change exponents.
+ * Each int32_t field represents raw/2147483648, in [-1,1-2^-31]. Initialize
+ * with reset; retain and serialize the object for all calls. Failures preserve
+ * both fields. Working arithmetic is integer-only F31 with no scale metadata.
  */
 typedef struct {
-    linears_q31_t estimate; /**< State in physical units at its own binary scale. */
+    linears_q31_t estimate; /**< State in caller-selected units, raw/2147483648. */
     linears_q31_t covariance; /**< Nonnegative variance in squared state units. */
 } filters_kalman_scalar_q31_t;
 
@@ -182,12 +190,11 @@ linears_status_t filters_kalman_scalar_f64_update(filters_kalman_scalar_f64_t *s
  * @brief Initialize or reset a q15 scalar filter using integer arithmetic.
  *
  * @param[out] state Non-NULL caller-owned object; prior initialization not needed.
- * @param[in] estimate State in physical units, encoded as mantissa*2^(exponent-15).
+ * @param[in] estimate State in caller-selected units, fixed F15 raw/32768.
  * @param[in] covariance Nonnegative variance in squared state units, same encoding.
  * @return linears_status_t Reset status.
- * @retval LINEARS_OK Both fields were normalized and committed.
+ * @retval LINEARS_OK Both raw fields were committed unchanged.
  * @retval LINEARS_ERROR_ARGUMENT state is NULL.
- * @retval LINEARS_ERROR_RANGE An input or normalized exponent is out of range.
  * @retval LINEARS_ERROR_DOMAIN covariance is negative.
  * @note No workspace; failure preserves state. Serialize shared use.
  */
@@ -198,17 +205,18 @@ linears_status_t filters_kalman_scalar_q15_reset(filters_kalman_scalar_q15_t *st
  * @brief Predict x=a*x and p=a*p*a+q using the shared integer working kernel.
  *
  * @param[in,out] state Non-NULL successfully reset q15 object, retained by caller.
- * @param[in] transition Dimensionless a for one interval; q15 with explicit exponent.
+ * @param[in] transition Dimensionless wide F31 a (raw/2^31) for one interval;
+ *                       LINEARS_FIXED_ONE is exact unity. Values above one are allowed.
  * @param[in] process_noise Nonnegative q in squared state units, q15 encoded.
  * @return linears_status_t Prediction status.
- * @retval LINEARS_OK Both fields and their independent exponents were committed.
+ * @retval LINEARS_OK Both fixed-fraction raw fields were committed.
  * @retval LINEARS_ERROR_ARGUMENT state is NULL.
- * @retval LINEARS_ERROR_RANGE An input, intermediate or output exponent is invalid.
+ * @retval LINEARS_ERROR_RANGE Working overflow or a final output outside [-1,+1].
  * @retval LINEARS_ERROR_DOMAIN State variance or process_noise is negative.
  * @note No workspace; failure preserves both fields. Serialize shared use.
  */
 linears_status_t filters_kalman_scalar_q15_predict(filters_kalman_scalar_q15_t *state,
-                                                 linears_q15_t transition,
+                                                 linears_fixed_t transition,
                                                  linears_q15_t process_noise);
 
 /**
@@ -216,31 +224,31 @@ linears_status_t filters_kalman_scalar_q15_predict(filters_kalman_scalar_q15_t *
  *
  * @param[in,out] state Non-NULL successfully reset object, retained by caller.
  * @param[in] measurement q15 z in measurement units; zero residual is valid.
- * @param[in] observation q15 h in measurement units per state unit.
+ * @param[in] observation Wide F31 h (raw/2^31), in measurement units per state
+ *                        unit; exact unity and gains above one are representable.
  * @param[in] measurement_noise Strictly positive q15 r in squared measurement units.
  * @return linears_status_t Update status.
- * @retval LINEARS_OK Both fields and their independent exponents were committed.
+ * @retval LINEARS_OK Both fixed-fraction raw fields were committed.
  * @retval LINEARS_ERROR_ARGUMENT state is NULL.
- * @retval LINEARS_ERROR_RANGE An input, intermediate or output exponent is invalid.
+ * @retval LINEARS_ERROR_RANGE Working overflow or a final output outside [-1,+1].
  * @retval LINEARS_ERROR_DOMAIN Negative state variance, nonpositive r, or a
  *                             nonpositive innovation variance at working precision.
  * @note No workspace; failure preserves both fields. Serialize shared use.
  */
 linears_status_t filters_kalman_scalar_q15_update(filters_kalman_scalar_q15_t *state,
                                                 linears_q15_t measurement,
-                                                linears_q15_t observation,
+                                                linears_fixed_t observation,
                                                 linears_q15_t measurement_noise);
 
 /**
  * @brief Initialize or reset a q31 scalar filter using integer arithmetic.
  *
  * @param[out] state Non-NULL caller-owned object; prior initialization not needed.
- * @param[in] estimate State in physical units, encoded as mantissa*2^(exponent-31).
+ * @param[in] estimate State in caller-selected units, fixed F31 raw/2147483648.
  * @param[in] covariance Nonnegative variance in squared state units, same encoding.
  * @return linears_status_t Reset status.
- * @retval LINEARS_OK Both fields were normalized and committed.
+ * @retval LINEARS_OK Both raw fields were committed unchanged.
  * @retval LINEARS_ERROR_ARGUMENT state is NULL.
- * @retval LINEARS_ERROR_RANGE An input or normalized exponent is out of range.
  * @retval LINEARS_ERROR_DOMAIN covariance is negative.
  * @note No workspace; failure preserves state. Serialize shared use.
  */
@@ -251,17 +259,18 @@ linears_status_t filters_kalman_scalar_q31_reset(filters_kalman_scalar_q31_t *st
  * @brief Predict x=a*x and p=a*p*a+q using the shared integer working kernel.
  *
  * @param[in,out] state Non-NULL successfully reset q31 object, retained by caller.
- * @param[in] transition Dimensionless a for one interval; q31 with explicit exponent.
+ * @param[in] transition Dimensionless wide F31 a (raw/2^31) for one interval;
+ *                       LINEARS_FIXED_ONE is exact unity. Values above one are allowed.
  * @param[in] process_noise Nonnegative q in squared state units, q31 encoded.
  * @return linears_status_t Prediction status.
- * @retval LINEARS_OK Both fields and their independent exponents were committed.
+ * @retval LINEARS_OK Both fixed-fraction raw fields were committed.
  * @retval LINEARS_ERROR_ARGUMENT state is NULL.
- * @retval LINEARS_ERROR_RANGE An input, intermediate or output exponent is invalid.
+ * @retval LINEARS_ERROR_RANGE Working overflow or a final output outside [-1,+1].
  * @retval LINEARS_ERROR_DOMAIN State variance or process_noise is negative.
  * @note No workspace; failure preserves both fields. Serialize shared use.
  */
 linears_status_t filters_kalman_scalar_q31_predict(filters_kalman_scalar_q31_t *state,
-                                                 linears_q31_t transition,
+                                                 linears_fixed_t transition,
                                                  linears_q31_t process_noise);
 
 /**
@@ -269,19 +278,20 @@ linears_status_t filters_kalman_scalar_q31_predict(filters_kalman_scalar_q31_t *
  *
  * @param[in,out] state Non-NULL successfully reset object, retained by caller.
  * @param[in] measurement q31 z in measurement units; zero residual is valid.
- * @param[in] observation q31 h in measurement units per state unit.
+ * @param[in] observation Wide F31 h (raw/2^31), in measurement units per state
+ *                        unit; exact unity and gains above one are representable.
  * @param[in] measurement_noise Strictly positive q31 r in squared measurement units.
  * @return linears_status_t Update status.
- * @retval LINEARS_OK Both fields and their independent exponents were committed.
+ * @retval LINEARS_OK Both fixed-fraction raw fields were committed.
  * @retval LINEARS_ERROR_ARGUMENT state is NULL.
- * @retval LINEARS_ERROR_RANGE An input, intermediate or output exponent is invalid.
+ * @retval LINEARS_ERROR_RANGE Working overflow or a final output outside [-1,+1].
  * @retval LINEARS_ERROR_DOMAIN Negative state variance, nonpositive r, or a
  *                             nonpositive innovation variance at working precision.
  * @note No workspace; failure preserves both fields. Serialize shared use.
  */
 linears_status_t filters_kalman_scalar_q31_update(filters_kalman_scalar_q31_t *state,
                                                 linears_q31_t measurement,
-                                                linears_q31_t observation,
+                                                linears_fixed_t observation,
                                                 linears_q31_t measurement_noise);
 
 /**
@@ -293,7 +303,7 @@ linears_status_t filters_kalman_scalar_q31_update(filters_kalman_scalar_q31_t *s
  * this object must stay alive and disjoint. Do not change fields after reset.
  * Calls sharing this object or workspace require serialization; independent
  * instances are reentrant. Failure preserves active data and descriptors;
- * success changes active values and exponents only, never shapes or capacities.
+ * success changes active values only, never shapes, addresses or capacities.
  */
 typedef struct {
     linears_matrix_t estimate; /**< n-by-1 state vector in physical state units. */
@@ -303,20 +313,20 @@ typedef struct {
 } filters_kalman_matrix_t;
 
 /**
- * @brief Raw numeric elements needed by prediction, or SIZE_MAX on overflow.
+ * @brief Floating intermediate elements needed by prediction; SIZE_MAX on overflow.
  *
- * n is a positive state count. Arguments must be side-effect-free size_t
- * expressions. Allocate a real array of the selected raw numeric type, not
- * workspace units cast to that type. Only the required prefix is accessed.
+ * n is a positive, side-effect-free state count. Allocate a real float/double
+ * array, not cast workspace units. Only the required prefix is accessed.
+ * Q APIs instead require FILTERS_KALMAN_Q_PREDICT_STORAGE(n) F31 elements.
  */
 #define FILTERS_KALMAN_PREDICT_STORAGE(n) \
     LINEARS_SIZE_ADD((n), LINEARS_SIZE_MUL(4, LINEARS_SIZE_MUL((n), (n))))
 
 /**
- * @brief Raw numeric elements needed by update, or SIZE_MAX on overflow.
+ * @brief Floating intermediate elements needed by update; SIZE_MAX on overflow.
  *
- * n and m are positive state and measurement counts. Arguments must be
- * side-effect-free. Allocate the selected raw numeric element type.
+ * n and m are positive, side-effect-free state and measurement counts.
+ * Allocate float/double; Q APIs use FILTERS_KALMAN_Q_UPDATE_STORAGE(n,m).
  */
 #define FILTERS_KALMAN_UPDATE_STORAGE(n, m) \
     LINEARS_SIZE_ADD( \
@@ -331,7 +341,7 @@ typedef struct {
 #define FILTERS_KALMAN_MAX_SIZE(a, b) ((size_t)(a) > (size_t)(b) ? (size_t)(a) : (size_t)(b))
 
 /**
- * @brief Basic-kernel prediction scratch bytes; SIZE_MAX means overflow.
+ * @brief Floating prediction basic-scratch bytes; SIZE_MAX means overflow.
  *
  * Allocate linears_workspace_unit_t[LINEARS_WORKSPACE_UNITS(result)]. n must
  * be positive and side-effect-free. This is separate from raw numeric storage.
@@ -339,7 +349,7 @@ typedef struct {
 #define FILTERS_KALMAN_PREDICT_BASIC_BYTES(n) LINEARS_BASIC_WORKSPACE_BYTES((n), (n))
 
 /**
- * @brief Basic-kernel update scratch bytes; SIZE_MAX means overflow.
+ * @brief Floating update basic-scratch bytes; SIZE_MAX means overflow.
  *
  * n and m are positive, side-effect-free dimensions. Allocate a real array of
  * linears_workspace_unit_t, separate from raw and decomposition storage.
@@ -356,6 +366,47 @@ typedef struct {
  * n and m are positive side-effect-free dimensions. Predict ignores this array.
  */
 #define FILTERS_KALMAN_UPDATE_DECOMP_STORAGE(n, m) LINEARS_SOLVE_WORKSPACE((m), (n))
+
+/**
+ * @brief Fixed-F31 working elements for Q prediction, or SIZE_MAX on overflow.
+ *
+ * Includes imported x/P/F/Q and all intermediates: 2*n + 7*n*n int64_t elements.
+ * n is positive and side-effect-free. Q signals are not intermediate storage.
+ */
+#define FILTERS_KALMAN_Q_PREDICT_STORAGE(n) \
+    LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(2, (n)), LINEARS_SIZE_MUL(7, LINEARS_SIZE_MUL((n), (n))))
+
+/**
+ * @brief Fixed-F31 working elements for Q update, or SIZE_MAX on overflow.
+ *
+ * Includes imported x/P/z/H/R: 5*n*n + 5*n*m + 3*m*m + 3*n + 3*m elements.
+ * n and m are positive, side-effect-free state and measurement counts.
+ */
+#define FILTERS_KALMAN_Q_UPDATE_STORAGE(n, m) \
+    LINEARS_SIZE_ADD( \
+        LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(5, LINEARS_SIZE_MUL((n), (n))), \
+                        LINEARS_SIZE_MUL(5, LINEARS_SIZE_MUL((n), (m)))), \
+        LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(3, LINEARS_SIZE_MUL((m), (m))), \
+                        LINEARS_SIZE_MUL(3, LINEARS_SIZE_ADD((n), (m)))))
+
+/**
+ * @brief Basic Q-prediction scratch bytes, including atomic output staging.
+ *
+ * n is positive and side-effect-free; SIZE_MAX signals overflow. The n+n*n
+ * units also hold final quantized x/P through their q15/q31 union members.
+ */
+#define FILTERS_KALMAN_Q_PREDICT_BASIC_BYTES(n) \
+    LINEARS_BASIC_WORKSPACE_BYTES(LINEARS_SIZE_ADD((n), LINEARS_SIZE_MUL((n), (n))), 1)
+
+/**
+ * @brief Basic Q-update scratch bytes, including atomic output staging.
+ *
+ * n and m are positive and side-effect-free; SIZE_MAX signals overflow.
+ * Allocate a real linears_workspace_unit_t array covering this byte count.
+ */
+#define FILTERS_KALMAN_Q_UPDATE_BASIC_BYTES(n, m) \
+    FILTERS_KALMAN_MAX_SIZE(FILTERS_KALMAN_UPDATE_BASIC_BYTES((n), (m)), \
+                           FILTERS_KALMAN_Q_PREDICT_BASIC_BYTES(n))
 
 /**
  * @brief Caller-owned single-precision scratch arrays, passed as a borrowed view.
@@ -394,15 +445,16 @@ typedef struct {
 /**
  * @brief Caller-owned q15 scratch arrays with integer-only working storage.
  *
- * Supply naturally aligned real int16_t, workspace-unit and linears_fixed_t
- * arrays, mutually disjoint and disjoint from state/input data/descriptors.
- * Sizes follow the operation's macros. Keep arrays alive for the call and
- * serialize shared use. Failure may change scratch; unused capacity is untouched.
- * Prediction ignores decomposition. No pointer is retained after the call.
+ * Supply naturally aligned real linears_fixed_t, workspace-unit and
+ * linears_fixed_t arrays, mutually disjoint and disjoint from signal data and
+ * descriptors. Raw signal elements remain int16_t; working matrices are int64_t
+ * F31. Use the Q-specific STORAGE/BASIC_BYTES macros and the common update
+ * decomposition macro. Retain arrays and serialize shared use. Failure may
+ * change scratch; unused capacity is untouched. Prediction ignores decomposition.
  */
 typedef struct {
-    int16_t *data; /**< Raw intermediate q15 mantissas; exponents are local. */
-    size_t capacity; /**< Raw capacity in int16_t elements. */
+    linears_fixed_t *data; /**< Wide F31 imported matrices and intermediates. */
+    size_t capacity; /**< Working capacity in linears_fixed_t elements. */
     linears_workspace_unit_t *basic; /**< Separate basic-kernel union array. */
     size_t basic_bytes; /**< Available bytes in basic. */
     linears_q15_workspace_t decomposition; /**< Real linears_fixed_t working array. */
@@ -411,15 +463,16 @@ typedef struct {
 /**
  * @brief Caller-owned q31 scratch arrays with integer-only working storage.
  *
- * Supply naturally aligned real int32_t, workspace-unit and linears_fixed_t
- * arrays, mutually disjoint and disjoint from state/input data/descriptors.
- * Sizes follow the operation's macros. Keep arrays alive for the call and
- * serialize shared use. Failure may change scratch; unused capacity is untouched.
- * Prediction ignores decomposition. No pointer is retained after the call.
+ * Supply naturally aligned real linears_fixed_t, workspace-unit and
+ * linears_fixed_t arrays, mutually disjoint and disjoint from signal data and
+ * descriptors. Raw signal elements remain int32_t; working matrices are int64_t
+ * F31. Use the Q-specific STORAGE/BASIC_BYTES macros and the common update
+ * decomposition macro. Retain arrays and serialize shared use. Failure may
+ * change scratch; unused capacity is untouched. Prediction ignores decomposition.
  */
 typedef struct {
-    int32_t *data; /**< Raw intermediate q31 mantissas; exponents are local. */
-    size_t capacity; /**< Raw capacity in int32_t elements. */
+    linears_fixed_t *data; /**< Wide F31 imported matrices and intermediates. */
+    size_t capacity; /**< Working capacity in linears_fixed_t elements. */
     linears_workspace_unit_t *basic; /**< Separate basic-kernel union array. */
     size_t basic_bytes; /**< Available bytes in basic. */
     linears_q31_workspace_t decomposition; /**< Real linears_fixed_t working array. */
@@ -557,11 +610,11 @@ linears_status_t filters_kalman_matrix_f64_update(filters_kalman_matrix_t *state
  * @param[in] covariance Non-NULL symmetric PSD n-by-n q15 covariance; n*n elements.
  * @return linears_status_t OK, ARGUMENT for NULL/misalignment, DIMENSION for
  *         shape mismatch, SIZE for overflow, WORKSPACE for low capacity,
- *         ALIAS for forbidden overlap, RANGE for invalid exponents, or DOMAIN
+ *         ALIAS for forbidden overlap, or DOMAIN
  *         for asymmetry/negative diagonal. Full PSD remains a precondition.
- * @note Each matrix uses mantissa*2^(exponent-15). No scratch. Exact corresponding
+ * @note Each element is fixed F15 raw/32768. No scratch. Exact corresponding
  *       self-alias is allowed, partial/cross alias is not. Failure preserves
- *       state; serialize shared use. Reset copies block exponents unchanged.
+ *       state; serialize shared use. Reset copies raw values unchanged.
  */
 linears_status_t filters_kalman_matrix_q15_reset(filters_kalman_matrix_t *state,
                                                const linears_matrix_t *estimate,
@@ -570,16 +623,19 @@ linears_status_t filters_kalman_matrix_q15_reset(filters_kalman_matrix_t *state,
 /**
  * @brief Predict a dense q15 filter with shared integer-only matrix kernels.
  *
- * @param[in,out] state Non-NULL reset n-state filter; int16_t buffers stay alive.
- * @param[in] transition Non-NULL q15 n-by-n F for one caller-selected interval.
- * @param[in] process_noise Non-NULL symmetric PSD q15 n-by-n Q in covariance units.
- * @param[in] workspace Borrowed aligned raw/basic arrays meeting prediction
- *                      size macros, disjoint from state/data/descriptors.
+ * @param[in,out] state Non-NULL reset n-state filter; int16_t signal buffers stay alive.
+ * @param[in] transition Non-NULL raw F15 n-by-n F for one caller-selected interval.
+ * @param[in] process_noise Non-NULL symmetric PSD F15 n-by-n Q in covariance units.
+ * @param[in] workspace Borrowed fixed-F31/basic arrays meeting Q_PREDICT_STORAGE
+ *                      and Q_PREDICT_BASIC_BYTES, disjoint from state/data/descriptors.
  *                      decomposition is ignored; array contents may change.
  * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, WORKSPACE, ALIAS,
- *         RANGE (input/intermediate/output exponent), or DOMAIN (asymmetry/negative diagonal).
+ *         RANGE for working overflow or a computed/rounded F31 estimate or
+ *         covariance outside [-1,+1], or DOMAIN for asymmetry/negative diagonal.
  * @note Inputs may alias each other, never state; allocations cover shapes.
- *       Success updates each output block exponent and symmetrizes covariance.
+ *       Success commits raw outputs and symmetrizes covariance. The range test
+ *       is not against an ideal unrounded expression: F31 working rounding can
+ *       precede the separate positive-endpoint one-signal-LSB mapping error.
  *       Failure preserves state, not scratch. Serialize shared state/workspace.
  */
 linears_status_t filters_kalman_matrix_q15_predict(filters_kalman_matrix_t *state,
@@ -593,18 +649,22 @@ linears_status_t filters_kalman_matrix_q15_predict(filters_kalman_matrix_t *stat
  * @param[in,out] state Non-NULL reset n-state filter; int16_t buffers stay alive.
  * @param[in] measurement Non-NULL q15 m-by-1 z in measurement units, m>0.
  * @param[in] observation Non-NULL q15 m-by-n H mapping state to measurement units.
- * @param[in] measurement_noise Non-NULL symmetric SPD q15 m-by-m R in measurement covariance units.
- * @param[in] workspace Borrowed aligned raw/basic/decomposition arrays meeting
- *                      update size macros for n,m; mutually disjoint and disjoint
- *                      from state/data/descriptors. Array contents may change.
+ * @param[in] measurement_noise Non-NULL symmetric SPD F15 m-by-m R in measurement covariance units.
+ * @param[in] workspace Borrowed fixed-F31/basic/decomposition arrays meeting the
+ *                      Q_UPDATE_STORAGE, Q_UPDATE_BASIC_BYTES and common
+ *                      UPDATE_DECOMP_STORAGE macros; all active storage is disjoint.
  * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, WORKSPACE, ALIAS,
  *         RANGE, DOMAIN (asymmetry/negative P diagonal), or NOT_POSITIVE_DEFINITE
  *         for R/innovation pivots, including positive pivots lost to quantization.
- *         A zero LU working pivot returns SINGULAR.
+ *         A zero LU working pivot returns SINGULAR. RANGE includes working
+ *         overflow or a computed/rounded F31 estimate or covariance outside
+ *         [-1,+1], not a check of the ideal unrounded full expression.
  * @note Integer Cholesky checks R/S before pivoted LU solve; no inverse. Zero
  *       residual is valid. Inputs may
- *       alias each other, never state; allocations cover shapes. Success updates
- *       block exponents. Failure preserves state, not scratch. Serialize shared use.
+ *       alias each other, never state; allocations cover shapes. Success commits
+ *       raw outputs. F31 working-rounding error is additional to the separate
+ *       positive-endpoint one-signal-LSB mapping error. Failure preserves state,
+ *       not scratch. Serialize shared use.
  */
 linears_status_t filters_kalman_matrix_q15_update(filters_kalman_matrix_t *state,
                                                 const linears_matrix_t *measurement,
@@ -620,11 +680,11 @@ linears_status_t filters_kalman_matrix_q15_update(filters_kalman_matrix_t *state
  * @param[in] covariance Non-NULL symmetric PSD n-by-n q31 covariance; n*n elements.
  * @return linears_status_t OK, ARGUMENT for NULL/misalignment, DIMENSION for
  *         shape mismatch, SIZE for overflow, WORKSPACE for low capacity,
- *         ALIAS for forbidden overlap, RANGE for invalid exponents, or DOMAIN
+ *         ALIAS for forbidden overlap, or DOMAIN
  *         for asymmetry/negative diagonal. Full PSD remains a precondition.
- * @note Each matrix uses mantissa*2^(exponent-31). No scratch. Exact corresponding
+ * @note Each element is fixed F31 raw/2147483648. No scratch. Exact corresponding
  *       self-alias is allowed, partial/cross alias is not. Failure preserves
- *       state; serialize shared use. Reset copies block exponents unchanged.
+ *       state; serialize shared use. Reset copies raw values unchanged.
  */
 linears_status_t filters_kalman_matrix_q31_reset(filters_kalman_matrix_t *state,
                                                const linears_matrix_t *estimate,
@@ -633,16 +693,19 @@ linears_status_t filters_kalman_matrix_q31_reset(filters_kalman_matrix_t *state,
 /**
  * @brief Predict a dense q31 filter with shared integer-only matrix kernels.
  *
- * @param[in,out] state Non-NULL reset n-state filter; int32_t buffers stay alive.
- * @param[in] transition Non-NULL q31 n-by-n F for one caller-selected interval.
- * @param[in] process_noise Non-NULL symmetric PSD q31 n-by-n Q in covariance units.
- * @param[in] workspace Borrowed aligned raw/basic arrays meeting prediction
- *                      size macros, disjoint from state/data/descriptors.
+ * @param[in,out] state Non-NULL reset n-state filter; int32_t signal buffers stay alive.
+ * @param[in] transition Non-NULL raw F31 n-by-n F for one caller-selected interval.
+ * @param[in] process_noise Non-NULL symmetric PSD F31 n-by-n Q in covariance units.
+ * @param[in] workspace Borrowed fixed-F31/basic arrays meeting Q_PREDICT_STORAGE
+ *                      and Q_PREDICT_BASIC_BYTES, disjoint from state/data/descriptors.
  *                      decomposition is ignored; array contents may change.
  * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, WORKSPACE, ALIAS,
- *         RANGE (input/intermediate/output exponent), or DOMAIN (asymmetry/negative diagonal).
+ *         RANGE for working overflow or a computed/rounded F31 estimate or
+ *         covariance outside [-1,+1], or DOMAIN for asymmetry/negative diagonal.
  * @note Inputs may alias each other, never state; allocations cover shapes.
- *       Success updates output block exponents and symmetrizes covariance.
+ *       Success commits raw outputs and symmetrizes covariance. The range test
+ *       is not against an ideal unrounded expression: F31 working rounding can
+ *       precede the separate positive-endpoint one-signal-LSB mapping error.
  *       Failure preserves state, not scratch. Serialize shared state/workspace.
  */
 linears_status_t filters_kalman_matrix_q31_predict(filters_kalman_matrix_t *state,
@@ -656,18 +719,22 @@ linears_status_t filters_kalman_matrix_q31_predict(filters_kalman_matrix_t *stat
  * @param[in,out] state Non-NULL reset n-state filter; int32_t buffers stay alive.
  * @param[in] measurement Non-NULL q31 m-by-1 z in measurement units, m>0.
  * @param[in] observation Non-NULL q31 m-by-n H mapping state to measurement units.
- * @param[in] measurement_noise Non-NULL symmetric SPD q31 m-by-m R in measurement covariance units.
- * @param[in] workspace Borrowed aligned raw/basic/decomposition arrays meeting
- *                      update size macros for n,m; mutually disjoint and disjoint
- *                      from state/data/descriptors. Array contents may change.
+ * @param[in] measurement_noise Non-NULL symmetric SPD F31 m-by-m R in measurement covariance units.
+ * @param[in] workspace Borrowed fixed-F31/basic/decomposition arrays meeting the
+ *                      Q_UPDATE_STORAGE, Q_UPDATE_BASIC_BYTES and common
+ *                      UPDATE_DECOMP_STORAGE macros; all active storage is disjoint.
  * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, WORKSPACE, ALIAS,
  *         RANGE, DOMAIN (asymmetry/negative P diagonal), or NOT_POSITIVE_DEFINITE
  *         for R/innovation pivots, including positive pivots lost to quantization.
- *         A zero LU working pivot returns SINGULAR.
+ *         A zero LU working pivot returns SINGULAR. RANGE includes working
+ *         overflow or a computed/rounded F31 estimate or covariance outside
+ *         [-1,+1], not a check of the ideal unrounded full expression.
  * @note Integer Cholesky checks R/S before pivoted LU solve; no inverse. Zero
  *       residual is valid. Inputs may
- *       alias each other, never state; allocations cover shapes. Success updates
- *       block exponents. Failure preserves state, not scratch. Serialize shared use.
+ *       alias each other, never state; allocations cover shapes. Success commits
+ *       raw outputs. F31 working-rounding error is additional to the separate
+ *       positive-endpoint one-signal-LSB mapping error. Failure preserves state,
+ *       not scratch. Serialize shared use.
  */
 linears_status_t filters_kalman_matrix_q31_update(filters_kalman_matrix_t *state,
                                                 const linears_matrix_t *measurement,

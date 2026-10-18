@@ -70,20 +70,40 @@ production path allocates memory, declares a dimension-dependent local array,
 or recurses. Calls with disjoint caller-owned storage are reentrant.
 
 `f32` and `f64` use their native scalar precision. Both fixed-point variants use
-the shared `linears_fixed_t` scalar arithmetic: normalized 31-significant-
-magnitude-bit integer mantissas with explicit exponents. q15/q31 SVD is not a
-floating-point wrapper, and this file adds no separate fixed-point arithmetic.
-The intermediate arithmetic does not provide a wider exact dot-product
-accumulator.
+the shared `linears_fixed_t` arithmetic: an `int64_t` raw integer divided by
+`2^31`, with 31 fractional bits on every operation and in every workspace slot.
+The public matrices contain only `data`, `rows`, and `cols`; q15 data is
+`int16_t / 2^15` and q31 data is `int32_t / 2^31`. There is no exponent or
+variable binary-point metadata, including in temporary values. q15/q31 SVD is
+not a floating-point wrapper and adds no separate fixed-point arithmetic.
+
+Fixed correlations, rotation linear combinations, and Gram-Schmidt projections
+use the common two-`uint64_t`-limb F62 accumulator and round once to F31. Norms
+use the shared accumulator-backed helper. Products in an accumulator are exact
+for its supplied operands; earlier normalization/division still rounds to F31.
+No `__int128` extension is needed. Native floating-point expression order is
+unchanged by these integer-only paths.
 
 The working input is divided by its largest absolute element, and the singular
-values are multiplied by that scale before export. Column norms additionally
-use the shared maximum-magnitude-scaled norm helper. Pair correlations use
-normalized columns; the two-by-two rotation is also scaled before taking its
-square root. These avoid directly squaring large input values, but do not
-guarantee success when a working result lies outside the scalar exponent range.
-Global scaling and numerical-rank truncation mean that this is not a high-
-relative-accuracy SVD for arbitrarily small singular values.
+values are multiplied by that value before export. This is ordinary scalar
+arithmetic: the divisor itself is an F31 value, and no fractional-bit count or
+binary exponent changes. It preserves the directions of an all-small input,
+including a column whose raw values are `[1,1]`; dividing that column by an
+already rounded one-quantum norm would incorrectly produce `[1,1]` as a unit
+vector. Column norms additionally use the shared maximum-magnitude-scaled norm
+helper. Pair correlations use normalized columns; the two-by-two rotation is
+also scaled before taking its square root. Working integer overflow returns
+`LINEARS_ERROR_RANGE`. This is not a high-relative-accuracy SVD for arbitrarily
+small singular values.
+
+Q output is intrinsically range-limited. Even when every input entry is a valid
+Q value, a singular value can exceed one: the column `[0.75,0.75]` has norm
+`sqrt(1.125)`. Any computed F31 output outside `[-1,+1]` fails with `RANGE` before
+any output is written. The bound is checked on the computed, rounded working
+value, not by an exact symbolic evaluation of the mathematical SVD. An exact
+working `+1`, and q15 positive rounding carry from within the domain, encode as
+`INT16_MAX` or `INT32_MAX`. This documented endpoint encoding is not permission
+to saturate a working value outside the domain. `-1` is exactly representable.
 
 ## Iteration and comparison contract
 
@@ -93,8 +113,8 @@ and already orthogonal columns. A non-converged problem returns
 `LINEARS_ERROR_NO_CONVERGENCE`; it does not report an unfinished factorization as
 successful. Singular values are nonnegative and sorted in nonincreasing order.
 
-Let `M=max(m,n)` and `epsilon` be `FLT_EPSILON`, `DBL_EPSILON`, or `2^-30` for
-both integer working types. The template sets `tau=8*M*epsilon`. A column pair
+Let `M=max(m,n)` and `epsilon` be `FLT_EPSILON`, `DBL_EPSILON`, or the constant
+F31 quantum `2^-31` for both integer working types. The template sets `tau=8*M*epsilon`. A column pair
 is converged when the absolute normalized inner product is at most `tau`.
 A nonempty problem with `tau >= 1` returns `LINEARS_ERROR_NO_CONVERGENCE`, because
 that working precision cannot distinguish the rank cutoff from the largest
@@ -106,17 +126,26 @@ A conservative exact-arithmetic bound for all such discarded contributions is
 `r*tau*||A||_F`: each column is discarded at most once, its norm is at most
 `tau*||A||_F`, and the triangle inequality bounds the sum. Rounding of rotations
 and output quantization contribute additional error. A small retained singular
-value has no separate relative-error guarantee.
+value has no separate relative-error guarantee. In the integer variants, a
+required rotation whose sine rounds to zero, or whose working columns remain
+unchanged after rounding, returns `NO_CONVERGENCE` immediately. A large sweep
+budget does not turn a quantized zero step into progress.
 
 Input, outputs, and workspace are separate storage. Workspace and matrix
 storage must satisfy the corresponding scalar alignment. Validation, arithmetic,
-export-range, and convergence failures leave output data and exponents unchanged;
-workspace contents are unspecified after a call.
+export-range, and convergence failures leave output data and descriptors
+unchanged; workspace contents are unspecified after a call.
 
-Fixed-point tests must compare with the *decoded quantized input*, not the ideal
-floating-point fixture. For a q-format output whose exponent is `e`, one output
-unit is `2^(e-15)` or `2^(e-31)`. Round-to-nearest export contributes at most half
-an output unit per element. Reconstruction and orthogonality checks include this
-quantization contribution and the dimension-scaled working-precision error.
-They compare singular values, reconstruction, and orthogonality rather than
-signs or a particular basis for repeated singular values.
+Fixed-point tests compare with the *decoded quantized input*, not an unquantized
+fixture or a rescaled reference. Successful random Q fixtures deliberately
+change their actual values so that their Frobenius norm is at most one half;
+this bounds their largest singular value while leaving room for rounding.
+Separate cases retain out-of-range singular values and require atomic failure.
+
+One output quantum is always `2^-15` or `2^-31`. Ordinary nearest rounding has
+at most half-quantum error; the unavailable positive endpoint has at most
+one-quantum error. The test budget distinguishes these cells, F31 arithmetic
+roundoff, and intentional rank truncation. Raw minimum quantum, signed extrema,
+small singular values rounding to zero, and finite-precision stagnation are
+covered explicitly. Checks compare singular values, reconstruction, and
+orthogonality, not signs or a particular basis for repeated singular values.

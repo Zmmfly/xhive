@@ -20,6 +20,7 @@ static linears_status_t D_LOCAL(lu_factor)(D_SCALAR *a, size_t n, D_SCALAR *b,
             D_SCALAR magnitude = D_ABS(a[i * n + k]);
             if (D_CMP(magnitude, maximum) > 0) { maximum = magnitude; pivot = i; }
         }
+        if (status != LINEARS_OK) return status;
         if (D_CMP(maximum, D_ZERO) == 0) return LINEARS_ERROR_SINGULAR;
         if (pivot != k) {
             for (j = 0; j < n; ++j) {
@@ -43,12 +44,20 @@ static linears_status_t D_LOCAL(lu_factor)(D_SCALAR *a, size_t n, D_SCALAR *b,
             D_SCALAR factor = D_DIV(a[i * n + k], a[k * n + k]);
             a[i * n + k] = factor;
             for (j = k + 1; j < n; ++j) {
+#if D_FIXED
+                a[i * n + j] = D_LOCAL(sub_product)(a[i * n + j], factor, a[k * n + j], &status);
+#else
                 D_SCALAR product = D_MUL(factor, a[k * n + j]);
                 a[i * n + j] = D_SUB(a[i * n + j], product);
+#endif
             }
             for (j = 0; j < rhs; ++j) {
+#if D_FIXED
+                b[i * rhs + j] = D_LOCAL(sub_product)(b[i * rhs + j], factor, b[k * rhs + j], &status);
+#else
                 D_SCALAR product = D_MUL(factor, b[k * rhs + j]);
                 b[i * rhs + j] = D_SUB(b[i * rhs + j], product);
+#endif
             }
             if (status != LINEARS_OK) return status;
         }
@@ -59,16 +68,25 @@ static linears_status_t D_LOCAL(lu_factor)(D_SCALAR *a, size_t n, D_SCALAR *b,
 static linears_status_t D_LOCAL(back_substitute)(const D_SCALAR *lu, size_t n,
                                                 D_SCALAR *b, size_t rhs)
 {
-    size_t row, column, k;
+    size_t row, column;
+#if !D_FIXED
+    size_t k;
+#endif
     linears_status_t status = LINEARS_OK;
     for (row = n; row != 0;) {
         --row;
         for (column = 0; column < rhs; ++column) {
             D_SCALAR value = b[row * rhs + column];
+#if D_FIXED
+            if (row + 1 < n)
+                value = D_LOCAL(dot_sub)(value, lu + row * n + row + 1, 1,
+                    b + (row + 1) * rhs + column, rhs, n - row - 1, &status);
+#else
             for (k = row + 1; k < n; ++k) {
                 D_SCALAR product = D_MUL(lu[row * n + k], b[k * rhs + column]);
                 value = D_SUB(value, product);
             }
+#endif
             b[row * rhs + column] = D_DIV(value, lu[row * n + row]);
             if (status != LINEARS_OK) return status;
         }
@@ -76,6 +94,7 @@ static linears_status_t D_LOCAL(back_substitute)(const D_SCALAR *lu, size_t n,
     return LINEARS_OK;
 }
 
+#if !D_WORKING
 linears_status_t D_NAME(lu)(const linears_matrix_t *a, linears_matrix_t *l,
     linears_matrix_t *u, size_t *permutation, size_t permutation_capacity,
     int *parity, D_WORKSPACE workspace)
@@ -83,7 +102,7 @@ linears_status_t D_NAME(lu)(const linears_matrix_t *a, linears_matrix_t *l,
     const linears_matrix_t *matrices[3] = {a, l, u};
     linears_status_t status = D_LOCAL(descriptors)(matrices, 3);
     size_t n, count, i, j;
-    int sign, l_exponent, u_exponent;
+    int sign;
     D_SCALAR l_minimum = D_ZERO, l_maximum = D_ZERO;
     D_SCALAR u_minimum = D_ZERO, u_maximum = D_ZERO;
     if (status != LINEARS_OK) return status;
@@ -118,22 +137,21 @@ linears_status_t D_NAME(lu)(const linears_matrix_t *a, linears_matrix_t *l,
             }
         }
     }
-    status = D_LOCAL(output_exponent_bounds)(l_minimum, l_maximum, &l_exponent);
+    status = D_LOCAL(output_bounds)(l_minimum, l_maximum);
     if (status != LINEARS_OK) return status;
-    status = D_LOCAL(output_exponent_bounds)(u_minimum, u_maximum, &u_exponent);
+    status = D_LOCAL(output_bounds)(u_minimum, u_maximum);
     if (status != LINEARS_OK) return status;
     for (i = 0; i < n; ++i) {
         for (j = 0; j < n; ++j) {
             D_SCALAR value = workspace.data[i * n + j];
-            D_LOCAL(store)(l, i * n + j, i == j ? D_ONE : (i > j ? value : D_ZERO), l_exponent);
-            D_LOCAL(store)(u, i * n + j, i <= j ? value : D_ZERO, u_exponent);
+            D_LOCAL(store)(l, i * n + j, i == j ? D_ONE : (i > j ? value : D_ZERO));
+            D_LOCAL(store)(u, i * n + j, i <= j ? value : D_ZERO);
         }
     }
-    l->exponent = l_exponent;
-    u->exponent = u_exponent;
     *parity = sign;
     return LINEARS_OK;
 }
+#endif
 
 linears_status_t D_NAME(solve)(const linears_matrix_t *a, const linears_matrix_t *b,
                               linears_matrix_t *x, D_WORKSPACE workspace)
@@ -141,7 +159,7 @@ linears_status_t D_NAME(solve)(const linears_matrix_t *a, const linears_matrix_t
     const linears_matrix_t *matrices[3] = {a, b, x};
     linears_status_t status = D_LOCAL(descriptors)(matrices, 3);
     size_t n, rhs, matrix_count, result_count, required, i;
-    int sign, exponent;
+    int sign;
     D_SCALAR *solution;
     if (status != LINEARS_OK) return status;
     n = a->rows;
@@ -161,19 +179,20 @@ linears_status_t D_NAME(solve)(const linears_matrix_t *a, const linears_matrix_t
     if (status != LINEARS_OK) return status;
     status = D_LOCAL(back_substitute)(workspace.data, n, solution, rhs);
     if (status != LINEARS_OK) return status;
-    status = D_LOCAL(block_exponent)(solution, result_count, &exponent);
+    status = D_LOCAL(check_block)(solution, result_count);
     if (status != LINEARS_OK) return status;
-    D_LOCAL(store_block)(x, solution, result_count, exponent);
+    D_LOCAL(store_block)(x, solution, result_count);
     return LINEARS_OK;
 }
 
+#if !D_WORKING
 linears_status_t D_NAME(inverse)(const linears_matrix_t *a, linears_matrix_t *inverse,
                                 D_WORKSPACE workspace)
 {
     const linears_matrix_t *matrices[2] = {a, inverse};
     linears_status_t status = D_LOCAL(descriptors)(matrices, 2);
     size_t n, count, required, i, j;
-    int sign, exponent;
+    int sign;
     D_SCALAR *solution;
     if (status != LINEARS_OK) return status;
     n = a->rows;
@@ -192,30 +211,49 @@ linears_status_t D_NAME(inverse)(const linears_matrix_t *a, linears_matrix_t *in
     if (status != LINEARS_OK) return status;
     status = D_LOCAL(back_substitute)(workspace.data, n, solution, n);
     if (status != LINEARS_OK) return status;
-    status = D_LOCAL(block_exponent)(solution, count, &exponent);
+    status = D_LOCAL(check_block)(solution, count);
     if (status != LINEARS_OK) return status;
-    D_LOCAL(store_block)(inverse, solution, count, exponent);
+    D_LOCAL(store_block)(inverse, solution, count);
     return LINEARS_OK;
 }
 
-/* Accumulate determinant exponents separately, so alternating huge and tiny
- * diagonal factors do not overflow merely because of their multiplication order. */
-static D_SCALAR D_LOCAL(diagonal_product)(const D_SCALAR *lu, size_t n, int sign,
-                                          linears_status_t *result_status)
+/* Fixed products keep exactly the F31 binary point. Selecting large factors
+ * while |product| <= 1 and small factors otherwise avoids premature underflow
+ * followed by growth; only the now-private LU diagonal order is changed.
+ * Native formats retain their frexp-based product to preserve their behavior. */
+static D_SCALAR D_LOCAL(diagonal_product)(D_SCALAR *lu, size_t n, int sign,
+                                         linears_status_t *result_status)
 {
     size_t i;
-    int64_t exponent = 0;
     linears_status_t status = LINEARS_OK;
     D_SCALAR product = D_ONE;
-    for (i = 0; i < n; ++i) {
 #if D_FIXED
-        D_SCALAR factor = lu[i * n + i];
-        exponent += factor.exponent;
-        factor.exponent = 0;
-        product = D_MUL(product, factor);
-        exponent += product.exponent;
-        product.exponent = 0;
+    for (i = 0; i < n; ++i) {
+        size_t chosen = i, j;
+        D_SCALAR magnitude = D_ABS(product);
+        D_SCALAR selected = D_ABS(lu[i * n + i]);
+        int prefer_large = D_CMP(magnitude, D_ONE) <= 0;
+        for (j = i + 1; j < n; ++j) {
+            D_SCALAR candidate = D_ABS(lu[j * n + j]);
+            if ((prefer_large && D_CMP(candidate, selected) > 0) ||
+                (!prefer_large && D_CMP(candidate, selected) < 0)) {
+                selected = candidate;
+                chosen = j;
+            }
+        }
+        if (status != LINEARS_OK) break;
+        if (chosen != i) {
+            D_SCALAR temporary = lu[i * n + i];
+            lu[i * n + i] = lu[chosen * n + chosen];
+            lu[chosen * n + chosen] = temporary;
+        }
+        product = D_MUL(product, lu[i * n + i]);
+        if (status != LINEARS_OK) break;
+    }
+    if (sign < 0) product = D_NEG(product);
 #else
+    int64_t exponent = 0;
+    for (i = 0; i < n; ++i) {
         int factor_exponent, product_exponent;
 #if D_FORMAT == 1
         D_SCALAR factor = frexpf(lu[i * n + i], &factor_exponent);
@@ -225,16 +263,8 @@ static D_SCALAR D_LOCAL(diagonal_product)(const D_SCALAR *lu, size_t n, int sign
         product = frexp(product * factor, &product_exponent);
 #endif
         exponent += (int64_t)factor_exponent + product_exponent;
-#endif
     }
     if (sign < 0) product = D_NEG(product);
-#if D_FIXED
-    if (n != 0) {
-        if (exponent < LINEARS_EXPONENT_MIN || exponent > LINEARS_EXPONENT_MAX)
-            status = LINEARS_ERROR_RANGE;
-        else product.exponent = (int)exponent;
-    }
-#else
     if (exponent > INT_MAX) status = LINEARS_ERROR_RANGE;
     else if (exponent < INT_MIN) product = D_ZERO;
     else product = D_LOCAL(finite)(D_MATH_SCALE(product, (int)exponent), &status);
@@ -249,7 +279,7 @@ linears_status_t D_NAME(determinant)(const linears_matrix_t *a,
     const linears_matrix_t *matrices[2] = {a, determinant};
     linears_status_t status = D_LOCAL(descriptors)(matrices, 2);
     size_t n, count, i;
-    int sign, exponent;
+    int sign;
     D_SCALAR result;
     if (status != LINEARS_OK) return status;
     n = a->rows;
@@ -265,9 +295,9 @@ linears_status_t D_NAME(determinant)(const linears_matrix_t *a,
     else if (status == LINEARS_OK) result = D_LOCAL(diagonal_product)(workspace.data, n, sign, &status);
     else return status;
     if (status != LINEARS_OK) return status;
-    status = D_LOCAL(block_exponent)(&result, 1, &exponent);
+    status = D_LOCAL(check_block)(&result, 1);
     if (status != LINEARS_OK) return status;
-    D_LOCAL(store)(determinant, 0, result, exponent);
-    determinant->exponent = exponent;
+    D_LOCAL(store)(determinant, 0, result);
     return LINEARS_OK;
 }
+#endif

@@ -1229,8 +1229,8 @@ validation has completed:
   Exact +1 and the entire in-domain positive endpoint rounding cell map to
   the maximum raw positive value, with at most one endpoint LSB error; this
   rule is not restricted to an exact working value of one.
-  A genuinely larger value returns RANGE without modifying outputs. Q MAX
-  itself still means `(2^F-1)/2^F`, not mathematical one; inverse of 0.5 cannot
+  A working value genuinely larger than one returns RANGE without modifying
+  outputs. Q MAX itself still means `(2^F-1)/2^F`, not mathematical one; inverse of 0.5 cannot
   be represented publicly and must fail rather than silently scale or clip.
 - MAC uses two `uint64_t` limbs as a signed 128-bit accumulator at constant F62,
   accumulating exact products before the defined final rounding. It does not
@@ -1249,10 +1249,28 @@ validation has completed:
   constant-width integer contract.
 - One `lowpass_work_step` is shared by Q low-pass and SMO wide fixed-state
   updates. This does not create a fifth family of public filter contexts.
+- Eight shared working-matrix entries in `linears_work.h` were approved for the
+  concrete Kalman intermediate requirement: mul/add/sub/transpose/AXPBY/identity
+  plus solve/Cholesky. They reuse linears kernels, not a second matrix engine
+  inside filters or a complete fifth public numeric variant. Working identity
+  is exactly one; storing it as raw Q MAX would otherwise shrink covariance
+  even for H=0, and S/K/J can legitimately exceed the public Q1 range.
+  Kalman Q temporary data is therefore a typed `linears_fixed_t[]` array.
+  This may cost more bytes than the old raw-q15 temporary storage; exact macro
+  capacities and measured memory must be reported, not a blanket RAM reduction.
 - Unclipped requested-voltage and unlocked-frequency diagnostics use explicit
   wide F31 storage. A legitimate command above one must not prevent the normal
   saturation path merely because its diagnostic could not fit raw Q1; limited
   signal outputs remain raw q15/q31.
+- Compound Kalman/decomposition output checks apply to the computed, rounded
+  F31 working value, not an ideal-real whole-expression interval proof. The
+  approved n=5 Kalman example has x=1/4 and F row `{MAX,MAX,MAX,MAX,raw5}`:
+  exact F62 is `2^62 + 2^29` (ideal value `1 + 2^-33`), `mul_fixed` rounds to
+  working ONE, and final Kalman export legally maps to MAX. The working error
+  `2^-33` and endpoint error `2^-31` are documented separately. Direct raw-Q
+  matrix multiply / `accum_to_q` instead checks the exact F62 domain and returns
+  RANGE atomically for that same direct inner product. Neither contract is
+  weakened by adding a mixed-output API or silently changing tolerances.
 
 Consequences to preserve in tests and documentation:
 
@@ -1269,6 +1287,12 @@ Consequences to preserve in tests and documentation:
   algorithm; the latter/per-value exponent metadata is forbidden in Q paths.
   Ordinary mathematical vector normalization and integer limb shifts are
   allowed; dtype exponents and per-MAC representation normalization are not.
+- The filter owner chose one fixed 16-byte exact F62 running sum in each Q moving
+  average context: candidate subtraction of the departing sample, addition of
+  the new sample, one integer mean/rounding, then atomic commit. This makes Q
+  updates O(1) without an accumulating rounding drift; native floating windows
+  retain their old O(N) recomputation. The additional context bytes must be
+  included in memory reporting.
 - Native floating `frexp`/`ldexp` use is not Q exponent metadata. Source checks
   must distinguish the preserved floating implementation and historical text
   from active Q storage/conversion paths.
@@ -1277,12 +1301,12 @@ Consequences to preserve in tests and documentation:
 
 | Gate | Required evidence | State |
 | --- | --- | --- |
-| FQ0 requirements and plan | Historical BFP notice, coherent breaking-commit boundary, old snapshot identity | Ready for documentation-only review |
-| FQ1 shared migration | Frozen raw-Q ABI/format; all three production APIs and related tests migrate together | Contract approved; implementation pending |
-| FQ2 independent correctness review | Raw integer/rational oracles, Eigen on quantized inputs, float regressions, failure atomicity | Planned |
-| FQ3 SDK and compiler regression | Default build/full host group, O2 strict-aliasing ASan/UBSan, GCC/Clang strict C99, standalone entries, tests-disabled build | Not run for new Q |
+| FQ0 requirements and plan | Historical BFP notice, coherent breaking-commit boundary, old snapshot identity | Committed as `23e22e2` |
+| FQ1 shared migration | Frozen raw-Q ABI/format; all three production APIs and related tests migrate together | Coherent native/default build and tests passed; review/commit pending |
+| FQ2 independent correctness review | Raw integer/rational oracles, Eigen on quantized inputs, float regressions, failure atomicity | Isolated owner/audit results reported; SDK acceptance pending |
+| FQ3 SDK and compiler regression | Default build/full host group, O2 strict-aliasing ASan/UBSan, GCC/Clang strict C99, standalone entries, tests-disabled build | New native/sanitizer/compiler gates passed; standalone/disabled-test gates pending |
 | FQ4 ARM and fixture | Three-field matrices/raw Q constants, representable calls, 292 retained APIs, heap/stack/architecture/source-hash checks | Not run for new Q |
-| FQ5 representative performance | Same-valued old/new matrix multiply, dot, FIR and control workloads; host timings and ARM hot-loop evidence | Baseline source/objects preserved; timings pending |
+| FQ5 representative performance | Same-valued old/new matrix multiply, dot, FIR and control workloads; host timings and ARM hot-loop evidence | Old-only unified preflight and independent math comparison measured; full comparison pending |
 | FQ6 final documentation | Updated contracts/entry points and an exact new-results ledger; no old pass count presented as new | Planned |
 
 ABI checks will establish raw scalar types and removal of public Q exponent
@@ -1353,3 +1377,272 @@ object's symbol inventory. No general-purpose performance framework is planned.
 - **New-Q build, runtime tests, sanitizer checks, ARM link and performance
   comparison: not run.** They await coherent migrated sources. No old 842/2
   result is counted toward these gates.
+- The coordinator committed FQ0 as `23e22e2`
+  (`docs(numerics): define exponent-free Q migration contract`).
+
+### Old-only representative benchmark preparation
+
+Created a small standalone C measurement program in the exclusive directory
+`/home/zmmfly/prjs/xhive_testspace/fieldctrl/fixed-q-xhive-bench-LLfReO`.
+It is not a new SDK performance framework or test registration. Only the
+preserved `ab11032` source snapshot has been compiled/executed so far; the
+active partly migrated tree has not been built.
+
+The ten workloads are q15/q31 versions of 4x4 and 16x16 matrix multiplication,
+a 256-element dot product, a 16-tap FIR step, and an alternating-error PI control
+step. Inputs and exact expected results are common, deliberately representable
+binary fractions, not dynamically normalized reference values:
+
+- Matrix entries 1/16 produce 1/64 (order 4) and 1/16 (order 16).
+- Dot entries 1/64 produce 1/16 over 256 products.
+- FIR coefficients 1/32 and signal 1/4 produce steady output 1/8 over 16 taps.
+- PI gains 1/2 and 1/4, errors +/-1/8, dt=1/256 and limits +/-1/2 exercise
+  integration without clipping. First positive and negative samples are checked
+  separately, so a later ABI adapter cannot silently give dt the wrong units.
+
+Initialization, warmup, exact-result validation and printing occur outside the
+`CLOCK_MONOTONIC` timed loops. The old build used GCC 15.2.0, strict C99, O2,
+strict aliasing, no LTO and no sanitizers; commands are preserved in
+`build-before.sh` / `build-before.log`. The first old-only run pinned its own
+process to allowed logical CPU 0 on an AMD Ryzen 9 7945HX. It completed ten
+exact-result checks; `before-smoke.csv` and `before-smoke.json` preserve raw
+measurements, compiler/host/affinity, load averages and source/binary digests.
+
+These are **old-BFP preflight measurements only**, not a fixed-Q pass or a
+speedup result. After coherent new sources are ready, the same workload program
+will be compiled against the new API with explicitly checked representation
+adapters, then repeated paired old/new batches will report host timing spread.
+No old normalized arithmetic is substituted into the new implementation, and
+host nanoseconds will not be presented as MCU cycles.
+
+### Isolated migration checks reported before SDK acceptance
+
+The following are **delegated owner/auditor results on their own coherent
+snapshots**, not a completed SDK build of the still-migrating three-library
+working tree:
+
+- Numeric/basic/working owner: six categories, **86/86** cases under strict
+  C99/C++17 O2/strict-aliasing and ASan/UBSan. Breakdown: numeric 10, elementwise
+  25, products 13, reductions 12, contracts 20, fixed working matrices 6.
+- Independent numeric/basic/working audit: **42/42** in both plain and
+  ASan/UBSan runs, 18 suites, no skips/errors/disabled cases. Decomposition audit:
+  **41/41**, 5 suites, likewise both plain and sanitizer runs. XML counts were
+  independently parsed by the auditor. Artifacts are in
+  `/tmp/linears-xhive-audit-full-41esVC` and
+  `/tmp/linears-xhive-audit-decomp-GTkzNu`.
+- The new audit uses host `__int128` integer reference arithmetic, guarded by
+  `__SIZEOF_INT128__`. This replaces the old long-double-mantissa requirement;
+  it does not add a production/ARM `__int128` dependency. Entry README drafts
+  were updated accordingly. Coverage includes all q15 values and midpoint
+  neighbors, full-width arithmetic, signed-128 carry/borrow/overflow,
+  cancellation, mean count boundaries, raw output-domain checks, working
+  headroom, and decomposition overflow/atomicity. No new numerical production
+  defect was reported; a stale AXPBY separate-rounding comment was corrected.
+- Decomposition owner: nine categories, **293 cases: 291 passed / 2 skipped**,
+  with plain and sanitizer runs. Core plus work solve/Cholesky: 113; LDLT: 99;
+  SVD: 81 registered, 79 passed. The skips are precisely the f32/f64
+  instantiations of `SmallestStoredQuantumRetainsOrthogonalDirections`; raw
+  fixed-point quantum semantics do not apply to those two floating types.
+  Both Q variants execute it. The independent 41-case audit is separate.
+  Compiler/header checks and logs are in
+  `/tmp/xhive-decomp-fixed-san-FmZyMe` and
+  `/tmp/xhive-decomp-fixed-clang-Q1RJv1`.
+- Filters owner reported complete release compilation and per-category results:
+  six basic families 118, FIR/SOS 40+44, scalar/matrix Kalman 28+41, totaling
+  **271**. Final sanitizer/freeze work is still pending; this unlocks component
+  compilation, not an assertion that the full SDK gate passed.
+- Independent control audit migrated four source files to 40 planned cases,
+  preserving 16 floating regressions and adding 24 raw-Q cases. At this
+  checkpoint only selected syntax checks have run; those 40 cases are **not
+  yet reported as executed or passing**.
+
+The numeric owner's separate small math benchmark provides cross-check evidence
+on GCC 15.2.0/x86-64, O2 and strict aliasing, without LTO/fastmath/sanitizers.
+It used deterministic signed values
+`a=((i*17)%15-7)/256`, `b=((i*11)%13-6)/256`, warmup 100 and five timed batches.
+Per-batch iterations were 20,000 (4x4), 500 (16x16), and 10,000 (dot256).
+Reported median host ns/call were:
+
+| Format / workload | Old BFP | New fixed-Q |
+| --- | ---: | ---: |
+| q15 matrix4 | 1403.66 | 101.37 |
+| q15 matrix16 | 79642.61 | 2446.23 |
+| q15 dot256 | 5849.54 | 113.68 |
+| q31 matrix4 | 1339.96 | 113.24 |
+| q31 matrix16 | 79073.14 | 3541.91 |
+| q31 dot256 | 5693.88 | 161.83 |
+
+Source, raw min/max results and digests are preserved in
+`/tmp/linears-xhive-fixed-xDyzEf`. CPU affinity/frequency were not fixed in that
+independent check. Old/new output quantization differs: its aggregate checksum
+changed by one q15 half-LSB, while every result met the independent raw-integer
+reference within one signal LSB. These are observed timings for that workload,
+not bit-equivalent outputs, universal speed ratios, or MCU cycle counts. The
+build agent's exact-binary-fraction paired workload remains the primary planned
+four-family comparison.
+
+### First ready-core ARM compiler check: failure retained
+
+Copied a stable 23-file linears production/header snapshot to
+`/home/zmmfly/prjs/xhive_testspace/fieldctrl/fixed-q-xhive-armcore-rSWTyu`.
+Only the ready numeric/basic component was compiled; no SDK-root Xmake command
+or partially migrated filter/control build was launched. Existing ARM GCC
+14.3.1 used strict C99/O2/strict-aliasing/no-LTO, Cortex-M4 Thumb hard-float,
+function/data sections and VLA/alloca errors.
+
+`numeric.c` compiled. `basic.c` failed at `basic_q_impl.h:13`:
+
+```text
+error: comparison is always true due to limited range of data type [-Werror=type-limits]
+if ((uint64_t)count <= (uint64_t)INT64_MAX / (UINT64_C(1) << 30)) {
+```
+
+On 32-bit `size_t`, that q15 signed-64 accumulation bound always holds. The
+numeric owner was asked to use a compile-time size-width branch, retaining the
+real large-count fallback on wider hosts, rather than suppressing the warning
+or preserving an impossible runtime failure check. The original failed snapshot,
+source hashes and `failure.txt` remain intact; successful corrected ARM basic
+compilation and hot-loop comparison are still pending at this checkpoint.
+Additional old ARM FIR/control objects and their disassembly were preserved
+alongside the original basic/numeric objects, with a separate digest manifest;
+no prior artifact was overwritten.
+
+### Corrected ARM raw-MAC core and CORDIC hot-loop evidence
+
+The q15 guard portability correction was applied only in `basic_q_impl.h`:
+32-bit `size_t` builds use the proven signed-64 sum directly and do not compile
+its impossible runtime guard or wider fallback; wider hosts retain the actual
+large-count guard and 128-bit fallback. Q31 keeps its 128-bit accumulator.
+No warning was disabled and the arithmetic/API contract did not change.
+
+A new immutable snapshot at
+`fixed-q-xhive-armcore-pass-hZN3Rd` compiled numeric/basic successfully with the
+same strict ARM GCC 14.3.1/Cortex-M4/O2 flags. Numeric reports 23 static stack
+entries (largest single function 72 bytes, `linears_fixed_muldiv`); basic reports
+69 static entries (224 bytes, `matrix_compute`). These are component object
+checks, not the final firmware link or complete call-stack bounds.
+
+Observed offsets within the new ARM object procedures:
+
+| Path | Inner loop | Observed arithmetic/calls |
+| --- | --- | --- |
+| q15 matrix multiply | `matrix_compute+0x608..0x616` | Halfword loads and `SMLALBB`; no helper call |
+| q15 dot | `reduction+0x5dc..0x5ea` | Halfword loads and `SMLALBB`; no helper call |
+| q31 matrix multiply | `matrix_compute+0x456..0x48e` | `SMULL` plus `ADDS/ADCS/ADC` limb accumulation; no helper call |
+| q31 dot | `reduction+0x142..0x17c` | `SMULL` plus carry/sign-extension accumulation; no helper call |
+
+Quantization calls/tail calls occur after a whole dot or completed output,
+not each product. The preserved `ab11032` matrix loop instead has two
+`linears_fixed_from_i64` imports followed by `linears_fixed_mul` and
+`linears_fixed_add` within each multiply/accumulate iteration. This establishes
+removal of that per-scalar representation work in the observed hot loops; it
+does not measure Cortex-M4 cycles or imply an entire mixed-format object has no
+floating functions.
+
+The coordinator then requested a specific CORDIC audit before any optimization.
+Strict ARM compilation of source SHA
+`01b55a68b285a86b7a6046a73a7e89403e4a3d531daa2c8b7d384bcfa31c5485`
+confirmed two generic signed-64 divide helper calls **inside each iteration**:
+`fcq_sincos+0x124/+0x13a` and `fcq_atan2+0x16c/+0x17e`, with observed backedges
+and the 32-iteration bound. This was a real code-generation issue, not an
+inference from whole-object undefined symbols. Before evidence is retained in
+`fixed-q-xhive-cordic-before-UAhPSZ`.
+
+Under the coordinator's narrow authorization, only coordinate division by
+2^i was replaced with unsigned-magnitude shifting and sign restoration.
+The fixed coordinate bound excludes INT64_MIN, truncation stays toward zero,
+and the iteration budget/end conversions are unchanged. The owner compared
+before/after real shared libraries under O2/UBSan: full 65,536 q15-angle grids,
+65,536 seeded atan2 pairs, 4,096 full working-range pairs and 121 corner/axis
+statuses matched bit-for-bit. Independent numeric audit reran 10/10 cases on
+the new hash. The owner also reran all 277 control cases, ordinary and sanitizer,
+after the change, rather than reusing pre-change totals.
+
+After source SHA
+`b226b18678b1a0e3b45ac3f9cc7a4863da40f05ac11665b2f018f6c433f5013e`,
+strict ARM snapshot `fixed-q-xhive-cordic-after-vAddqO` contains no generic
+64-bit divide-helper call in either CORDIC procedure. Only the intended
+loop-external absolute/division setup and terminal `linears_fixed_muldiv`
+conversions remain. Native shift instructions implement the iteration update;
+`call-audit.json` and `cordic.dis` preserve the observations.
+
+The unified small host benchmark was extended with VVVF, retaining PI and all
+other items. Frequency 1/8, amplitude 1/4, bus 1/2, and dt 1/256 produce exact
+1/2048-turn increments. Reset after warmup and 20,480 timed steps end at angle
+zero with voltage (1/4,0), duties (7/8,1/8,1/8), no saturation. The old-only
+extended smoke passed all 12 exact-result checks. Later VVVF timing changes
+include this CORDIC optimization as well as the fixed-Q migration: the overall
+comparison is **old implementation versus new implementation**, not an isolated
+measurement of exponent-field overhead.
+
+### Important fixed-Q15 SMO accuracy limitation
+
+Removing BFP changes fixed-Q15 input/configuration resolution. The control owner
+and coordinator explicitly retained two failures of the old dynamic SMO
+software-model physical-unit targets. No further basis/gain search, tolerance
+increase, mean-for-peak substitution, or claim of restored performance is made.
+The targets remain peak error <0.25 Hz and final-sample error <0.03 Hz.
+
+| Q15 unit basis (V / A / seconds) | Peak speed error | Final-sample error | Implementation vs actual quantized-reference error |
+| --- | ---: | ---: | ---: |
+| 32 / 4 / 0.005 | 0.533496223390 Hz | 0.034133337438 Hz | about 2.39304e-5 Hz |
+| 16 / 2 / 0.0064 | 0.317164357426 Hz | 0.104364096653 Hz | about 1.05771e-5 Hz |
+
+The one engineering candidate keeps a true 100 us plant period and has peak
+current approximately 1.788916 A, below its 2 A base. Both cases preserve
+`meets_legacy_peak=false` and `meets_legacy_last_sample=false`; the corresponding
+unquantized-sensor reference peak is approximately 0.0917 Hz. Agreement with the
+quantized numerical oracle does **not** make either old physical accuracy gate
+pass. The coordinator approved these as explicit quantization-limit regressions;
+use Q31/f32 when that legacy peak/final-sample accuracy is required. Native/Q31
+legacy standards are retained. Q15 DTC is separate: its valid exact-time unit
+basis did recover its old physical-unit accuracy target, and its original
+quantization-bias example remains documented rather than hidden.
+
+### First coherent fixed-Q SDK and optimized sanitizer acceptance
+
+All three owners froze coherent source/test sets before the build agent started
+SDK-root Xmake. Fresh directories were used; earlier BFP build/cache artifacts
+were not overwritten. Cwd remained the real SDK root, `XMAKE_CONFIGDIR` and
+build output were external, and saved configuration was loaded before asserting
+resolved paths stayed under the new output root.
+
+Native gate directory:
+`/home/zmmfly/prjs/xhive_testspace/fieldctrl/fixed-q-xhive-native-YrTGBq`.
+Executed configure (`-P . -y -m debug --xhive_tests=y --xhive_cross_tests=n`
+with that directory's cache/build), default `xmake b`, the three library
+selectors plus SDK entry, and the full `xmake test -g xhive -v` group.
+**Confirmed:** 38 selected entries and the complete **54-entry** SDK group
+passed. All 112 captured code/test/build-script file hashes stayed unchanged.
+
+Optimized gate directory:
+`/home/zmmfly/prjs/xhive_testspace/fieldctrl/fixed-q-xhive-sanitized-vuvnrS`.
+Actual compiler commands used O2, strict aliasing, ASan/UBSan,
+`-fno-sanitize-recover=all`, frame pointers and VLA/alloca errors. The selected
+37-entry group passed with an unchanged 112-file snapshot and no sanitizer or
+runtime-error diagnostics. Counts were parsed from each real test report:
+
+| New fixed-Q library | Registered entries | GoogleTest passed | Skipped |
+| --- | ---: | ---: | ---: |
+| linears | 17 | 460 | 2 |
+| filters | 10 | 278 | 0 |
+| fieldctrl | 10 | 277 | 0 |
+| Total | 37 | 1015 | 2 |
+
+The two skips are the floating SVD `SmallestStoredQuantumRetainsOrthogonalDirections`
+instantiations identified earlier, not missing Q coverage. These are **new
+fixed-Q counts**, not the historical BFP 842/2. Passing the numerical/contract
+suite includes documenting the Q15 SMO limitation above and must not be described
+as restoration of every old Q15 physical-unit target.
+
+The build agent separately executed the two Q15 SMO cases from the freshly built
+host binary with GoogleTest XML output. `q15-smo-limits.xml` confirms both
+positive and negative direction metrics and both false legacy-gate properties;
+this is now direct build-agent evidence, not just an owner report.
+
+Both GCC 15.2.0 and Clang 21.1.8 also accepted all **20 production C translation
+units** under `-std=c99 -pedantic-errors -Wall -Wextra -Werror -Wvla -Walloca
+-O2 -fstrict-aliasing`. Logs, exact output-path checks, count summaries and
+before/after source manifests remain in the two new gate directories. Final
+standalone/disabled-test, complete ARM fixture and paired performance gates
+are still pending at this checkpoint.

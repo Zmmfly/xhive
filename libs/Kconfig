@@ -82,7 +82,7 @@ config LIBS_ADD_LINEARS
     default n
     help
         Add allocation-free matrix operations in f32, f64, q15, and q31.
-        Fixed-point matrices use explicit binary block exponents.
+        Fixed-point data uses raw Q1.15 or Q1.31 integers without exponents.
 
 config LIBS_ADD_FILTERS
     bool "Add filters Signal Processing Library"

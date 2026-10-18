@@ -1,4 +1,5 @@
 #include "filters_kalman.h"
+#include "linears_work.h"
 
 #include <math.h>
 #include <string.h>
@@ -114,82 +115,86 @@ static linears_status_t kalman_workspace_alias(const kalman_boundary_t *b,
     return LINEARS_OK;
 }
 
-static linears_status_t kalman_value_f32(float value, int exponent)
+static linears_status_t kalman_value_f32(float value)
 {
-    (void)exponent;
     return isfinite(value) ? LINEARS_OK : LINEARS_ERROR_RANGE;
 }
 
-static linears_status_t kalman_value_f64(double value, int exponent)
+static linears_status_t kalman_value_f64(double value)
 {
-    (void)exponent;
     return isfinite(value) ? LINEARS_OK : LINEARS_ERROR_RANGE;
-}
-
-static linears_status_t kalman_value_q15(int16_t value, int exponent)
-{
-    linears_q15_t raw = {value, exponent};
-    linears_fixed_t normalized;
-    return linears_fixed_from_q15(raw, &normalized);
-}
-
-static linears_status_t kalman_value_q31(int32_t value, int exponent)
-{
-    linears_q31_t raw = {value, exponent};
-    linears_fixed_t normalized;
-    return linears_fixed_from_q31(raw, &normalized);
 }
 
 #define K_TAG f32
+#define K_FIXED 0
+#define K_KERNEL_TAG f32
+#define K_SIGNAL float
 #define K_RAW float
 #define K_DECOMP_RAW float
 #define K_WORKSPACE filters_kalman_matrix_f32_workspace_t
 #define K_VALUE_CHECK kalman_value_f32
-#define K_OUTPUT_EXPONENT(value) 0
-#define K_ONE 1.0f
-#define K_MINUS_ONE (-1.0f)
+#define K_FACTOR_SPACE(workspace) (workspace)
+#define K_PREDICT_STORAGE FILTERS_KALMAN_PREDICT_STORAGE
+#define K_UPDATE_STORAGE FILTERS_KALMAN_UPDATE_STORAGE
+#define K_PREDICT_BASIC FILTERS_KALMAN_PREDICT_BASIC_BYTES
+#define K_UPDATE_BASIC FILTERS_KALMAN_UPDATE_BASIC_BYTES
 #define K_HALF 0.5f
 #define K_RAW_ONE 1.0f
-#define K_IDENTITY_EXPONENT 0
 #include "kalman_matrix_impl.h"
 
 #define K_TAG f64
+#define K_FIXED 0
+#define K_KERNEL_TAG f64
+#define K_SIGNAL double
 #define K_RAW double
 #define K_DECOMP_RAW double
 #define K_WORKSPACE filters_kalman_matrix_f64_workspace_t
 #define K_VALUE_CHECK kalman_value_f64
-#define K_OUTPUT_EXPONENT(value) 0
-#define K_ONE 1.0
-#define K_MINUS_ONE (-1.0)
+#define K_FACTOR_SPACE(workspace) (workspace)
+#define K_PREDICT_STORAGE FILTERS_KALMAN_PREDICT_STORAGE
+#define K_UPDATE_STORAGE FILTERS_KALMAN_UPDATE_STORAGE
+#define K_PREDICT_BASIC FILTERS_KALMAN_PREDICT_BASIC_BYTES
+#define K_UPDATE_BASIC FILTERS_KALMAN_UPDATE_BASIC_BYTES
 #define K_HALF 0.5
 #define K_RAW_ONE 1.0
-#define K_IDENTITY_EXPONENT 0
 #include "kalman_matrix_impl.h"
 
 #define K_TAG q15
-#define K_RAW int16_t
+#define K_FIXED 1
+#define K_KERNEL_TAG fixed
+#define K_SIGNAL int16_t
+#define K_RAW linears_fixed_t
 #define K_DECOMP_RAW linears_fixed_t
 #define K_WORKSPACE filters_kalman_matrix_q15_workspace_t
-#define K_VALUE_CHECK kalman_value_q15
-#define K_OUTPUT_EXPONENT(value) (value)
-#define K_ONE ((linears_q15_t){INT16_C(16384), 1})
-#define K_MINUS_ONE ((linears_q15_t){-INT16_C(16384), 1})
-#define K_HALF ((linears_q15_t){INT16_C(16384), 0})
-#define K_RAW_ONE INT16_C(16384)
-#define K_IDENTITY_EXPONENT 1
+#define K_IMPORT_RAW linears_fixed_from_q15
+#define K_TO_Q linears_fixed_to_q15
+#define K_PACK_FIELD q15
+#define K_FACTOR_SPACE(workspace) ((linears_fixed_workspace_t){(workspace).data, (workspace).capacity})
+#define K_PREDICT_STORAGE FILTERS_KALMAN_Q_PREDICT_STORAGE
+#define K_UPDATE_STORAGE FILTERS_KALMAN_Q_UPDATE_STORAGE
+#define K_PREDICT_BASIC FILTERS_KALMAN_Q_PREDICT_BASIC_BYTES
+#define K_UPDATE_BASIC FILTERS_KALMAN_Q_UPDATE_BASIC_BYTES
+#define K_HALF (LINEARS_FIXED_ONE / 2)
 #include "kalman_matrix_impl.h"
 
 #define K_TAG q31
-#define K_RAW int32_t
+#define K_FIXED 1
+#define K_KERNEL_TAG fixed
+#define K_SIGNAL int32_t
+#define K_RAW linears_fixed_t
 #define K_DECOMP_RAW linears_fixed_t
 #define K_WORKSPACE filters_kalman_matrix_q31_workspace_t
-#define K_VALUE_CHECK kalman_value_q31
-#define K_OUTPUT_EXPONENT(value) (value)
-#define K_ONE ((linears_q31_t){INT32_C(1073741824), 1})
-#define K_MINUS_ONE ((linears_q31_t){-INT32_C(1073741824), 1})
-#define K_HALF ((linears_q31_t){INT32_C(1073741824), 0})
-#define K_RAW_ONE INT32_C(1073741824)
-#define K_IDENTITY_EXPONENT 1
+#define K_IMPORT_RAW linears_fixed_from_q31
+#define K_TO_Q linears_fixed_to_q31
+#define K_PACK_FIELD q31
+#define K_FACTOR_SPACE(workspace) ((linears_fixed_workspace_t){(workspace).data, (workspace).capacity})
+#define K_PREDICT_STORAGE FILTERS_KALMAN_Q_PREDICT_STORAGE
+#define K_UPDATE_STORAGE FILTERS_KALMAN_Q_UPDATE_STORAGE
+#define K_PREDICT_BASIC FILTERS_KALMAN_Q_PREDICT_BASIC_BYTES
+#define K_UPDATE_BASIC FILTERS_KALMAN_Q_UPDATE_BASIC_BYTES
+#define K_HALF (LINEARS_FIXED_ONE / 2)
 #include "kalman_matrix_impl.h"
 
 #undef K_ALIGNOF
+#undef K_ALIGN_NAME
+#undef K_ALIGN_NAME_INNER

@@ -1,105 +1,172 @@
 # linears
 
 Allocation-free dense linear algebra in C99, with C++-compatible public headers.
-The four API suffixes are `f32`, `f64`, `q15`, and `q31`. Production code does not
-use Eigen, a heap allocator, `alloca`, variable-length arrays, dimension-dependent
-stack arrays, recursive algorithms, or mutable global state. The caller owns all
-matrix storage and any workspace.
+The four signal API suffixes are `f32`, `f64`, `q15`, and `q31`. Production code
+has no Eigen dependency, heap allocation, `alloca`, variable-length arrays,
+dimension-dependent stack arrays, recursion, or mutable global state. The caller
+owns every matrix buffer and workspace.
 
-## Data and numeric contracts
+## Fixed binary points, not block floating point
 
-`linears_matrix_t` has exactly four fields: `data`, `rows`, `cols`, and `exponent`.
-Elements are contiguous, row-major, with no padding or stride between rows. The
-function suffix selects the actual element type:
+`linears_matrix_t` contains exactly `data`, `rows`, and `cols`. Storage is dense,
+contiguous and row-major. There is no stride, capacity field, exponent, or
+per-value normalization metadata. The suffix selects the element type:
 
-| Suffix | Stored element | Represented value |
+| Suffix | Element / scalar type | Real value and range |
 | --- | --- | --- |
-| `f32` | `float` | Native floating value; `exponent` ignored |
-| `f64` | `double` | Native floating value; `exponent` ignored |
-| `q15` | `int16_t` | `mantissa * 2^(exponent - 15)` |
-| `q31` | `int32_t` | `mantissa * 2^(exponent - 31)` |
+| `f32` | `float` | Native floating value |
+| `f64` | `double` | Native floating value |
+| `q15` | `linears_q15_t` = `int16_t` | `raw / 2^15`, `[-1, 1 - 2^-15]` |
+| `q31` | `linears_q31_t` = `int32_t` | `raw / 2^31`, `[-1, 1 - 2^-31]` |
 
-The q formats use one exponent for the entire matrix. Scalar coefficients and
-scalar results use `linears_q15_t` or `linears_q31_t`, with `mantissa` and
-`exponent` fields. Exponents must be in `[-16384, 16384]`. An input whose
-*normalized* exponent falls outside this interval is also rejected: for example,
-a q31 mantissa of `1` at exponent `-16384` is below the working format's range.
+Every raw q15/q31 bit pattern is valid. These typedefs occupy two/four bytes;
+they are not structures. The former block-exponent interface is removed,
+including its exponent limits, validity/normalization routines and variable
+fraction/exponent importer. Old code must remove the fourth matrix initializer
+field and replace `.mantissa`/`.exponent` scalar objects with raw integers.
 
-Fixed-point execution is integer-only, including division and square root. It
-never converts q data to floating point and does not require `__int128`.
-`linears_numeric.h` exposes the shared working arithmetic used by decompositions,
-filters and field control:
+### Wide working values and coefficients
 
-- `linears_fixed_t` is a normalized q31 scalar. A nonzero mantissa has magnitude
-  in `[2^30, 2^31)`; zero is exactly `{0, 0}`. Import raw storage using
-  `linears_fixed_from_q15`, `linears_fixed_from_q31`, or `linears_fixed_from_i64`.
-- There are **31 significant magnitude bits**, not a 64-bit accumulator's
-  precision. Multiplication uses an exact signed 64-bit product; division uses
-  unsigned 64-bit numerator/remainder arithmetic. Square root uses a bounded
-  integer restoring recurrence and an integer nearest-rounding comparison.
-- Scalar results round to nearest, with exact half cases rounded away from zero.
-  The rounding error of one successful primitive is at most half an output
-  mantissa unit; for a nonzero normalized result its relative rounding bound is
-  `2^-31`. Addition aligns exactly when alignment can affect rounding; it does
-  not first truncate both operands to a common 31-bit mantissa.
-- Arithmetic never wraps or saturates. A nonrepresentable normalized result
-  returns `LINEARS_ERROR_RANGE`. Division by zero and negative square root return
-  `LINEARS_ERROR_DOMAIN`. Scalar destinations are unchanged on failure.
-- Working inputs to arithmetic must be canonical. Raw q31 storage is not
-  automatically a canonical working value, even though both typedefs have the
-  same C layout. `linears_fixed_compare` assumes canonical inputs.
+`linears_fixed_t` is `int64_t`, always interpreted as **raw / 2^31**, with exact
+range `[-2^32, 2^32 - 2^-31]`. It is not a normalized mantissa and does not have a
+variable binary point. The wider integer part supports factorization
+intermediates, filter coefficients near -2, and control gains above one.
 
-Computed q matrix outputs are automatically block-normalized. Positive q15
-rounding that would overflow the mantissa increases the entire block's exponent
-by one. The quantization error per element at the chosen output exponent `e`
-is at most `2^(e - bits - 1)`, in addition to preceding working-arithmetic errors.
-Very small elements can become zero when they share an exponent with large
-ones. `linears_copy_*` is deliberately different: it preserves the original raw
-mantissas and exponent exactly, avoiding precision changes during a copy.
+Only q15/q31 `scale` and `axpby` use wide coefficients in the basic signal API.
+Their input and output matrices still contain raw int16/int32 signal values.
 
-Products, sums, and reductions round **each** working operation. They are not
-exact dot products and do not promise a dimension-independent final relative
-error. Cancellation can make final relative errors large; conditioning and
-iteration count also affect decompositions. Tests compare against Eigen after
-quantizing and decoding the actual q inputs, not against unquantized inputs.
+```c
+/* Even in a q15 API, alpha is a 64-bit F31 coefficient, NOT a q15 raw code. */
+linears_fixed_t unity = LINEARS_FIXED_ONE;       /* 2147483648, exactly 1 */
+linears_fixed_t half = LINEARS_FIXED_ONE / 2;    /* exactly 0.5 */
+linears_fixed_t gain = 2 * LINEARS_FIXED_ONE;    /* exactly 2 */
+```
 
-## Basic operations
+Passing q15 raw `16384` as an `alpha` argument does **not** mean one half; it
+means `16384 / 2^31`. Likewise, the q31 signal code `INT32_MAX` is not mathematical
+one. Use `LINEARS_FIXED_ONE` for an exact unit coefficient or working identity.
+Other libraries use this same wide F31 type only where coefficients or internal
+state need its range; ordinary signals remain narrow q15/q31.
 
-All rows in this table have all four suffixes. Matrix output dimensions are
-provided by the caller and are never resized.
+## Rounding and representable outputs
+
+Fixed-point execution is entirely integer-only, including division and square
+root. It never converts q values to float/double or requires production
+`__int128` support.
+
+- Multiplication/division/square root round to nearest, with halfway cases away
+  from zero. A successful wide F31 primitive has absolute rounding error at most
+  `2^-32`. This is an **absolute** bound, not constant relative precision near
+  zero. Add/sub/neg/abs are exact if their result fits.
+- Working int64 overflow returns `LINEARS_ERROR_RANGE` without changing output.
+  In particular `abs(INT64_MIN)` and `neg(INT64_MIN)` fail. Division by zero and
+  negative square root return `LINEARS_ERROR_DOMAIN`.
+- Q export first checks the supplied mathematical value against **[-1,+1]**,
+  before quantization. Values genuinely outside that interval return RANGE.
+- Within that interval, a positive rounded code of `2^15`/`2^31` maps to
+  `INT16_MAX`/`INT32_MAX`. Consequently exact +1 has one output-LSB error; -1 is
+  represented exactly. The upper q15 rounding cell also maps to INT16_MAX, so
+  accepting +1 does not create a gap immediately below it. This cell has at most
+  one-LSB error; other cells have at most half-LSB error.
+- A Q identity therefore has diagonal `1 - 2^-15` or `1 - 2^-31`, **not exact
+  real one**. `inverse([0.5])` would produce 2 and must return RANGE, not silently
+  saturate. A q31 norm of raw `[INT32_MIN, 1]` is strictly above one and fails even
+  when a floating reference rounds that tiny excess away.
+
+The exact raw accumulator in basic products is range-checked before its output
+rounding: even a result one F62 accumulator bit above +1 is rejected. Complex
+factorizations operate at F31 precision; their output range check applies to
+that computed approximation, not to an uncomputed exact real solution.
+Conditioning, cancellation and iteration count affect final accuracy.
+
+## Shared arithmetic and exact multiply-accumulate
+
+`linears_numeric.h` provides the reusable integer core:
+
+- `linears_fixed_from_q15(raw)` is an inline multiplication by 65536;
+  `linears_fixed_from_q31(raw)` is inline sign extension. Neither needs a validity
+  check or failure result. `linears_fixed_from_int(integer, &out)` converts an
+  integer within `[-2^32,2^32-1]` to F31.
+- `linears_fixed_add/sub/mul/div/sqrt/neg/abs/compare` operate on wide F31 values.
+  `linears_fixed_muldiv(a,b,divisor,&out)` computes the exact raw product divided
+  by the raw divisor with one final rounding; it does not overflow a rounded
+  intermediate F31 product before dividing it down.
+- `linears_accum_t {low, high}` is an explicit two-uint64-limb **signed
+  two's-complement integer divided by 2^62**. Initialize it to `{0,0}`.
+  `linears_fixed_mac/msu` add/subtract exact F31 raw products. A signed-128-bit
+  accumulation overflow returns RANGE and leaves the accumulator unchanged.
+- `linears_accum_to_fixed/q15/q31` perform one final rounding. The narrow
+  conversions check the exact F62 value directly instead of first rounding it
+  into F31, which could conceal an out-of-range result.
+- `linears_accum_mean_q15/q31(sum,count,&out)` divide an exact F62 sum by a
+  positive uint64 count and round only the output. The count is never converted
+  to F31. The exact range check compares `abs(sum)` to `count * 2^62` in limbs;
+  even `UINT64_MAX` is a supported divisor. Zero count is a domain error.
+- `linears_fixed_to_q15/q31` and `linears_fixed_export_q15/q31` convert wide
+  values to signals, with no exponent parameter. Array export is failure-atomic
+  and requires input/output storage to be disjoint.
+
+The common small-operand multiplication path uses one 32-by-32-to-64 product.
+The wider path uses four 32-bit partial products and carries. Division uses an
+ordinary uint64 fast path when its numerator fits, otherwise bounded restoring
+long division with an explicit remainder carry bit. Square root uses integer
+restoring digits, including for raw working value 1; there is no floating seed.
+
+## Basic matrix operations and hot paths
+
+All operations below have the four signal suffixes. Matrix output dimensions
+are supplied by the caller and are never changed.
 
 | API stem | Operation | Scratch |
 | --- | --- | --- |
 | `linears_add`, `linears_sub` | Elementwise addition/subtraction | One output block |
-| `linears_hadamard` | Elementwise multiplication | One output block |
-| `linears_mul` | Matrix multiplication | One output block |
-| `linears_matvec` | Matrix times a `k x 1` column vector | One output block |
+| `linears_hadamard` | Elementwise product | One output block |
+| `linears_mul`, `linears_matvec` | Matrix product / matrix-column-vector product | One output block |
 | `linears_transpose` | Rectangular transpose | One output block |
-| `linears_axpby` | `alpha*A + beta*B` | One output block |
-| `linears_scale` | `alpha*A` | One output block |
-| `linears_copy` | Exact representation copy with `memmove` semantics | None |
-| `linears_zero`, `linears_identity` | Fill zeros or a square identity | None |
-| `linears_dot` | Vector dot product / matrix Frobenius inner product | None |
-| `linears_norm` | Euclidean / Frobenius norm | None |
-| `linears_trace` | Sum of a square matrix's diagonal | None |
+| `linears_axpby`, `linears_scale` | Weighted sum / scalar multiplication | One output block |
+| `linears_copy` | Exact copy with `memmove` semantics | None |
+| `linears_zero`, `linears_identity` | Zero or square identity fill | None |
+| `linears_dot`, `linears_norm`, `linears_trace` | Dot/Frobenius inner product, norm, trace | None |
 
-Floating kernels use native `float` or `double` arithmetic throughout,
-including input checks and workspace loads/stores. In particular f32 does not
-convert each element through a software double container on Cortex-M4. Inputs
-and coefficients must be finite. Floating exponent fields
-are not changed, even by a copy or fill. Do not compile with options such as
-`-ffast-math` that invalidate the finite-value checks.
+The Q product/dot inner loops load raw integers, compute exact raw products,
+and accumulate them without scalar imports, normalization, or per-product
+rounding. q15 uses int64 when the term count is at most `INT64_MAX / 2^30`, and
+limbs otherwise. q31 uses exact limbs throughout. On the supported 32/64-bit
+`size_t` targets, at most `SIZE_MAX` terms of magnitude at most `2^62` sum to a
+magnitude below `2^126`, so the raw q31 accumulator cannot overflow signed 128
+bits. Each output is range-checked and quantized once into narrow typed scratch;
+all staged outputs are then committed together.
 
-Norms use scaled sums of squares rather than squaring the largest original
-input. This lets, for example, `norm([1e300, 1e300])` succeed in f64. The fixed
-norm first selects the largest absolute value, then accumulates squared ratios.
-Overflow of the final norm is still an error.
+Q norms accumulate exact squares and compare the sum with the exact unit-square
+bound before an integer square root. Floating norms retain scaled sums of
+squares, so representable norms such as `norm([1e300,1e300])` avoid intermediate
+square overflow. Floating input validation, arithmetic and workspace accesses
+remain native float/double respectively. `-ffast-math` is unsupported because it
+invalidates finite-input checks. Floating contraction follows compiler settings.
 
-## Static workspace and aliasing
+### Internal working matrices
 
-Use the overflow-checked constant-expression macros with nonnegative arguments
-that have no side effects. `SIZE_MAX` is an invalid-size sentinel, not an
-allocation request. A zero row or column gives zero required bytes.
+`linears_work.h` supplies only the eight operations actually needed to share
+library-internal F31 intermediates: `add/sub/mul/transpose/axpby/identity_fixed`
+and `solve/cholesky_fixed`. This is not a fifth signal format. Buffers are
+int64 F31 arrays, and output values above one are retained if they fit the wide
+working range. `identity_fixed` stores exact `LINEARS_FIXED_ONE`; Kalman's
+Joseph identity must not substitute a Q signal identity and attenuate covariance.
+
+The six basic working operations reuse basic matrix validation and typed byte
+scratch. Solve and Cholesky reuse the factorization implementation and
+`linears_fixed_workspace_t`, whose capacity counts F31 elements. Full int64
+working products do not have the raw-Q headroom bound, so their signed-128-bit
+accumulator is checked on each addition. If an intermediate sum overflows,
+RANGE is returned even if later terms could cancel it. There is no arbitrary-
+precision accumulator or hidden exponent fallback.
+
+## Static workspace, aliasing and failure
+
+The checked size macros accept nonnegative, side-effect-free arguments.
+`SIZE_MAX` is an invalid-size sentinel, not an allocation request. Literal-zero
+and runtime-zero dimension combinations remain valid constant/ordinary
+expressions without division by zero.
 
 ```c
 #include "linears.h"
@@ -108,79 +175,70 @@ allocation request. A zero row or column gives zero required bytes.
 #define MAX_COLS 8
 #define SCRATCH_BYTES LINEARS_BASIC_WORKSPACE_BYTES(MAX_ROWS, MAX_COLS)
 
-/* Caller-owned fixed-size objects; no dimension-dependent automatic arrays. */
 struct example_storage {
     int32_t a[MAX_ROWS * MAX_COLS];
     int32_t b[MAX_ROWS * MAX_COLS];
     int32_t result[MAX_ROWS * MAX_COLS];
-    int result_exponent;
     linears_workspace_unit_t scratch[LINEARS_WORKSPACE_UNITS(SCRATCH_BYTES)];
 };
 
 linears_status_t example_add(struct example_storage *storage) {
-    linears_matrix_t a = {storage->a, 8, 8, 0};
-    linears_matrix_t b = {storage->b, 8, 8, 0};
-    linears_matrix_t out = {storage->result, 8, 8, 0};
-    linears_status_t status = linears_add_q31(&a, &b, &out, storage->scratch,
-                                              sizeof(storage->scratch));
-    if (status == LINEARS_OK) storage->result_exponent = out.exponent;
-    return status;
+    linears_matrix_t a = {storage->a, 8, 8};
+    linears_matrix_t b = {storage->b, 8, 8};
+    linears_matrix_t out = {storage->result, 8, 8};
+    return linears_add_q31(&a, &b, &out, storage->scratch,
+                           sizeof(storage->scratch));
 }
 ```
 
-Workspace must be an **actual array of `linears_workspace_unit_t` objects**.
-A suitably aligned `char[]` cast to that pointer type is not the same effective
-type contract. Implementation accesses `workspace[i].f32`,
-`workspace[i].floating`, or `workspace[i].fixed` directly; it never reinterprets a union array as a flat
-`float[]` or `linears_fixed_t[]`. Decomposition APIs have their own typed
-workspace structures and capacity macros; consult `linears_decomp.h`.
+Basic scratch remains one eight-byte typed unit per output on the supported
+host/ARM targets. A local fixed-size 16-byte accumulator does not double the
+entire workspace. Declare an actual `linears_workspace_unit_t[]`; an aligned
+`char[]` cast to that type does not satisfy C effective-type rules. Each unit is
+accessed through its active float/double/fixed/q15/q31 member.
 
-Basic functions stage computed outputs before committing them. Input/output
-element ranges can overlap partially or completely, including in-place matrix
-multiplication. Distinct rectangular-transpose descriptors can refer to the same
-storage. Workspace cannot overlap any matrix data or descriptor. Descriptors may
-be identical, but may not partially overlap one another or lie in element data.
+Input/output data can overlap partially or completely, including in-place
+products and rectangular transpose through distinct descriptors. Workspace may
+not overlap any data or descriptor. Descriptors can be identical but may not
+partially overlap one another or occupy data storage. On every basic error,
+output data, scalar results and descriptors are unchanged; scratch contents are
+unspecified. Functions are synchronous and do not retain storage pointers.
+Independent calls are reentrant; callers serialize overlapping calls.
 
-On any basic-operation error, output elements, scalar results, and descriptors
-remain unchanged; scratch contents are unspecified. All functions are
-synchronous. Independent instances are reentrant. A caller must serialize calls
-that access overlapping data or scratch. No storage pointer is retained.
+The caller guarantees actual storage capacity and lifetime. The library checks
+size/address arithmetic and specified overlaps, not the allocation size behind
+an arbitrary pointer. A zero row or column permits NULL data; shape rules still
+apply. An `m x 0` times `0 x n` product produces an `m x n` zero matrix. Empty
+reductions produce zero. Identity and trace require square matrices, including
+valid `0 x 0` matrices. Factorization alias/workspace rules are stricter: see
+[linears decompositions](DECOMPOSITIONS.md).
 
-The caller guarantees real object lifetimes and buffer capacities; the library
-can check dimension/byte arithmetic and specified overlaps, not the size of an
-arbitrary external allocation. Matrices with either dimension zero permit NULL
-data. Shape rules still apply. An `m x 0` times `0 x n` product is an `m x n`
-zero matrix, and empty dot/norm/trace reductions produce zero. Identity and trace
-require square matrices, including the valid `0 x 0` case.
+## Algorithm references and validation
 
-## Algorithms and references
+Implementations are independent integer/C recurrences, not copied Eigen code.
 
-These are independent implementations of published recurrences, not copied
-Eigen code. Basic dense products use the row/column/inner-index definition of
-GEMM, without hidden packing allocation or recursive blocking.
-
-- Netlib reference BLAS: [DGEMM](https://www.netlib.org/blas/dgemm.f),
+- Netlib BLAS [DGEMM](https://www.netlib.org/blas/dgemm.f),
   [DGEMV](https://www.netlib.org/blas/dgemv.f), and
-  [DDOT](https://www.netlib.org/blas/ddot.f).
+  [DDOT](https://www.netlib.org/blas/ddot.f): dense product definitions.
 - Netlib LAPACK [DLASSQ](https://www.netlib.org/lapack/double/dlassq.f): scaled
-  sum-of-squares recurrence, the basis of the overflow-resistant floating norm.
-- Henry S. Warren, Jr., *Hacker's Delight*, second edition (2013), ISBN
-  978-0-321-84268-8, section 11-1, “Integer Square Root”: integer binary restoring
-  square-root recurrence. `numeric.c` adds nearest rounding by comparing the
-  integer remainder with `floor_root + 1`.
-- [Decompositions](DECOMPOSITIONS.md) documents decomposition-specific algorithms,
-  limits and references; `linears_decomp.h` is their public interface.
+  sum-of-squares recurrence retained by floating norms.
+- Donald E. Knuth, *The Art of Computer Programming*, volume 2, third edition,
+  section 4.3.1: multiple-precision arithmetic, radix-limb multiplication and
+  division. The implementation uses bounded radix-2 restoring division, not a
+  floating estimate or a compiler 128-bit integer extension.
+- Henry S. Warren, Jr., *Hacker's Delight*, second edition, section 11-1,
+  “Integer Square Root”: integer restoring square root. Nearest rounding uses
+  the exact integer remainder comparison with `floor_root + 1`.
 
-## Tests
+GoogleTest and Eigen 3.4.0 are host-test dependencies only. Tests compare decoded
+**already quantized** Q inputs with Eigen, and use independent integer/rational
+oracles for raw products, ties, endpoint range checks, carries and overflow.
+Test-only `__int128` is used on GCC/Clang hosts; production code never uses it.
+Success fixtures reserve explicit Q output headroom. Separate full-range tests
+check required RANGE failures rather than silently dropping coverage or relaxing
+tolerances. Floating fixture values/references are retained from the prior API.
 
-Production dependencies do not include Eigen or GoogleTest. Host tests use
-GoogleTest and Eigen 3.4.0. The basic test categories are separate files:
-`numeric_contract.cc`, `basic_elementwise.cc`, `basic_products.cc`,
-`basic_reductions.cc`, and `basic_contract.cc`; `audit_fixed_numeric.cc` is an
-independently authored numeric audit. Shared `main.cc` contains only the normal
-GoogleTest entry point.
-
-From the SDK root, after its host-test configuration:
+From the configured SDK root:
 
 ```sh
 xmake test -g xhive -v 'linears_test_basic_*/*'
@@ -188,6 +246,6 @@ xmake test -g xhive -v 'linears_test_numeric_contract/numeric_contract'
 xmake test -g xhive -v 'linears_test_audit_fixed_numeric/audit_fixed_numeric'
 ```
 
-Host numerical comparisons, sanitizer runs, target compilation and physical
-board execution are different evidence. Consult the repository worklog for the
-commands actually run; a host test does not establish board-level validation.
+See the central worklog for commands and measurements actually run. Host timing,
+ARM object/disassembly checks, and physical board execution are different
+observations; host nanoseconds are not claimed as MCU cycle counts.

@@ -1,293 +1,290 @@
 #include "linears_numeric.h"
+#include "numeric_internal.h"
 
-#include <limits.h>
-
-/* C99 alignment probes avoid a dependency on C11 _Alignof. */
 struct alignment_i16 { char padding; int16_t value; };
 struct alignment_i32 { char padding; int32_t value; };
-struct alignment_int { char padding; int value; };
 struct alignment_fixed { char padding; linears_fixed_t value; };
 
-/* Work on unsigned magnitudes: signed negative shifts and INT64_MIN negation
- * are deliberately never used. Every variable shift is bounded before use. */
-static uint64_t magnitude64(int64_t value) {
-    return value < 0 ? (uint64_t)(-(value + 1)) + UINT64_C(1) : (uint64_t)value;
-}
-
-static unsigned bit_length(uint64_t value) {
-    unsigned bits = 0;
-    while (value != 0) {
-        value >>= 1;
-        ++bits;
-    }
-    return bits;
-}
-
-static uint64_t rounded_right(uint64_t value, unsigned shift) {
-    if (shift == 0) return value;
-    if (shift > 64) return 0;
-    if (shift == 64) return value >= (UINT64_C(1) << 63);
-    return (value >> shift) + ((value & ((UINT64_C(1) << shift) - 1)) >=
-                              (UINT64_C(1) << (shift - 1)));
-}
-
-/* Normalize the exact signed integer times 2^power, then round only once. */
-static linears_status_t pack(int64_t integer, int64_t power, linears_fixed_t *out) {
-    linears_fixed_t result = {0, 0};
-    uint64_t magnitude = magnitude64(integer);
-    if (magnitude != 0) {
-        unsigned bits = bit_length(magnitude);
-        int64_t exponent = power + bits;
-        magnitude = bits > 31 ? rounded_right(magnitude, bits - 31)
-                              : magnitude << (31 - bits);
-        if (magnitude == (UINT64_C(1) << 31)) {
-            magnitude >>= 1;
-            ++exponent;
-        }
-        if (exponent < LINEARS_EXPONENT_MIN || exponent > LINEARS_EXPONENT_MAX)
-            return LINEARS_ERROR_RANGE;
-        result.mantissa = integer < 0 ? -(int32_t)magnitude : (int32_t)magnitude;
-        result.exponent = (int)exponent;
-    }
-    *out = result;
+static linears_status_t signed_result(uint64_t magnitude, int negative, int64_t *out) {
+    uint64_t limit = negative ? (UINT64_C(1) << 63) : (uint64_t)INT64_MAX;
+    if (magnitude > limit) return LINEARS_ERROR_RANGE;
+    *out = negative ? (magnitude == (UINT64_C(1) << 63) ? INT64_MIN : -(int64_t)magnitude)
+                    : (int64_t)magnitude;
     return LINEARS_OK;
 }
 
-int linears_fixed_valid(linears_fixed_t value) {
-    if (value.mantissa == 0) return value.exponent == 0;
-    return value.exponent >= LINEARS_EXPONENT_MIN &&
-           value.exponent <= LINEARS_EXPONENT_MAX &&
-           value.mantissa != INT32_MIN &&
-           magnitude64(value.mantissa) >= (UINT64_C(1) << 30);
+/* Discard only the fixed-format fractional bits. No signed right shift is
+ * used. The high-limb check prevents truncating any integer result bits. */
+static linears_status_t round_shift(linears_accum_t magnitude, unsigned shift,
+                                    int negative, int64_t *out) {
+    if ((magnitude.high >> shift) != 0) return LINEARS_ERROR_RANGE;
+    uint64_t quotient = (magnitude.low >> shift) | (magnitude.high << (64 - shift));
+    uint64_t remainder = magnitude.low & ((UINT64_C(1) << shift) - 1);
+    if (remainder >= (UINT64_C(1) << (shift - 1))) {
+        if (quotient == UINT64_MAX) return LINEARS_ERROR_RANGE;
+        ++quotient;
+    }
+    return signed_result(quotient, negative, out);
 }
 
-linears_status_t linears_fixed_from_i64(int64_t mantissa, int fractional_bits,
-                                      int exponent, linears_fixed_t *out) {
-    if (out == NULL || fractional_bits < 0 || fractional_bits > 63)
-        return LINEARS_ERROR_ARGUMENT;
-    if (exponent < LINEARS_EXPONENT_MIN || exponent > LINEARS_EXPONENT_MAX)
+linears_status_t linears_fixed_from_int(int64_t integer, linears_fixed_t *out) {
+    if (out == NULL) return LINEARS_ERROR_ARGUMENT;
+    if (integer < -INT64_C(4294967296) || integer > INT64_C(4294967295))
         return LINEARS_ERROR_RANGE;
-    return pack(mantissa, (int64_t)exponent - fractional_bits, out);
+    *out = integer * LINEARS_FIXED_ONE;
+    return LINEARS_OK;
 }
 
-linears_status_t linears_fixed_from_q15(linears_q15_t value, linears_fixed_t *out) {
-    return linears_fixed_from_i64(value.mantissa, 15, value.exponent, out);
+linears_status_t linears_fixed_add(linears_fixed_t a, linears_fixed_t b, linears_fixed_t *out) {
+    if (out == NULL) return LINEARS_ERROR_ARGUMENT;
+    if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b))
+        return LINEARS_ERROR_RANGE;
+    *out = a + b;
+    return LINEARS_OK;
 }
 
-linears_status_t linears_fixed_from_q31(linears_q31_t value, linears_fixed_t *out) {
-    return linears_fixed_from_i64(value.mantissa, 31, value.exponent, out);
+linears_status_t linears_fixed_sub(linears_fixed_t a, linears_fixed_t b, linears_fixed_t *out) {
+    if (out == NULL) return LINEARS_ERROR_ARGUMENT;
+    if ((b > 0 && a < INT64_MIN + b) || (b < 0 && a > INT64_MAX + b))
+        return LINEARS_ERROR_RANGE;
+    *out = a - b;
+    return LINEARS_OK;
 }
 
-linears_status_t linears_fixed_add(linears_fixed_t a, linears_fixed_t b,
-                                 linears_fixed_t *out) {
-    if (out == NULL || !linears_fixed_valid(a) || !linears_fixed_valid(b))
-        return LINEARS_ERROR_ARGUMENT;
-    if (a.mantissa == 0) { *out = b; return LINEARS_OK; }
-    if (b.mantissa == 0) { *out = a; return LINEARS_OK; }
-    if (a.exponent < b.exponent) {
-        linears_fixed_t temporary = a;
-        a = b;
-        b = temporary;
+linears_status_t linears_fixed_mul(linears_fixed_t a, linears_fixed_t b, linears_fixed_t *out) {
+    if (out == NULL) return LINEARS_ERROR_ARGUMENT;
+    return round_shift(ln_multiply_unsigned(ln_magnitude(a), ln_magnitude(b)), 31,
+                       (a < 0) != (b < 0), out);
+}
+
+/* Restoring two-limb / one-limb division. high < divisor guarantees a 64-bit
+ * quotient. Keeping the carry bit separately avoids overflow in 2*remainder.
+ * Common products have high == 0 and use the ordinary uint64_t fast path. */
+static uint64_t divide_magnitude(uint64_t high, uint64_t low, uint64_t divisor,
+                                 uint64_t *remainder) {
+    if (high == 0) {
+        *remainder = low % divisor;
+        return low / divisor;
     }
-    unsigned distance = (unsigned)(a.exponent - b.exponent);
-    /* At distance >32 the smaller operand is strictly below half an ulp,
-     * including at the lower normalization boundary. Otherwise the exact
-     * aligned sum fits int64_t: (2^31-1)*2^32 + (2^31-1) < INT64_MAX. */
-    if (distance > 32) { *out = a; return LINEARS_OK; }
-    int64_t aligned = (int64_t)a.mantissa * (INT64_C(1) << distance);
-    return pack(aligned + b.mantissa, (int64_t)b.exponent - 31, out);
-}
-
-linears_status_t linears_fixed_sub(linears_fixed_t a, linears_fixed_t b,
-                                 linears_fixed_t *out) {
-    if (!linears_fixed_valid(b)) return LINEARS_ERROR_ARGUMENT;
-    b.mantissa = -b.mantissa;
-    return linears_fixed_add(a, b, out);
-}
-
-linears_status_t linears_fixed_mul(linears_fixed_t a, linears_fixed_t b,
-                                 linears_fixed_t *out) {
-    if (out == NULL || !linears_fixed_valid(a) || !linears_fixed_valid(b))
-        return LINEARS_ERROR_ARGUMENT;
-    return pack((int64_t)a.mantissa * b.mantissa,
-                (int64_t)a.exponent + b.exponent - 62, out);
-}
-
-linears_status_t linears_fixed_div(linears_fixed_t a, linears_fixed_t b,
-                                 linears_fixed_t *out) {
-    if (out == NULL || !linears_fixed_valid(a) || !linears_fixed_valid(b))
-        return LINEARS_ERROR_ARGUMENT;
-    if (b.mantissa == 0) return LINEARS_ERROR_DOMAIN;
-    if (a.mantissa == 0) { *out = a; return LINEARS_OK; }
-    uint64_t numerator = magnitude64(a.mantissa);
-    uint64_t denominator = magnitude64(b.mantissa);
-    unsigned shift = numerator >= denominator ? 30 : 31;
-    numerator <<= shift;
-    uint64_t quotient = numerator / denominator;
-    uint64_t remainder = numerator % denominator;
-    quotient += remainder * 2 >= denominator;
-    int64_t signed_quotient = (a.mantissa < 0) != (b.mantissa < 0)
-                                 ? -(int64_t)quotient : (int64_t)quotient;
-    return pack(signed_quotient, (int64_t)a.exponent - b.exponent - shift, out);
-}
-
-/* Binary restoring square root (base-4 digit recurrence), as described in
- * Hacker's Delight, 2nd ed., section 11-1, "Integer Square Root". The loop
- * consumes at most 32 pairs of bits; it does not use Newton floating seeds. */
-static uint64_t integer_sqrt(uint64_t value) {
-    uint64_t root = 0;
-    uint64_t bit = UINT64_C(1) << 62;
-    while (bit > value) bit >>= 2;
-    while (bit != 0) {
-        if (value >= root + bit) {
-            value -= root + bit;
-            root = (root >> 1) + bit;
-        } else {
-            root >>= 1;
+    uint64_t quotient = 0, rest = high;
+    for (unsigned i = 64; i != 0; --i) {
+        uint64_t carry = rest >> 63;
+        rest = (rest << 1) | ((low >> (i - 1)) & 1);
+        quotient <<= 1;
+        if (carry != 0 || rest >= divisor) {
+            rest -= divisor;
+            quotient |= 1;
         }
-        bit >>= 2;
     }
-    return root;
+    *remainder = rest;
+    return quotient;
+}
+
+static linears_status_t rounded_division(linears_accum_t numerator, uint64_t divisor,
+                                        int negative, linears_fixed_t *out) {
+    if (numerator.high >= divisor) return LINEARS_ERROR_RANGE;
+    uint64_t remainder;
+    uint64_t quotient = divide_magnitude(numerator.high, numerator.low, divisor, &remainder);
+    /* remainder*2 could overflow for wide divisors. */
+    if (remainder >= divisor - remainder) {
+        if (quotient == UINT64_MAX) return LINEARS_ERROR_RANGE;
+        ++quotient;
+    }
+    return signed_result(quotient, negative, out);
+}
+
+linears_status_t linears_fixed_div(linears_fixed_t a, linears_fixed_t b, linears_fixed_t *out) {
+    if (out == NULL) return LINEARS_ERROR_ARGUMENT;
+    if (b == 0) return LINEARS_ERROR_DOMAIN;
+    return rounded_division(ln_shift_u64(ln_magnitude(a), 31), ln_magnitude(b),
+                            (a < 0) != (b < 0), out);
+}
+
+linears_status_t linears_fixed_muldiv(linears_fixed_t a, linears_fixed_t b,
+                                    linears_fixed_t divisor, linears_fixed_t *out) {
+    if (out == NULL) return LINEARS_ERROR_ARGUMENT;
+    if (divisor == 0) return LINEARS_ERROR_DOMAIN;
+    return rounded_division(ln_multiply_unsigned(ln_magnitude(a), ln_magnitude(b)),
+                            ln_magnitude(divisor), (a < 0) ^ (b < 0) ^ (divisor < 0), out);
 }
 
 linears_status_t linears_fixed_sqrt(linears_fixed_t value, linears_fixed_t *out) {
-    if (out == NULL || !linears_fixed_valid(value)) return LINEARS_ERROR_ARGUMENT;
-    if (value.mantissa < 0) return LINEARS_ERROR_DOMAIN;
-    if (value.mantissa == 0) { *out = value; return LINEARS_OK; }
-    int odd = value.exponent % 2 != 0;
-    uint64_t radicand = (uint64_t)value.mantissa << (31 - odd);
-    uint64_t root = integer_sqrt(radicand);
-    /* N >= (r + 1/2)^2 iff N-r*r >= r+1, since N is an integer. */
-    root += radicand - root * root >= root + 1;
-    int exponent = odd ? (value.exponent + 1) / 2 : value.exponent / 2;
-    return pack((int64_t)root, (int64_t)exponent - 31, out);
+    if (out == NULL) return LINEARS_ERROR_ARGUMENT;
+    if (value < 0) return LINEARS_ERROR_DOMAIN;
+    linears_accum_t radicand = ln_shift_u64((uint64_t)value, 31);
+    if (radicand.high == 0) {
+        *out = (int64_t)ln_sqrt_nearest64(radicand.low);
+        return LINEARS_OK;
+    }
+    /* A positive int64_t F31 input gives at most 94 radicand bits and a
+     * 47-bit floor root. Base-4 restoring digits need only uint64_t remainder
+     * and root registers; 48 fixed iterations also cover leading zero bits. */
+    uint64_t root = 0, remainder = 0;
+    for (unsigned pair = 48; pair != 0; --pair) {
+        unsigned position = 2 * (pair - 1);
+        uint64_t digit = position >= 64 ? (radicand.high >> (position - 64)) & 3
+                                        : (radicand.low >> position) & 3;
+        remainder = (remainder << 2) | digit;
+        root <<= 1;
+        uint64_t trial = (root << 1) | 1;
+        if (remainder >= trial) {
+            remainder -= trial;
+            ++root;
+        }
+    }
+    *out = (int64_t)(root + (remainder >= root + 1));
+    return LINEARS_OK;
 }
 
 linears_status_t linears_fixed_neg(linears_fixed_t value, linears_fixed_t *out) {
-    if (out == NULL || !linears_fixed_valid(value)) return LINEARS_ERROR_ARGUMENT;
-    value.mantissa = -value.mantissa;
-    *out = value;
+    if (out == NULL) return LINEARS_ERROR_ARGUMENT;
+    if (value == INT64_MIN) return LINEARS_ERROR_RANGE;
+    *out = -value;
     return LINEARS_OK;
 }
 
 linears_status_t linears_fixed_abs(linears_fixed_t value, linears_fixed_t *out) {
-    if (out == NULL || !linears_fixed_valid(value)) return LINEARS_ERROR_ARGUMENT;
-    if (value.mantissa < 0) value.mantissa = -value.mantissa;
-    *out = value;
-    return LINEARS_OK;
-}
-
-int linears_fixed_compare(linears_fixed_t a, linears_fixed_t b) {
-    if (a.mantissa < 0 && b.mantissa >= 0) return -1;
-    if (a.mantissa >= 0 && b.mantissa < 0) return 1;
-    if (a.mantissa == 0) return b.mantissa == 0 ? 0 : -1;
-    if (b.mantissa == 0) return 1;
-    if (a.exponent != b.exponent) {
-        int magnitude_order = a.exponent < b.exponent ? -1 : 1;
-        return a.mantissa < 0 ? -magnitude_order : magnitude_order;
-    }
-    return (a.mantissa > b.mantissa) - (a.mantissa < b.mantissa);
-}
-
-static linears_status_t quantize(linears_fixed_t value, int exponent,
-                                  unsigned bits, int64_t *out) {
-    if (!linears_fixed_valid(value)) return LINEARS_ERROR_ARGUMENT;
-    if (exponent < LINEARS_EXPONENT_MIN || exponent > LINEARS_EXPONENT_MAX)
-        return LINEARS_ERROR_RANGE;
-    int shift = value.exponent - exponent + (int)bits - 31;
-    uint64_t magnitude = magnitude64(value.mantissa);
-    uint64_t limit = (UINT64_C(1) << bits) - (value.mantissa >= 0);
-    if (magnitude != 0) {
-        if (shift >= 0) {
-            if (shift > (int)bits || magnitude > (limit >> shift))
-                return LINEARS_ERROR_RANGE;
-            magnitude <<= shift;
-        } else {
-            magnitude = rounded_right(magnitude, (unsigned)-shift);
-        }
-    }
-    if (magnitude > limit) return LINEARS_ERROR_RANGE;
-    *out = value.mantissa < 0 ? -(int64_t)magnitude : (int64_t)magnitude;
-    return LINEARS_OK;
-}
-
-linears_status_t linears_fixed_to_q15(linears_fixed_t value, int exponent,
-                                    int16_t *out) {
     if (out == NULL) return LINEARS_ERROR_ARGUMENT;
-    int64_t result;
-    linears_status_t status = quantize(value, exponent, 15, &result);
-    if (status == LINEARS_OK) *out = (int16_t)result;
+    if (value == INT64_MIN) return LINEARS_ERROR_RANGE;
+    *out = value < 0 ? -value : value;
+    return LINEARS_OK;
+}
+
+linears_status_t linears_fixed_to_q15(linears_fixed_t value, linears_q15_t *out) {
+    if (out == NULL) return LINEARS_ERROR_ARGUMENT;
+    if (value < -LINEARS_FIXED_ONE || value > LINEARS_FIXED_ONE) return LINEARS_ERROR_RANGE;
+    uint64_t magnitude = ln_magnitude(value);
+    uint64_t raw = (magnitude >> 16) + ((magnitude & UINT64_C(65535)) >= UINT64_C(32768));
+    if (value >= 0 && raw == UINT64_C(32768)) raw = INT16_MAX;
+    *out = (int16_t)(value < 0 ? -(int32_t)raw : (int32_t)raw);
+    return LINEARS_OK;
+}
+
+linears_status_t linears_fixed_to_q31(linears_fixed_t value, linears_q31_t *out) {
+    if (out == NULL) return LINEARS_ERROR_ARGUMENT;
+    if (value < -LINEARS_FIXED_ONE || value > LINEARS_FIXED_ONE) return LINEARS_ERROR_RANGE;
+    *out = value == LINEARS_FIXED_ONE ? INT32_MAX : (int32_t)value;
+    return LINEARS_OK;
+}
+
+linears_status_t linears_fixed_mac(linears_accum_t *accumulator,
+                                 linears_fixed_t a, linears_fixed_t b) {
+    if (accumulator == NULL) return LINEARS_ERROR_ARGUMENT;
+    return ln_add_checked(*accumulator, ln_product(a, b), accumulator);
+}
+
+linears_status_t linears_fixed_msu(linears_accum_t *accumulator,
+                                 linears_fixed_t a, linears_fixed_t b) {
+    if (accumulator == NULL) return LINEARS_ERROR_ARGUMENT;
+    return ln_add_checked(*accumulator, ln_negate(ln_product(a, b)), accumulator);
+}
+
+linears_status_t linears_accum_to_fixed(linears_accum_t value, linears_fixed_t *out) {
+    if (out == NULL) return LINEARS_ERROR_ARGUMENT;
+    return round_shift(ln_absolute(value), 31, ln_negative(value), out);
+}
+
+/* magnitude is already checked to be <= 2^62 by the calling boundary. */
+static int64_t quantize_unit(uint64_t magnitude, int negative, unsigned bits) {
+    unsigned shift = 62 - bits;
+    uint64_t raw = (magnitude >> shift) +
+        ((magnitude & ((UINT64_C(1) << shift) - 1)) >= (UINT64_C(1) << (shift - 1)));
+    if (!negative && raw == (UINT64_C(1) << bits)) --raw;
+    return negative ? -(int64_t)raw : (int64_t)raw;
+}
+
+static linears_status_t quantize_accumulator(linears_accum_t value, unsigned bits, int64_t *out) {
+    linears_accum_t magnitude = ln_absolute(value);
+    if (magnitude.high != 0 || magnitude.low > (UINT64_C(1) << 62))
+        return LINEARS_ERROR_RANGE;
+    *out = quantize_unit(magnitude.low, ln_negative(value), bits);
+    return LINEARS_OK;
+}
+
+linears_status_t linears_accum_to_q15(linears_accum_t value, linears_q15_t *out) {
+    if (out == NULL) return LINEARS_ERROR_ARGUMENT;
+    int64_t raw;
+    linears_status_t status = quantize_accumulator(value, 15, &raw);
+    if (status == LINEARS_OK) *out = (int16_t)raw;
     return status;
 }
 
-linears_status_t linears_fixed_to_q31(linears_fixed_t value, int exponent,
-                                    int32_t *out) {
+linears_status_t linears_accum_to_q31(linears_accum_t value, linears_q31_t *out) {
     if (out == NULL) return LINEARS_ERROR_ARGUMENT;
-    int64_t result;
-    linears_status_t status = quantize(value, exponent, 31, &result);
-    if (status == LINEARS_OK) *out = (int32_t)result;
+    int64_t raw;
+    linears_status_t status = quantize_accumulator(value, 31, &raw);
+    if (status == LINEARS_OK) *out = (int32_t)raw;
+    return status;
+}
+
+static linears_status_t quantize_mean(linears_accum_t sum, uint64_t count,
+                                     unsigned bits, int64_t *out) {
+    if (count == 0) return LINEARS_ERROR_DOMAIN;
+    linears_accum_t magnitude = ln_absolute(sum);
+    linears_accum_t bound = ln_shift_u64(count, 62);
+    if (ln_compare_unsigned(magnitude, bound) > 0) return LINEARS_ERROR_RANGE;
+    /* The range bound proves magnitude.high < count and quotient <= 2^62.
+     * Floor the division, not round it: discarding its remainder (<1 raw unit)
+     * cannot cross the subsequent power-of-two halfway threshold, since that
+     * threshold is an integer (the final shift is 31 or 47). Exact halfway
+     * already rounds away from zero, so this is one correctly rounded result. */
+    uint64_t remainder;
+    uint64_t quotient = divide_magnitude(magnitude.high, magnitude.low, count, &remainder);
+    *out = quantize_unit(quotient, ln_negative(sum), bits);
+    return LINEARS_OK;
+}
+
+linears_status_t linears_accum_mean_q15(linears_accum_t sum, uint64_t count, linears_q15_t *out) {
+    if (out == NULL) return LINEARS_ERROR_ARGUMENT;
+    int64_t raw;
+    linears_status_t status = quantize_mean(sum, count, 15, &raw);
+    if (status == LINEARS_OK) *out = (int16_t)raw;
+    return status;
+}
+
+linears_status_t linears_accum_mean_q31(linears_accum_t sum, uint64_t count, linears_q31_t *out) {
+    if (out == NULL) return LINEARS_ERROR_ARGUMENT;
+    int64_t raw;
+    linears_status_t status = quantize_mean(sum, count, 31, &raw);
+    if (status == LINEARS_OK) *out = (int32_t)raw;
     return status;
 }
 
 static int overlaps(const void *a, size_t asize, const void *b, size_t bsize) {
     if (asize == 0 || bsize == 0) return 0;
-    uintptr_t x = (uintptr_t)a;
-    uintptr_t y = (uintptr_t)b;
+    uintptr_t x = (uintptr_t)a, y = (uintptr_t)b;
     return x <= y ? y - x < asize : x - y < bsize;
 }
 
-/* Validate every element and quantization before the first output write. */
-static linears_status_t export_block(const linears_fixed_t *values, size_t count,
-                                    void *out, int *exponent, unsigned bits) {
+static linears_status_t export_values(const linears_fixed_t *values, size_t count,
+                                     void *out, unsigned bits) {
     size_t width = bits == 15 ? sizeof(int16_t) : sizeof(int32_t);
     size_t alignment = bits == 15 ? offsetof(struct alignment_i16, value)
                                  : offsetof(struct alignment_i32, value);
-    if (exponent == NULL || (uintptr_t)exponent % offsetof(struct alignment_int, value) != 0 ||
-        (count != 0 && (values == NULL || out == NULL ||
-         (uintptr_t)values % offsetof(struct alignment_fixed, value) != 0 ||
-         (uintptr_t)out % alignment != 0))) return LINEARS_ERROR_ARGUMENT;
+    if (count != 0 && (values == NULL || out == NULL ||
+        (uintptr_t)values % offsetof(struct alignment_fixed, value) != 0 ||
+        (uintptr_t)out % alignment != 0)) return LINEARS_ERROR_ARGUMENT;
     if (count > SIZE_MAX / sizeof(*values) || count > SIZE_MAX / width)
         return LINEARS_ERROR_SIZE;
-    if (overlaps(values, count * sizeof(*values), out, count * width) ||
-        overlaps(values, count * sizeof(*values), exponent, sizeof(*exponent)) ||
-        overlaps(out, count * width, exponent, sizeof(*exponent)))
-        return LINEARS_ERROR_ALIAS;
-    int block_exponent = LINEARS_EXPONENT_MIN;
-    int any = 0;
+    if (count * sizeof(*values) > UINTPTR_MAX - (uintptr_t)values ||
+        count * width > UINTPTR_MAX - (uintptr_t)out) return LINEARS_ERROR_SIZE;
+    if (overlaps(values, count * sizeof(*values), out, count * width)) return LINEARS_ERROR_ALIAS;
+    for (size_t i = 0; i < count; ++i)
+        if (values[i] < -LINEARS_FIXED_ONE || values[i] > LINEARS_FIXED_ONE)
+            return LINEARS_ERROR_RANGE;
     for (size_t i = 0; i < count; ++i) {
-        if (!linears_fixed_valid(values[i])) return LINEARS_ERROR_ARGUMENT;
-        if (values[i].mantissa != 0) {
-            any = 1;
-            if (values[i].exponent > block_exponent) block_exponent = values[i].exponent;
-        }
+        if (bits == 15) (void)linears_fixed_to_q15(values[i], &((int16_t *)out)[i]);
+        else (void)linears_fixed_to_q31(values[i], &((int32_t *)out)[i]);
     }
-    if (!any) block_exponent = 0;
-    /* q15 can carry a positive rounding bit into the shared exponent. q31
-     * canonical mantissas fit at their maximum exponent without a carry. */
-    for (size_t i = 0; i < count; ++i) {
-        int64_t ignored;
-        if (quantize(values[i], block_exponent, bits, &ignored) != LINEARS_OK) {
-            if (block_exponent == LINEARS_EXPONENT_MAX) return LINEARS_ERROR_RANGE;
-            ++block_exponent;
-            break;
-        }
-    }
-    for (size_t i = 0; i < count; ++i) {
-        int64_t mantissa;
-        (void)quantize(values[i], block_exponent, bits, &mantissa);
-        if (bits == 15) ((int16_t *)out)[i] = (int16_t)mantissa;
-        else ((int32_t *)out)[i] = (int32_t)mantissa;
-    }
-    *exponent = block_exponent;
     return LINEARS_OK;
 }
 
-linears_status_t linears_fixed_export_q15(const linears_fixed_t *values,
-                                        size_t count, int16_t *out, int *exponent) {
-    return export_block(values, count, out, exponent, 15);
+linears_status_t linears_fixed_export_q15(const linears_fixed_t *values, size_t count,
+                                        linears_q15_t *out) {
+    return export_values(values, count, out, 15);
 }
 
-linears_status_t linears_fixed_export_q31(const linears_fixed_t *values,
-                                        size_t count, int32_t *out, int *exponent) {
-    return export_block(values, count, out, exponent, 31);
+linears_status_t linears_fixed_export_q31(const linears_fixed_t *values, size_t count,
+                                        linears_q31_t *out) {
+    return export_values(values, count, out, 31);
 }

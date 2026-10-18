@@ -84,85 +84,193 @@ alias of an initial matrix with its corresponding destination; partial or
 cross-state alias is prohibited. Actual source allocation sizes remain the
 caller's responsibility because `linears_matrix_t` has no capacity field.
 
-## Precision and limits
+## Fixed-fraction Q contract
 
-`f32`/`f64` use their respective native formats. All external floating values
-must be finite; arithmetic overflow/nonfinite intermediates fail. Fixed-point
-scalar values use separate exponents, while each fixed-point matrix has one
-block exponent. `q15` represents `mantissa * 2^(exponent-15)` and `q31`
-represents `mantissa * 2^(exponent-31)`. Valid exponents and rounding follow
-`linears.h` and `linears_numeric.h`; successful operations may change output
-exponents. Fixed-point arithmetic uses the shared integer-only normalized
-working representation and never converts through floating point.
+- `q15` signals and state are `int16_t`, with value `raw/2^15` and range
+  `[-1, 1-2^-15]`.
+- `q31` signals and state are `int32_t`, with value `raw/2^31` and range
+  `[-1, 1-2^-31]`.
+- `linears_matrix_t` contains only `data`, `rows`, and `cols`. The binary point
+  never changes in a descriptor, state, workspace, coefficient or result.
+- Scalar q15/q31 **transition and observation coefficients** are
+  `linears_fixed_t`: int64_t raw/2^31. This allows exact unity
+  (`LINEARS_FIXED_ONE`) and gains such as two. Other scalar arguments remain
+  raw Q signals/variances. Matrix F/H entries remain raw Q, like other matrix
+  inputs; scalar/matrix comparisons must convert those actual raw F/H entries
+  to wide coefficients, not replace MAX by exact unity.
+- All Q production arithmetic is integer-only. Scalar computations use shared
+  F31 operations and signed 128-bit F62 MAC/MSU helpers; final scalar output
+  expressions are checked and rounded directly from F62. Matrix operations
+  use the selected shared fixed-F31 working helpers in `linears_work.h`, not
+  an independent filters matrix kernel. Products accumulate in F62 and round
+  once per F31 output element; the working unit is always `2^-31`.
 
-Matrix covariance symmetry and diagonal signs are checked. Full PSD of
-state covariance and process covariance is a caller precondition, not a
-runtime eigendecomposition. Measurement and innovation SPD are checked with
-the shared Cholesky kernel before the LU solve. Roundoff, block quantization,
-ill-conditioning, exponent overflow or a rounded-away positive pivot can
-cause a failure even when the real-valued model is valid. There is no jitter,
-noise-floor injection, automatic regularization, eigenvalue clipping,
-nonlinear/extended Kalman logic or square-root filtering.
+Narrow Q export checks its **supplied conversion input** against `[-1,+1]`
+before signal rounding. A conversion input above +1 or below -1 fails with
+RANGE. Scalar final expressions supply an F62 accumulator; matrix filters
+supply their **already computed/rounded F31 estimate and covariance values**,
+not the ideal unrounded full expression. Exact +1 at that conversion point,
+and in-range values whose nearest rounding reaches the unavailable positive
+endpoint, map to MAX; **MAX remains `1-LSB`, never exact one**.
 
-## Workspace
+Round-to-nearest ties go away from zero. Signal narrowing has at most half a
+signal LSB error except in the positive endpoint cell, where the error can be
+one LSB. Matrix F31 working-rounding error is **additional and separate** from
+that endpoint mapping error. Neither bound is a universal error bound for the
+full composite algorithm; this is not exact rational arithmetic.
 
-Each format has a borrowed workspace view containing **three separate real
-arrays of the declared types**. Do not cast a workspace-unit array to a raw
-float/double/int16/int32 array: that violates the effective-type contract and
-can also introduce the wrong element stride. Prediction ignores decomposition
-storage; update uses all three arrays. Only the required prefixes are touched.
+### Matrix range-check boundary
 
-| Field | Array type | Prediction requirement | Update requirement |
-| --- | --- | --- | --- |
-| `data`, `capacity` | float/double/int16_t/int32_t for the selected API | `FILTERS_KALMAN_PREDICT_STORAGE(n)` elements | `FILTERS_KALMAN_UPDATE_STORAGE(n,m)` elements |
-| `basic`, `basic_bytes` | `linears_workspace_unit_t` | `FILTERS_KALMAN_PREDICT_BASIC_BYTES(n)` bytes | `FILTERS_KALMAN_UPDATE_BASIC_BYTES(n,m)` bytes |
-| `decomposition` | float/double for floating APIs, `linears_fixed_t` for q APIs | Ignored; `{NULL,0}` is valid | `FILTERS_KALMAN_UPDATE_DECOMP_STORAGE(n,m)` elements |
+The distinction is observable even in prediction. For q31 with five states,
+let x contain five copies of 1/4; let the first F row be
+`[MAX, MAX, MAX, MAX, raw 5]`, all remaining F rows be zero, and P=Q=0.
+The independently calculated exact F62 dot has raw integer
+`2^62 + 2^29`, meaning **`1 + 2^-33`**. Nearest rounding to the working F31
+lattice yields exact working ONE. Kalman therefore succeeds and narrows that
+working value to MAX. Relative to the ideal dot, the difference is the sum of
+`2^-33` working-rounding loss and one q31 signal LSB (`2^-31`) at the endpoint.
 
-Use `LINEARS_WORKSPACE_UNITS(bytes)` to declare the `basic` array. Raw storage
-counts are `n+4*n*n` for prediction and
-`4*n*n+4*n*m+2*m*m+2*n+2*m` for update. Decomposition storage is the shared
-`LINEARS_SOLVE_WORKSPACE(m,n)` bound, which also covers Cholesky. Size macros
-are constant expressions, propagate arithmetic overflow as `SIZE_MAX`, and
-require side-effect-free nonnegative arguments. `SIZE_MAX` is invalid, not an
-allocation request. Operations also check count-to-byte/address overflow.
-There is no fixed dimension cap; available caller storage and checked sizes
-limit dimensions. Loops are dimension-bounded; no recursive calls or variable
-stack allocations occur.
+In contrast, direct `linears_mul_q31` and direct F62-to-q31 export inspect the
+unrounded F62 dot before narrowing and return RANGE for the same exact dot.
+Those direct operations have a stronger terminal-domain contract than the
+composite F31-working Kalman path. Scalar Kalman retains its direct final-F62
+checks; in particular, its exact final products `+/- (1+2^-33)` are rejected.
+The n=5 matrix regression verifies the integer dot, working ONE, Kalman MAX
+success, and both direct RANGE results exactly, without tolerance. Clearly
+out-of-range computed F31 states, such as +1.5 or -1.1, still fail atomically.
 
-A C99 example for a two-state, one-measurement f32 update workspace is:
+Matrix working values may exceed one. For example, `P=1/2, H=1/4, R=1/64`
+gives `K=8/3`, but with `x=0,z=1/8`, the outputs are `x+=1/3,P+=1/6`.
+Similarly, `P=H=R=3/4` gives `S=75/64` while the posterior remains in range.
+These valid updates must not narrow S or K into a Q signal. The Joseph identity
+uses exact wide unity; replacing it by raw Q MAX would incorrectly decay P
+when H is zero. Only final state is narrowed, after every output has passed
+its range check and been staged in scratch.
+
+Choose physical units and input models so raw signals, variances and matrix
+coefficients are representable. The API never automatically rescales a model.
+A matrix requiring exact positive-unity coefficients cannot express those
+entries exactly in raw Q; use the floating interface when that exact model is
+required. Q measurement noise must remain positive **after quantization**.
+A physical noise value of `2^-80` rounds to zero in both Q formats and is
+rejected; it is not a positive-noise input. Minimum positive scalar noise is
+one raw LSB. Covariance entries and process noise can round to zero.
+
+A C99 scalar q15 example uses explicit wide coefficients:
 
 ```c
-float intermediate[FILTERS_KALMAN_UPDATE_STORAGE(2, 1)];
+filters_kalman_scalar_q15_t state;
+linears_status_t status = filters_kalman_scalar_q15_reset(
+    &state, INT16_C(8192), INT16_C(8192)); /* x=1/4, p=1/4. */
+if (status == LINEARS_OK)
+    status = filters_kalman_scalar_q15_predict(
+        &state, LINEARS_FIXED_ONE, INT16_C(256));
+if (status == LINEARS_OK)
+    status = filters_kalman_scalar_q15_update(
+        &state, INT16_C(4096), 2 * LINEARS_FIXED_ONE, INT16_C(4096));
+```
+
+## Precision and limitations
+
+`f32`/`f64` retain their native precision and range, including finite values
+above one. External floating values must be finite; nonfinite results fail.
+Matrix covariance symmetry and diagonal signs are checked. Full PSD of state
+covariance and process covariance is a caller precondition, not a runtime
+eigendecomposition. Measurement and innovation SPD are checked with shared
+Cholesky before LU solve. Quantization, ill-conditioning, working integer
+range overflow or a rounded-away positive pivot can fail even for a valid
+real-valued model. There is no jitter, noise-floor injection, eigenvalue
+clipping, automatic regularization, nonlinear/extended Kalman logic or
+square-root filtering. A successfully stored covariance is symmetric, but
+finite-precision Joseph plus symmetrization is not a universal PSD guarantee.
+
+## Workspace and RAM cost
+
+Each format borrows **three separate real arrays of their declared types**.
+Do not cast an entire workspace-unit array to another numeric array: that
+violates the effective-type contract and may give the wrong stride. Prediction
+ignores decomposition storage; update uses all three arrays. Only required
+prefixes are accessed, and no hidden allocation occurs.
+
+| Format/field | Actual array element type | Prediction requirement | Update requirement |
+| --- | --- | --- | --- |
+| float `data`, `capacity` | float or double | `FILTERS_KALMAN_PREDICT_STORAGE(n)` elements | `FILTERS_KALMAN_UPDATE_STORAGE(n,m)` elements |
+| Q `data`, `capacity` | **linears_fixed_t (int64_t), not raw Q** | `FILTERS_KALMAN_Q_PREDICT_STORAGE(n)` elements | `FILTERS_KALMAN_Q_UPDATE_STORAGE(n,m)` elements |
+| float `basic`, `basic_bytes` | linears_workspace_unit_t | `FILTERS_KALMAN_PREDICT_BASIC_BYTES(n)` bytes | `FILTERS_KALMAN_UPDATE_BASIC_BYTES(n,m)` bytes |
+| Q `basic`, `basic_bytes` | linears_workspace_unit_t | `FILTERS_KALMAN_Q_PREDICT_BASIC_BYTES(n)` bytes | `FILTERS_KALMAN_Q_UPDATE_BASIC_BYTES(n,m)` bytes |
+| `decomposition` | float/double for float APIs, linears_fixed_t for Q | Ignored; `{NULL,0}` is valid | `FILTERS_KALMAN_UPDATE_DECOMP_STORAGE(n,m)` elements |
+
+Floating intermediate counts remain `n+4*n*n` for prediction and
+`4*n*n+4*n*m+2*m*m+2*n+2*m` for update. Q working storage additionally imports
+raw inputs without changing their values: **`2*n+7*n*n`** F31 elements for
+prediction and **`5*n*n+5*n*m+3*m*m+3*n+3*m`** for update. Decomposition uses
+`m*m+m*n` working elements, covering both LU solve and Cholesky.
+
+Q basic scratch must also cover `n+n*n` units to stage the final raw estimate
+and covariance through each unit's declared `q15`/`q31` member. This storage is
+reused after numerical operations; it is not a fourth array or a raw-pointer
+cast. The Q basic count is `n+n*n` for prediction and
+`max(n*n,n*m,m*m,n+n*n)` for update. For `n=2,m=1`, Q prediction therefore
+needs 32 F31 elements plus six basic units; update needs 42 F31 elements,
+six basic units and three decomposition F31 elements. State storage is
+additional: two raw-Q estimate elements and four raw-Q covariance elements.
+
+Size macros are constant expressions, return `SIZE_MAX` for arithmetic
+overflow, and require side-effect-free positive dimensions. `SIZE_MAX` is
+invalid, not an allocation request. Calls also check byte/address arithmetic.
+There is no arbitrary dimension cap; available storage and checked integer
+sizes bound dimensions. Loops are dimension-bounded, with no recursion/VLA.
+
+A C99 two-state, one-measurement q15 update workspace is:
+
+```c
+linears_fixed_t intermediate[FILTERS_KALMAN_Q_UPDATE_STORAGE(2, 1)];
 linears_workspace_unit_t basic[LINEARS_WORKSPACE_UNITS(
-    FILTERS_KALMAN_UPDATE_BASIC_BYTES(2, 1))];
-float decomposition[FILTERS_KALMAN_UPDATE_DECOMP_STORAGE(2, 1)];
-filters_kalman_matrix_f32_workspace_t workspace = {
-    intermediate, FILTERS_KALMAN_UPDATE_STORAGE(2, 1),
+    FILTERS_KALMAN_Q_UPDATE_BASIC_BYTES(2, 1))];
+linears_fixed_t decomposition[FILTERS_KALMAN_UPDATE_DECOMP_STORAGE(2, 1)];
+filters_kalman_matrix_q15_workspace_t workspace = {
+    intermediate, FILTERS_KALMAN_Q_UPDATE_STORAGE(2, 1),
     basic, sizeof basic,
     {decomposition, FILTERS_KALMAN_UPDATE_DECOMP_STORAGE(2, 1)}
 };
 ```
 
-## Validation
+For f32/f64, retain the original macros without `_Q_` and use float/double
+intermediate/decomposition arrays. `LINEARS_WORKSPACE_UNITS(bytes)` sizes the
+basic array in every format.
+
+## Validation and represented models
 
 Both test files instantiate all four formats. Scalar tests use an independent
-long-double analytic reference; matrix tests use Eigen 3.4.0 long-double matrix
-products and LDLT solves, with the independent exact-arithmetic covariance
-formula `P-KHP` rather than copying the production Joseph implementation.
-Random seeds are fixed. Tests cover 1,000 random scalar models and 6,000-step
-scalar sequences per format; 96 random rectangular matrix models (`n,m=1..4`)
-and 1,200-step tracking sequences per format; zero residual, zero/rank-deficient
-PSD state covariance, very small measurement noise, explicit q block rounding,
-reset/reentrancy, invalid noise, nonfinite/exponent limits, alias rejection,
-capacity boundaries, sentinels, and state preservation after late failure.
+long-double analytic reference; matrix tests use Eigen 3.4.0 long-double
+products and LDLT solve with independent covariance `P-KHP`, not copied Joseph
+code. References use the **actual decoded raw model**, including Q MAX as
+`1-LSB`; they are neither clipped nor adjusted to hide range failures.
 
-The base absolute/relative test envelope is `tolerance * (1 + abs(reference))`:
-f32 `2e-5`, f64 `2e-12`, q15 `4e-3`, q31 `2e-7`. Long scalar/matrix sequences
-use factors two/three respectively. These are test acceptance bounds for the
-specified models, not universal error guarantees. The tiny-noise regression
-also requires a positive posterior variance and relative error below `1e-5`;
-it catches loss of the Joseph noise term even when ordinary absolute bounds
-would hide that loss.
+Fixed seeds cover 1,000 randomized scalar trials and 6,000-step scalar
+sequences per format; 96 rectangular matrix models (`n,m=1..4`) and 1,200-step
+matrix sequences per format. The Q random models deliberately fit the fixed
+signal interval: scalar initial magnitudes at most 0.4, P at most 0.5, Q at
+most 0.01, measurement magnitude at most 0.3, and R in [0.1,0.3]; matrix random
+models use state/measurement magnitudes at most 0.1, F around 0.7*I, H entries
+at most 0.2, and well-conditioned P/R around 0.125*I. Q tracking uses stable F,
+nonzero representable Q/R, and bounded measurements. Floating tests retain
+the wider original models and `2^-80` noise regression.
 
-Real commands, host results and remaining unverified boundaries are recorded
-in `WORKLOG-kalman.md`. Host simulation is not target or hardware validation.
+Other regressions cover wide gain/innovation, exact working unity and scalar
+observation gain two, raw-Q endpoints/MAX semantics, minimum positive and
+rounded-to-zero noise, zero/rank-deficient PSD state, reset/reentrancy, invalid
+noise, NaN/Inf, alias, all workspace capacities/sentinels, and atomic failures
+for computed F31 matrix states outside the signal interval. The n=5 boundary
+and direct F62 scalar regressions separately enforce their different terminal
+range contracts without a tolerance comparison.
+
+The unchanged envelope is `tolerance * (1 + abs(reference))`: f32 `2e-5`,
+f64 `2e-12`, q15 `4e-3`, q31 `2e-7`; long scalar/matrix sequences use factors
+two/three respectively. These are measured-test acceptance bounds for these
+models, not universal error guarantees. The noise-term regressions additionally
+require positive posterior variance and relative error below `1e-5` against
+the supplied tiny floating or minimum-positive Q variance.
+
+Final counts and real commands are in `WORKLOG-kalman.md`. Host simulation is
+not MCU, hardware or interrupt-timing validation.

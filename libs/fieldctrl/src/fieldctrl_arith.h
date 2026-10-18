@@ -91,12 +91,10 @@ FC_FLOAT_HELPERS(fc32, float, sqrtf, floorf, hypotf, sinf, cosf, atan2f, frexpf,
 FC_FLOAT_HELPERS(fc64, double, sqrt, floor, hypot, sin, cos, atan2, frexp, ldexp)
 #undef FC_FLOAT_HELPERS
 
-static inline linears_fixed_t fcq_zero(void) {
-    const linears_fixed_t z = {0, 0}; return z;
-}
+static inline linears_fixed_t fcq_zero(void) { return 0; }
 #define FC_Q_BINARY(N) \
     static inline linears_fixed_t fcq_##N(linears_fixed_t a, linears_fixed_t b, linears_status_t *s) { \
-        linears_fixed_t r = {0, 0}; \
+        linears_fixed_t r = 0; \
         if (*s == LINEARS_OK) { *s = linears_fixed_##N(a, b, &r); } return r; \
     }
 FC_Q_BINARY(add)
@@ -106,7 +104,7 @@ FC_Q_BINARY(div)
 #undef FC_Q_BINARY
 #define FC_Q_UNARY(N) \
     static inline linears_fixed_t fcq_##N(linears_fixed_t a, linears_status_t *s) { \
-        linears_fixed_t r = {0, 0}; \
+        linears_fixed_t r = 0; \
         if (*s == LINEARS_OK) { *s = linears_fixed_##N(a, &r); } return r; \
     }
 FC_Q_UNARY(neg)
@@ -114,69 +112,48 @@ FC_Q_UNARY(abs)
 FC_Q_UNARY(sqrt)
 #undef FC_Q_UNARY
 static inline linears_fixed_t fcq_i(int64_t x, linears_status_t *s) {
-    linears_fixed_t r = {0, 0};
-    if (*s == LINEARS_OK) *s = linears_fixed_from_i64(x, 0, 0, &r);
+    linears_fixed_t r = 0;
+    if (*s == LINEARS_OK) *s = linears_fixed_from_int(x, &r);
     return r;
 }
 static inline linears_fixed_t fcq15_load(linears_q15_t x, linears_status_t *s) {
-    linears_fixed_t r = {0, 0};
-    if (*s == LINEARS_OK) *s = linears_fixed_from_q15(x, &r);
-    return r;
+    return *s == LINEARS_OK ? linears_fixed_from_q15(x) : 0;
 }
 static inline linears_fixed_t fcq31_load(linears_q31_t x, linears_status_t *s) {
-    linears_fixed_t r = {0, 0};
-    if (*s == LINEARS_OK) *s = linears_fixed_from_q31(x, &r);
-    return r;
+    return *s == LINEARS_OK ? linears_fixed_from_q31(x) : 0;
+}
+static inline linears_fixed_t fcq_work_load(linears_fixed_t x, linears_status_t *s) {
+    return *s == LINEARS_OK ? x : 0;
+}
+static inline void fcq_work_store(linears_fixed_t x, linears_fixed_t *out, linears_status_t *s) {
+    if (*s == LINEARS_OK) *out = x;
 }
 static inline void fcq15_store(linears_fixed_t x, linears_q15_t *out, linears_status_t *s) {
-    linears_q15_t r;
-    if (*s != LINEARS_OK) return;
-    *s = linears_fixed_export_q15(&x, 1, &r.mantissa, &r.exponent);
-    if (*s == LINEARS_OK) *out = r;
+    if (*s == LINEARS_OK) *s = linears_fixed_to_q15(x, out);
 }
 static inline void fcq31_store(linears_fixed_t x, linears_q31_t *out, linears_status_t *s) {
-    if (*s == LINEARS_OK) *out = x;
+    if (*s == LINEARS_OK) *s = linears_fixed_to_q31(x, out);
 }
 static inline int fcq_cmp(linears_fixed_t a, linears_fixed_t b) {
     return linears_fixed_compare(a, b);
 }
-/* The working mantissas already have normalized magnitude. Reuse linears for
- * their multiplication/division, then apply the combined exponent exactly.
- * A representable final component must not fail merely because numerator /
- * denominator would exceed the scalar exponent range before multiplication. */
+/* Compute a*numerator/denominator in the shared exact wide-product core. */
 static inline linears_fixed_t fcq_rescale(linears_fixed_t a, linears_fixed_t numerator,
                                          linears_fixed_t denominator, linears_status_t *s) {
-    int64_t exponent;
-    linears_fixed_t r;
-    if (*s != LINEARS_OK) return fcq_zero();
-    exponent = (int64_t)a.exponent + numerator.exponent - denominator.exponent;
-    a.exponent = 0; numerator.exponent = 0; denominator.exponent = 0;
-    r = fcq_mul(a, numerator, s);
-    r = fcq_div(r, denominator, s);
-    if (*s != LINEARS_OK || r.mantissa == 0) return r;
-    exponent += r.exponent;
-    if (exponent < LINEARS_EXPONENT_MIN || exponent > LINEARS_EXPONENT_MAX) {
-        *s = LINEARS_ERROR_RANGE;
-        return fcq_zero();
-    }
-    r.exponent = (int)exponent;
+    linears_fixed_t r = 0;
+    if (*s == LINEARS_OK) *s = linears_fixed_muldiv(a, numerator, denominator, &r);
     return r;
 }
-/* Scale the vector before squaring to avoid avoidable exponent overflow. */
+/* Ratios stay in [0,1]; small ratios round at the invariant F31 binary point. */
 static inline linears_fixed_t fcq_hypot(linears_fixed_t a, linears_fixed_t b, linears_status_t *s) {
     linears_fixed_t aa = fcq_abs(a, s), bb = fcq_abs(b, s);
     linears_fixed_t hi = fcq_cmp(aa, bb) >= 0 ? aa : bb;
     linears_fixed_t lo = fcq_cmp(aa, bb) >= 0 ? bb : aa;
     linears_fixed_t ratio, sum, root;
-    if (hi.mantissa == 0 || *s != LINEARS_OK) return fcq_zero();
-    /* Canonical magnitudes are in [1/2,1). For exponent gap > 32,
-     * lo/hi < 2^-32 and the relative hypot correction is < 2^-65,
-     * below half a 31-bit working ULP. Return the correctly rounded hi
-     * without materializing a ratio whose exponent could be out of range. */
-    if ((int64_t)hi.exponent - (int64_t)lo.exponent > 32) return hi;
+    if (hi == 0 || *s != LINEARS_OK) return 0;
     ratio = fcq_div(lo, hi, s);
     sum = fcq_mul(ratio, ratio, s);
-    sum = fcq_add(fcq_i(1, s), sum, s);
+    sum = fcq_add(LINEARS_FIXED_ONE, sum, s);
     root = fcq_sqrt(sum, s);
     return fcq_mul(hi, root, s);
 }

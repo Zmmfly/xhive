@@ -29,7 +29,7 @@ typedef enum {
     LINEARS_ERROR_SIZE = -3,               /**< A storage size cannot fit size_t. */
     LINEARS_ERROR_WORKSPACE = -4,          /**< Insufficient or misaligned scratch storage. */
     LINEARS_ERROR_ALIAS = -5,              /**< A prohibited storage overlap was found. */
-    LINEARS_ERROR_RANGE = -6,              /**< Numeric overflow, nonfinite value or exponent range. */
+    LINEARS_ERROR_RANGE = -6,              /**< Numeric overflow, nonfinite value or unrepresentable output. */
     LINEARS_ERROR_DOMAIN = -7,             /**< Division by zero or invalid function domain. */
     LINEARS_ERROR_SINGULAR = -8,           /**< The required pivot is zero at working precision. */
     LINEARS_ERROR_NOT_POSITIVE_DEFINITE = -9, /**< A positive-definite factorization failed. */
@@ -39,9 +39,9 @@ typedef enum {
 /**
  * @brief Caller-owned dense row-major matrix descriptor.
  *
- * q15 values are int16_t mantissas * 2^(exponent - 15); q31 values are
- * int32_t mantissas * 2^(exponent - 31). Floating APIs ignore exponent.
- * There is one exponent for the entire fixed-point matrix, not per element.
+ * q15 elements are signed int16_t raw values divided by 2^15; q31 elements
+ * are signed int32_t raw values divided by 2^31. The binary point is fixed.
+ * There is no per-matrix or per-element exponent or normalization metadata.
  * A descriptor has no stride or capacity field: the caller guarantees the
  * actual allocation covers the validated rows * cols element count.
  */
@@ -49,24 +49,31 @@ typedef struct {
     void *data;    /**< Naturally aligned element storage; NULL only for an empty matrix. */
     size_t rows;   /**< Row count; zero denotes an empty matrix. */
     size_t cols;   /**< Column count; zero denotes an empty matrix. */
-    int exponent;  /**< Shared fixed-point binary exponent; ignored by floating APIs. */
 } linears_matrix_t;
 
 /**
- * @brief q15 scalar with an explicit binary exponent.
+ * @brief Signed fixed-point signal, value = raw / 2^15, range [-1, 1 - 2^-15].
  */
-typedef struct {
-    int16_t mantissa; /**< Signed fractional numerator with denominator 2^15. */
-    int exponent;    /**< Binary scale; the value is mantissa * 2^(exponent - 15). */
-} linears_q15_t;
+typedef int16_t linears_q15_t;
 
 /**
- * @brief q31 scalar with an explicit binary exponent.
+ * @brief Signed fixed-point signal, value = raw / 2^31, range [-1, 1 - 2^-31].
  */
-typedef struct {
-    int32_t mantissa; /**< Signed fractional numerator with denominator 2^31. */
-    int exponent;    /**< Binary scale; the value is mantissa * 2^(exponent - 31). */
-} linears_q31_t;
+typedef int32_t linears_q31_t;
+
+/**
+ * @brief Wide integer working value or coefficient, always raw / 2^31.
+ *
+ * The exact range is [-2^32, 2^32 - 2^-31]. Every int64_t bit pattern is valid.
+ * This is not a normalized mantissa and has no dynamic binary-point metadata.
+ * Use it for intermediates and explicitly wide coefficients, not Q signal data.
+ */
+typedef int64_t linears_fixed_t;
+
+/**
+ * @brief Exactly one in the wide fixed F31 working/coefficient representation.
+ */
+#define LINEARS_FIXED_ONE INT64_C(2147483648)
 
 /**
  * @brief Storage unit providing the alignment required by linears workspaces.
@@ -78,18 +85,11 @@ typedef struct {
 typedef union {
     double floating;       /**< Native f64 intermediates and their alignment. */
     float f32;             /**< Native f32 intermediates without double conversion. */
-    int64_t integer;       /**< Alignment for wide integer intermediates. */
-    linears_q31_t fixed;   /**< Alignment for normalized fixed-point intermediates. */
+    int64_t integer;       /**< Wide integer intermediates. */
+    linears_fixed_t fixed; /**< Fixed F31 working value. */
+    linears_q15_t q15;     /**< Already quantized q15 output. */
+    linears_q31_t q31;     /**< Already quantized q31 output. */
 } linears_workspace_unit_t;
-
-/**
- * @brief Lowest accepted fixed-point binary exponent, inclusive.
- */
-#define LINEARS_EXPONENT_MIN (-16384)
-/**
- * @brief Highest accepted fixed-point binary exponent, inclusive.
- */
-#define LINEARS_EXPONENT_MAX 16384
 
 /**
  * @brief Overflow-checked size multiplication, yielding SIZE_MAX on overflow.
@@ -139,7 +139,7 @@ typedef union {
 
 /**
  * @defgroup linears_basic Basic matrix operations
- * @brief Native f32/f64 and integer-only block q15/q31 operations.
+ * @brief Native f32/f64 and integer-only fixed-fraction q15/q31 operations.
  *
  * Every matrix has contiguous, naturally aligned row-major storage. Output
  * rows/cols are supplied by the caller and never changed. A zero row or column
@@ -147,11 +147,10 @@ typedef union {
  * Empty inner products return zero; (m x 0)(0 x n) produces an m x n zero block.
  *
  * Floating inputs and coefficients must be finite. f32 uses native float
- * arithmetic, f64 native double arithmetic. Floating exponent fields are ignored
- * and never changed. Computed q outputs use one automatically selected block
- * exponent; an all-zero block has exponent zero. Copy alone preserves the raw
- * representation exactly. Fixed inputs must have accepted block exponents and
- * values representable by the normalized core described in linears_numeric.h.
+ * arithmetic, f64 native double arithmetic. Every q15/q31 raw input is valid.
+ * Q signals have fixed 15/31 fraction bits. Only Q scale/axpby coefficients
+ * use wide linears_fixed_t (int64_t raw / 2^31), allowing gains above one.
+ * Copy preserves the representation exactly; no format is normalized.
  *
  * On any failure output data, scalar outputs and output descriptor fields are
  * unchanged. Scratch contents are unspecified after a call, including failure.
@@ -164,10 +163,12 @@ typedef union {
  * Shared errors: ARGUMENT for invalid pointer/alignment, DIMENSION for shape
  * mismatch, SIZE for count/byte/address arithmetic overflow, WORKSPACE for
  * insufficient or misaligned scratch, ALIAS for prohibited overlap, and RANGE
- * for nonfinite floating input/intermediate or unrepresentable fixed exponents.
- * No operation saturates. Underflow caused by a shared block exponent rounds
- * tiny output elements to zero. Dot products and matrix products round each
- * multiply/add in working precision; they are not exact superaccumulators.
+ * for nonfinite floating input/intermediate or unrepresentable Q output.
+ * Q outputs are checked against the exact interval [-1,+1] before rounding.
+ * Values outside it fail; within it, positive endpoint rounding maps to the
+ * format's INT_MAX (at most one signal LSB error). The negative endpoint is exact.
+ * Q products/dot sums retain raw products in a bounded wide accumulator and
+ * round once per output, nearest with halfway cases away from zero.
  *
  * A scratch-taking call needs LINEARS_BASIC_WORKSPACE_BYTES(out->rows,
  * out->cols) bytes in an actual linears_workspace_unit_t array. An empty output
@@ -365,16 +366,16 @@ linears_status_t linears_transpose_q31(const linears_matrix_t *a, linears_matrix
 /**
  * @brief Compute the weighted sum alpha * a + beta * b.
  *
- * @param[in] alpha Scalar multiplier in this function's numeric format.
+ * @param[in] alpha Coefficient in the signature's type; Q variants use int64_t raw / 2^31.
  * @param[in] a First input matrix, not NULL.
- * @param[in] beta Scalar multiplier in this function's numeric format.
+ * @param[in] beta Coefficient in the signature's type; Q variants use int64_t raw / 2^31.
  * @param[in] b Second input matrix, not NULL; same shape as a.
  * @param[in,out] out Destination, not NULL; same shape as a.
  * @param[in,out] workspace Typed scratch array, or NULL for an empty output.
  * @param[in] workspace_bytes Available scratch bytes; see linears_basic.
  * @return linears_status_t OK or an applicable shared basic-operation error.
- * @note Fixed-point products and sum round separately. Floating contraction
- *       follows the compiler's floating-point settings.
+ * @note Q products are accumulated exactly before one final signal quantization.
+ *       Floating contraction follows the compiler's floating-point settings.
  */
 linears_status_t linears_axpby_f32(float alpha, const linears_matrix_t *a,
                                  float beta, const linears_matrix_t *b, linears_matrix_t *out,
@@ -387,21 +388,25 @@ linears_status_t linears_axpby_f64(double alpha, const linears_matrix_t *a,
                                  linears_workspace_unit_t *workspace, size_t workspace_bytes);
 /**
  * @copydoc linears_axpby_f32
+ * @note alpha and beta are int64_t raw / 2^31 wide coefficients, NOT q15 raw
+ *       signals. Use LINEARS_FIXED_ONE / 2 for one half, not the q15 code 16384.
  */
-linears_status_t linears_axpby_q15(linears_q15_t alpha, const linears_matrix_t *a,
-                                 linears_q15_t beta, const linears_matrix_t *b, linears_matrix_t *out,
+linears_status_t linears_axpby_q15(linears_fixed_t alpha, const linears_matrix_t *a,
+                                 linears_fixed_t beta, const linears_matrix_t *b, linears_matrix_t *out,
                                  linears_workspace_unit_t *workspace, size_t workspace_bytes);
 /**
  * @copydoc linears_axpby_f32
+ * @note alpha and beta are int64_t raw / 2^31 wide coefficients; mathematical
+ *       one is LINEARS_FIXED_ONE, not the q31 signal endpoint INT32_MAX.
  */
-linears_status_t linears_axpby_q31(linears_q31_t alpha, const linears_matrix_t *a,
-                                 linears_q31_t beta, const linears_matrix_t *b, linears_matrix_t *out,
+linears_status_t linears_axpby_q31(linears_fixed_t alpha, const linears_matrix_t *a,
+                                 linears_fixed_t beta, const linears_matrix_t *b, linears_matrix_t *out,
                                  linears_workspace_unit_t *workspace, size_t workspace_bytes);
 
 /**
  * @brief Multiply every element by a scalar.
  *
- * @param[in] alpha Multiplier in this function's numeric format.
+ * @param[in] alpha Coefficient in the signature's type; Q variants use int64_t raw / 2^31.
  * @param[in] a Input descriptor, not NULL.
  * @param[in,out] out Destination, not NULL; same shape as a.
  * @param[in,out] workspace Typed scratch array, or NULL for an empty output.
@@ -417,23 +422,26 @@ linears_status_t linears_scale_f64(double alpha, const linears_matrix_t *a, line
                                  linears_workspace_unit_t *workspace, size_t workspace_bytes);
 /**
  * @copydoc linears_scale_f32
+ * @note alpha is an int64_t raw / 2^31 wide coefficient, NOT a q15 signal.
+ *       Use 2 * LINEARS_FIXED_ONE for gain two, not a q15-scaled integer.
  */
-linears_status_t linears_scale_q15(linears_q15_t alpha, const linears_matrix_t *a, linears_matrix_t *out,
+linears_status_t linears_scale_q15(linears_fixed_t alpha, const linears_matrix_t *a, linears_matrix_t *out,
                                  linears_workspace_unit_t *workspace, size_t workspace_bytes);
 /**
  * @copydoc linears_scale_f32
+ * @note alpha is an int64_t raw / 2^31 wide coefficient; mathematical one is
+ *       LINEARS_FIXED_ONE, which is outside the positive q31 signal code range.
  */
-linears_status_t linears_scale_q31(linears_q31_t alpha, const linears_matrix_t *a, linears_matrix_t *out,
+linears_status_t linears_scale_q31(linears_fixed_t alpha, const linears_matrix_t *a, linears_matrix_t *out,
                                  linears_workspace_unit_t *workspace, size_t workspace_bytes);
 
 /**
  * @brief Copy a matrix representation exactly with memmove overlap semantics.
  *
- * @param[in] a Source descriptor, not NULL; finite/representable values required.
+ * @param[in] a Source descriptor, not NULL; floating values must be finite.
  * @param[in,out] out Destination descriptor, not NULL; same shape as a.
  * @return linears_status_t OK or ARGUMENT, DIMENSION, SIZE, ALIAS, RANGE.
- * @note Needs no scratch. Fixed-point exponent is copied without normalization;
- *       floating exponent is not changed. Input/output data overlap is supported.
+ * @note Needs no scratch. Input/output data overlap is supported.
  */
 linears_status_t linears_copy_f32(const linears_matrix_t *a, linears_matrix_t *out);
 /**
@@ -454,7 +462,7 @@ linears_status_t linears_copy_q31(const linears_matrix_t *a, linears_matrix_t *o
  *
  * @param[in,out] out Destination descriptor, not NULL; any rectangular shape.
  * @return linears_status_t OK or ARGUMENT, SIZE, ALIAS.
- * @note Sets fixed exponent to zero; leaves floating exponent unchanged.
+ * @note Writes exactly the zero raw code in the selected element type.
  */
 linears_status_t linears_zero_f32(linears_matrix_t *out);
 /**
@@ -475,8 +483,8 @@ linears_status_t linears_zero_q31(linears_matrix_t *out);
  *
  * @param[in,out] out Square destination descriptor, not NULL; 0 by 0 is valid.
  * @return linears_status_t OK or ARGUMENT, DIMENSION, SIZE, ALIAS.
- * @note Nonempty fixed identity uses exponent 1 and mantissa 2^14/2^30 on the
- *       diagonal; empty fixed identity uses exponent 0. Floating exponent stays.
+ * @note Q identity uses INT16_MAX/INT32_MAX on the diagonal, representing
+ *       1 - 2^-15 or 1 - 2^-31, NOT exact real one. Floating identity is exact.
  */
 linears_status_t linears_identity_f32(linears_matrix_t *out);
 /**
@@ -501,7 +509,7 @@ linears_status_t linears_identity_q31(linears_matrix_t *out);
  *                 may overlap input data, but not either matrix descriptor.
  * @return linears_status_t OK or ARGUMENT, DIMENSION, SIZE, ALIAS, RANGE.
  * @note This is a vector dot product or, for matrices, the Frobenius inner
- *       product. Empty inputs return zero. Fixed scalar output is normalized.
+ *       product. Empty inputs return zero. Q results must be in [-1,+1].
  */
 linears_status_t linears_dot_f32(const linears_matrix_t *a, const linears_matrix_t *b, float *out);
 /**
@@ -518,13 +526,15 @@ linears_status_t linears_dot_q15(const linears_matrix_t *a, const linears_matrix
 linears_status_t linears_dot_q31(const linears_matrix_t *a, const linears_matrix_t *b, linears_q31_t *out);
 
 /**
- * @brief Compute the Euclidean/Frobenius norm using scaled sum of squares.
+ * @brief Compute the Euclidean/Frobenius norm without overflowing squared inputs.
  *
  * @param[in] a Input, not NULL; any rectangular shape.
  * @param[out] out Non-NULL nonnegative scalar destination; may overlap input
  *                 data but not the descriptor. Empty inputs produce zero.
  * @return linears_status_t OK or ARGUMENT, SIZE, ALIAS, RANGE.
- * @note Needs no scratch. Scaling avoids squaring large inputs directly.
+ * @note Needs no scratch. Floating kernels use scaled sums of squares. Q kernels
+ *       accumulate exact raw squares, reject a true norm above one, and use an
+ *       integer square root with one final signal quantization.
  */
 linears_status_t linears_norm_f32(const linears_matrix_t *a, float *out);
 /**
@@ -547,7 +557,7 @@ linears_status_t linears_norm_q31(const linears_matrix_t *a, linears_q31_t *out)
  * @param[out] out Non-NULL scalar destination; may overlap input data but not
  *                 the descriptor. Empty input produces zero.
  * @return linears_status_t OK or ARGUMENT, DIMENSION, SIZE, ALIAS, RANGE.
- * @note Needs no scratch. Fixed scalar output is normalized.
+ * @note Needs no scratch. Q results must be in [-1,+1].
  */
 linears_status_t linears_trace_f32(const linears_matrix_t *a, float *out);
 /**

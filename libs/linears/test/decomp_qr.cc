@@ -24,16 +24,21 @@ template<class F> void check_qr(const Eigen::MatrixXd &values, int scale = 0)
         // Householder signs are nonunique; compare diagonal magnitudes.
         for (size_t k = 0; k < std::min(m, n); ++k)
             EXPECT_NEAR(std::abs(actual_r(k, k)), std::abs(reference.matrixQR()(k, k)),
-                quantization_bound(r) + 16.0 * m * F::working_epsilon * input.norm());
+                quantization_bound(r) + 16.0 * m * F::working_epsilon *
+                (F::bits == 0 ? input.norm() : 1.0));
     }
     scratch.check();
 }
 
 TYPED_TEST(LinearQr, TallWideSquareAndScalarMatchEigen)
 {
-    for (const auto &shape : {std::pair<size_t, size_t>{1, 1}, {1, 7}, {7, 1}, {3, 9}, {9, 3}, {6, 6}, {71, 3}})
-        check_qr<TypeParam>(random_matrix(shape.first, shape.second,
-            0x84a2u + static_cast<uint32_t>(shape.first * 19 + shape.second)));
+    for (const auto &shape : {std::pair<size_t, size_t>{1, 1}, {1, 7}, {7, 1}, {3, 9}, {9, 3}, {6, 6}, {71, 3}}) {
+        Eigen::MatrixXd values = random_matrix(shape.first, shape.second,
+            0x84a2u + static_cast<uint32_t>(shape.first * 19 + shape.second));
+        if constexpr (TypeParam::bits != 0)
+            values *= 0.25 / std::sqrt(static_cast<double>(shape.first * shape.second));
+        check_qr<TypeParam>(values);
+    }
 }
 
 TYPED_TEST(LinearQr, RankDeficientZeroColumnsAndRepeatedColumnsRemainSupported)
@@ -42,18 +47,24 @@ TYPED_TEST(LinearQr, RankDeficientZeroColumnsAndRepeatedColumnsRemainSupported)
     values.col(0) << 1, -2, 3, 0, 1, -1, 2;
     values.col(1) = 2.0 * values.col(0);
     values.col(2) = values.col(0);
+    if constexpr (TypeParam::bits != 0) values /= 16.0;
     check_qr<TypeParam>(values);
     check_qr<TypeParam>(Eigen::MatrixXd::Zero(4, 7));
 }
 
-TYPED_TEST(LinearQr, EmptyShapesAndExponentSpans)
+TYPED_TEST(LinearQr, EmptyShapesAndActualMagnitudeSpans)
 {
     check_qr<TypeParam>(Eigen::MatrixXd(0, 0));
     check_qr<TypeParam>(Eigen::MatrixXd(0, 5));
     check_qr<TypeParam>(Eigen::MatrixXd(5, 0));
     const auto values = random_matrix(5, 3, 5517u);
-    check_qr<TypeParam>(values, -50);
-    check_qr<TypeParam>(values, 50);
+    if constexpr (TypeParam::bits == 0) {
+        check_qr<TypeParam>(values, -50);
+        check_qr<TypeParam>(values, 50);
+    } else {
+        check_qr<TypeParam>(values / 16.0);
+        check_qr<TypeParam>(values / 16.0, -8);
+    }
 }
 
 TYPED_TEST(LinearQr, InsufficientWorkspaceAndAliasLeaveAllOutputsUnchanged)
@@ -69,7 +80,38 @@ TYPED_TEST(LinearQr, InsufficientWorkspaceAndAliasLeaveAllOutputsUnchanged)
     alias.data = a.matrix.data;
     EXPECT_EQ(F::qr(&a.matrix, &q.matrix, &alias, scratch.workspace), LINEARS_ERROR_ALIAS);
     EXPECT_EQ(q.data, old_q); EXPECT_EQ(r.data, old_r);
-    EXPECT_EQ(q.matrix.exponent, 17); EXPECT_EQ(r.matrix.exponent, 17);
     short_scratch.check(); scratch.check();
+}
+
+template<class F> class FixedQr : public ::testing::Test {};
+using FixedQrFormats = ::testing::Types<Q15, Q31>;
+TYPED_TEST_SUITE(FixedQr, FixedQrFormats);
+
+TYPED_TEST(FixedQr, MinimumRawColumnKeepsTheUnitDirection)
+{
+    using F = TypeParam;
+    Matrix<F> a(2, 1), q(2, 2), r(2, 1);
+    a.data[0] = 1; a.data[1] = 1;
+    Scratch<F> scratch(LINEARS_QR_WORKSPACE(2, 1));
+    ASSERT_EQ(F::qr(&a.matrix, &q.matrix, &r.matrix, scratch.workspace), LINEARS_OK);
+    Eigen::HouseholderQR<Eigen::MatrixXd> reference(a.decoded());
+    Eigen::MatrixXd expected = reference.householderQ() * Eigen::MatrixXd::Identity(2, 2);
+    EXPECT_LE((q.decoded().cwiseAbs() - expected.cwiseAbs()).norm(),
+        quantization_bound(q) + 32.0 * F::working_epsilon);
+    EXPECT_EQ(r.data[1], 0);
+    scratch.check();
+}
+
+TYPED_TEST(FixedQr, UnrepresentableRDoesNotPublishQ)
+{
+    using F = TypeParam;
+    Eigen::Vector2d values; values << 0.75, 0.75;
+    Matrix<F> a(values), q(2, 2), r(2, 1);
+    q.sentinel(); r.sentinel();
+    const auto old_q = q.data, old_r = r.data;
+    Scratch<F> scratch(LINEARS_QR_WORKSPACE(2, 1));
+    EXPECT_EQ(F::qr(&a.matrix, &q.matrix, &r.matrix, scratch.workspace), LINEARS_ERROR_RANGE);
+    EXPECT_EQ(q.data, old_q); EXPECT_EQ(r.data, old_r);
+    scratch.check();
 }
 } // namespace

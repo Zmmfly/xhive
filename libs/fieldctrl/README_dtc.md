@@ -21,9 +21,22 @@ toward beta. Angles, where describing sectors, are **electrical turns**, with
 one turn equal to `2*pi` radians. Electrical and mechanical speed differ by the
 integer pole-pair count `p`.
 
-SI units are A, V, ohm, Wb, N*m and s. A per-unit conversion is allowed only if
-it preserves the scaling of both equations below; arbitrary independent
-current, voltage and torque normalizations do not preserve the factor `3/2`.
+Floating APIs accept SI units (A, V, ohm, Wb, N*m and s) or a consistent per-unit
+system. **Q APIs require per-unit inputs and outputs within their fixed signal
+range.** The caller chooses positive `Vbase`, `Ibase` and `Tbase`, then uses:
+
+```text
+Vpu = V / Vbase                       Ipu = I / Ibase
+tpu = t / Tbase                       Rpu = R * Ibase / Vbase
+flux_pu = psi / (Vbase * Tbase)
+torque_pu = torque_SI / (Vbase * Ibase * Tbase)
+Lpu = L * Ibase / (Vbase * Tbase)      (for the motor model, not a DTC parameter)
+```
+
+The API stores no bases or dynamic binary-point metadata. These caller-side unit
+choices preserve both equations below, including `3/2`; independent arbitrary
+flux/torque normalization does not. Choose bases with headroom for transients,
+not just nominal references, and convert back to physical units at the boundary.
 
 For each accepted sample:
 
@@ -69,8 +82,10 @@ fieldctrl_S_dtc_step(ctx, current, applied_voltage,
   be non-NULL, valid objects with disjoint storage.
 - `R >= 0`; both hysteresis bands are strictly positive; `pole_pairs` is
   `1..65535`; `flux_reference > flux_band`; torque references are signed.
-- `dt` is the actual elapsed interval in seconds and must be strictly positive.
-  The API does not choose a stable sample interval or enforce a maximum current.
+- `dt` is the actual elapsed interval, in seconds for SI floating calls or divided
+  by `Tbase` for Q calls, and must be strictly positive. Q inputs have at most
+  `1-2^-15` / `1-2^-31` per unit. The API does not choose a stable sample interval
+  or enforce a maximum current.
 - Initial stator flux must be nonzero and known. For an SPMSM it can be seeded
   from a known initial rotor position and initial current. A deliberately aligned
   rotor at zero current has known PM flux orientation. An arbitrary zero seed
@@ -82,8 +97,10 @@ fieldctrl_S_dtc_step(ctx, current, applied_voltage,
 - Each context is reentrant relative to independent contexts. The caller must
   serialize all calls using the same context/output. Interrupt use requires
   exclusive storage and a separately established execution-time budget.
-- Nonfinite floating values, invalid fixed-point exponents and arithmetic/export
-  overflow fail. A zero updated flux fails with `LINEARS_ERROR_DOMAIN` because
+- Nonfinite floating values, working arithmetic overflow and fixed output
+  values outside `[-1,+1]` fail. Every Q raw input bit pattern is valid, though
+  parameter-domain constraints still apply. A zero updated flux fails with
+  `LINEARS_ERROR_DOMAIN` because
   its sector is undefined. Invalid input scalar bounds return `ARGUMENT`,
   storage overlap returns `ALIAS`, and numerical range errors return `RANGE`.
   On **every failure, both the context and output retain their previous bytes**;
@@ -174,26 +191,45 @@ drops can make their actual average voltage nonzero, which the caller must repor
 
 ## Integer-only versions and numerical range
 
-A q15 input/output scalar is `mantissa * 2^(exponent-15)`; q31 uses
-`mantissa * 2^(exponent-31)`. Components have independent exponents, not a common
-vector scale, and are not restricted to `[-1,1)`. Every raw and normalized
-exponent must lie in `LINEARS_EXPONENT_MIN..LINEARS_EXPONENT_MAX`. Intermediate
-values must also fit; neither saturating nor wrapping arithmetic is used.
+`linears_q15_t` is an `int16_t` signal with value `raw / 2^15`, in
+`[-1, 1-2^-15]`. `linears_q31_t` is `int32_t` with value `raw / 2^31`, in
+`[-1, 1-2^-31]`. The fractional bit count is fixed for all parameters, samples
+and results. Neither type carries a separately adjusted multiplier or metadata.
+All configuration resistance/bands and all scalar step inputs are Q signals;
+`pole_pairs` remains an integer count, not a fractional coefficient.
 
-Both q versions call the integer `linears_numeric.h` arithmetic. Their working
-values and **persistent flux accumulators** are canonical `linears_q31_t`, with
-31 significant magnitude bits. q15 quantization happens only at the public
-output boundary, not at every integrator update. Sector/hysteresis decisions use
-these working estimates, so they need not equal a decision recomputed from the
-coarser displayed q15 estimates. The implementation does not convert q values
-through `float`, `double`, floating trigonometry or a floating observer.
+Both Q versions call integer `linears_numeric.h` arithmetic. Working values and
+**persistent flux accumulators** are `int64_t`, always `raw / 2^31`. Their range
+is `[-2^32, 2^32-2^-31]`. Add/subtract are exact when representable; products and
+divisions round to nearest, halfway away from zero, with absolute error at most
+`2^-32` per rounded working operation. The relative precision is not constant
+near zero. No operation changes the binary point. q15 output quantization is
+not fed back into the flux accumulator. Sector/hysteresis decisions precede
+output quantization, so a decision need not match one recomputed from a displayed
+q15 estimate. Production Q code uses no `float`, `double` or floating observer.
 
-Wide state does not give unlimited precision. If an increment is smaller than
-half a working flux unit, it can round away. Select signal scaling, `dt` and bands
-so physically significant increments and errors are resolvable. Do not interpret
-an exactly unchanged numerical flux as a hardware measurement. Normalization may
-reject an exponent even when the raw exponent is legal; q15 final rounding can
-also require an out-of-range exponent. These failures are atomic.
+Export checks each working result against the **closed interval `[-1,+1]` before
+rounding**. A value greater than +1, even by one F31 LSB, fails with `RANGE`; the
+same applies below -1. Within the interval, +1 and positive rounding to the
+unavailable endpoint map to `INT16_MAX`/`INT32_MAX`; -1 maps exactly to `INT_MIN`.
+The upper output cell consequently has at most one signal LSB error; other
+cells have at most half an LSB. This endpoint convention is not permission to
+saturate out-of-range gains, torque or flux. All failures leave context and
+output unchanged. For example, `p=65535`, flux=.5 and current=1 produces a torque
+far above one per unit: Q calls return `RANGE`, whereas floating SI calls retain
+their larger representable result.
+
+The initial flux components may each be legal Q inputs while their magnitude
+exceeds +1. Initialization accepts those nonzero components; a step rejects an
+unrepresentable resulting magnitude before committing. Leave magnitude and torque
+headroom when selecting bases. External acquisition must detect physical inputs
+outside the selected signal domain rather than silently clipping them.
+
+Wide state does not give unlimited resolution. A working increment smaller than
+half `2^-31` per-unit flux can round to zero. The smallest positive input `dt` is
+`2^-15`/`2^-31` per-unit time. Choose bases, time steps and bands so significant
+increments and errors remain resolvable. An exactly unchanged numerical estimate
+is not a hardware measurement or a drift-compensation mechanism.
 
 ## Drift, low-speed limitations and commissioning
 
@@ -246,29 +282,97 @@ it does **not** claim to eliminate the other voltage-model or fixed-table limits
 Its tests cover independently evaluated physical equations using quantized inputs
 and a fixed random seed; all six sectors times two flux states times three torque
 states; both zero vectors; exact hysteresis thresholds and memory; boundary sides;
-sector invariance across floating subnormal/normal and fixed exponent scales;
-32,768-step sub-q15-output-unit integration; explicit initial/sensor-bias drift;
-actual voltage differing from the requested switch state; maximum pole-pair
-count; independent-instance interleaving; exponent endpoints, NaN/Inf, numeric
-and output-export overflow; and unchanged state/output on failures.
+sector invariance across floating subnormal/normal and Q raw-LSB/near-full-range
+inputs; 32,768-step sub-q15-output-unit integration and 65,536 working-LSB updates;
+explicit initial/sensor-bias drift; actual voltage differing from the requested
+switch state; maximum pole-pair count in both representable and overflowing Q
+cases; independent-instance interleaving; raw MIN/MAX, positive-endpoint rounding,
+near-axis inputs, NaN/Inf, numeric/export overflow; and atomic failures.
 
-Numerical equation assertions propagate working-operation rounding error and add
-half an output unit. Long binary integration and bias-drift cases use exact
-expectations, not a percentage tolerance. Random references are evaluated **after
-input quantization**, so measurement quantization is not incorrectly attributed
-to arithmetic error.
+Numerical equation assertions propagate relative native floating roundoff or
+absolute fixed-F31 primitive roundoff as appropriate, then add the documented
+output-cell error. Q addition/subtraction receive no fictitious relative-error
+allowance. Long binary integration and bias-drift cases use exact expectations,
+not a percentage tolerance. Random references are evaluated **after input
+quantization**, so measurement quantization is not incorrectly attributed to
+arithmetic error. The Q test encoder rejects values outside [-1,+1]; it does not
+silently encode an arbitrary physical value into a fractional signal.
 
 The mechanical closed-loop test uses an independent RK4 surface-PMSM plant:
 `R=0.4 ohm`, `L=3 mH`, `psi_pm=0.08 Wb`, `p=3`, `J=0.001 kg*m^2`,
-viscous friction `0.01 N*m*s/rad`, and a 48 V DC bus. It runs both initial speeds
+viscous friction `0.01 N*m*s/rad`, and a nominal 48 V DC bus. One Q case uses
+`Vbase=48 V`, `Ibase=8 A` and `Tbase=0.005 s`, giving flux base `0.24 Wb` and
+torque base `1.92 N*m`. The DC-bus per-unit endpoint is quantized (+1 to MAX)
+**before** conversion to the physical plant bus; it is not treated as exactly
+48 V afterward. Resistance, references, measured voltage/current and the sample
+interval likewise pass through the Q encoder before the observer consumes them.
+The plant uses the decoded sample interval, and each observer step is also
+checked against an independent equation reference using those quantized inputs.
+It runs both initial speeds
 `+20` and `-20 rad/s`, commands `+/-0.4 N*m`, then reverses the torque command after
 5,000 of 20,000 samples at approximately 10 us/sample. The plant consumes the
 previous inverter request, so the simulation includes one-interval actuation
 timing. Current, actual voltage and the quantized interval are the controller's
 only per-step plant inputs. **The true rotor angle is not fed back into the DTC
 observer**; it is used by the physical plant, diagnostics and initial flux seed.
-Assertions include both speed reversals, torque tracking, current/flux bounds and
-flux-observer error below 1% of the flux hysteresis half-band.
+Assertions include both speed reversals, torque tracking and physical current/flux
+bounds. Floating runs retain the absolute observer-error limit of 1% of the flux
+hysteresis half-band (`1e-5 Wb`). Q runs separately predict input-quantization drift:
+
+```text
+bias = initial_quantization_error
+     + sum(dt_SI * ((V_quantized - V_actual)
+                   - (R_quantized * I_quantized - R_actual * I_actual)))
+```
+
+This prediction is diagnostic only: it is never fed to the controller. The
+quantized-R case retains the `1e-5 Wb` limit for the remaining Euler/working-arithmetic
+error, and bounds total error by this independently predicted bias plus that budget.
+Every step also checks the numerical observer equation on quantized inputs.
+This distinguishes measurement/parameter drift from an implementation error
+without multiplying the numerical tolerance to hide the difference.
+
+With these bases, the host Q15 run measured about `17.67 microWb` peak total
+observer error, versus a predicted input-bias peak of `16.35 microWb` and a model
+residual peak of `2.59 microWb`. **The previous 1%-of-band absolute total-error
+target is not met by this Q15 configuration** (the peak is about 1.77%). No
+compensation is implemented. The Q31 total peak was about `2.55 microWb` and its
+predicted input-bias peak about `0.00021 microWb`.
+
+The nominal Q case uses `Vbase=64 V`, `Ibase=10 A` and
+`Tbase=Ts*256=0.00256 s`, where `Ts=10 us`. It changes neither the physical motor
+nor the observer equations. `dtpu=1/256` is exact, so the physical plant interval
+is exactly the original 10 us, checked by an equality assertion. It also makes
+`Rpu=0.0625`, `Lpu=0.18310546875`, PM flux `0.48828125`, torque command
+`0.244140625`, DC bus `0.75` and active alpha voltage `0.5` binary-exact. The flux
+base is `0.16384 Wb` and torque base `1.6384 N*m`. `Tbase=Ts*64` would put the PM
+flux above one per unit; the selected power-of-two multiple leaves flux headroom.
+Beta voltage and measured current remain genuinely quantized. An earlier
+`Tbase=1/256 s` candidate was superseded because its quantized time step changed
+the actual plant sampling period, not because of a new observer correction.
+
+The nominal case retains the original **absolute raw** total-error limit of
+`1e-5 Wb`, not only a residual limit. Final output quantization is measured
+separately from input bias and the Euler/working-arithmetic residual. For Q15
+away from the upper export cell, its two-component norm is bounded by
+`sqrt(2)*flux_base/65536`; Q31 exports preserve the working fraction at these
+operating points. Observed maxima over both directions were:
+
+| Error component | Q15 (microWb) | Q31 (microWb) |
+|---|---:|---:|
+| Independently predicted input bias | 1.516 | 0.000066 |
+| Euler/working-arithmetic residual | 2.549 | 2.552 |
+| Working-state total versus the physical plant | 3.741 | 2.552 |
+| Additional final displayed-output quantization | 3.515 | 0 |
+| Final displayed-output total versus the physical plant | 6.889 | 2.552 |
+
+These peaks occur at different samples and are not additive equalities.
+
+Both unit choices remain in the tests. Their difference demonstrates that Q1
+caller-unit selection affects drift, rather than suggesting the controller
+silently corrects it. These observations are for this specific finite-duration
+host model, not accuracy guarantees for arbitrary bases, sensor offsets,
+temperatures or run duration.
 
 These are host software tests for this specified, initialized, nonsalient motor
 model. They are not hardware measurements, startup-from-unknown-angle validation,

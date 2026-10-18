@@ -7,6 +7,7 @@
  * must remain alive until the context is no longer used. Only the required
  * prefix of a larger capacity is used. Do not edit an initialized context,
  * coefficients, or its retained state buffers; use reset to clear history.
+ * The low-pass working entry may explicitly advance a Q context's value field.
  *
  * Every non-OK return preserves persistent state and output. Temporary scratch
  * may change after a failed step. Output must not overlap any retained buffer
@@ -15,11 +16,17 @@
  * are reentrant. There is no MMIO, I/O, allocation, recursion or mutable static
  * state. The call completes synchronously with bounded, size-dependent work.
  *
- * f32/f64 use their native arithmetic and reject NaN/Inf. q15/q31 scalars are
- * linears_q15_t/linears_q31_t, with value mantissa*2^(exponent-15/31). The shared
- * pure-integer linears_fixed_t core performs intermediate arithmetic, then
- * rounds persistent values to the selected storage precision. Coefficients
- * may be negative or larger than one unless a specific range is documented.
+ * f32/f64 use their native arithmetic and reject NaN/Inf. q15/q31 signals are
+ * raw int16_t/2^15 and int32_t/2^31. FIR/SOS coefficients and fixed-point sample
+ * periods use linears_fixed_t, an int64_t with invariant 31 fraction bits, so
+ * negative feedback near -2 and gains above one remain expressible. Q low/high-
+ * pass, EMA, complementary and SOS histories retain F31 precision; signal rings
+ * retain raw Q1 storage. Kalman-specific state/workspace contracts are defined
+ * by filters_kalman.h.
+ * Q export checks its supplied working value against [-1,+1] before narrowing.
+ * Direct final MAC paths check F62; compound matrix Kalman checks its computed
+ * F31 result, not an ideal unrounded chain. Exact +1 maps to MAX under the shared
+ * endpoint policy; MAX means 1-LSB. No rescaling or floating conversion occurs.
  */
 #ifndef FILTERS_H
 #define FILTERS_H
@@ -176,7 +183,7 @@ typedef filters_lowpass_f32_t filters_ema_f32_t;
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
+ * @retval LINEARS_ERROR_RANGE A scalar input is nonfinite.
  * @retval LINEARS_ERROR_SIZE A required byte/count size overflows.
  * @retval LINEARS_ERROR_WORKSPACE A supplied element capacity is too small.
  * @retval LINEARS_ERROR_ALIAS Live context/array prefixes overlap.
@@ -211,7 +218,7 @@ linears_status_t filters_fir_f32_reset(filters_fir_f32_t *ctx);
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A scalar input or intermediate is nonfinite.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -237,7 +244,7 @@ linears_status_t filters_fir_f32_step(filters_fir_f32_t *ctx, float input, float
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
+ * @retval LINEARS_ERROR_RANGE A scalar input is nonfinite.
  * @retval LINEARS_ERROR_SIZE A required byte/count size overflows.
  * @retval LINEARS_ERROR_WORKSPACE A supplied element capacity is too small.
  * @retval LINEARS_ERROR_ALIAS Live context/array prefixes overlap.
@@ -272,7 +279,7 @@ linears_status_t filters_biquad_f32_reset(filters_biquad_f32_t *ctx);
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A scalar input or intermediate is nonfinite.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -293,7 +300,7 @@ linears_status_t filters_biquad_f32_step(filters_biquad_f32_t *ctx, float input,
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
+ * @retval LINEARS_ERROR_RANGE A scalar input is nonfinite.
  * @retval LINEARS_ERROR_DOMAIN alpha is outside [0,1].
  *
  * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
@@ -329,7 +336,7 @@ linears_status_t filters_highpass_f32_reset(filters_highpass_f32_t *ctx, float i
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A scalar input or intermediate is nonfinite.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -388,7 +395,7 @@ linears_status_t filters_moving_average_f32_reset(filters_moving_average_f32_t *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A scalar input or intermediate is nonfinite.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -449,7 +456,7 @@ linears_status_t filters_median_f32_reset(filters_median_f32_t *ctx);
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A scalar input or intermediate is nonfinite.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -469,7 +476,7 @@ linears_status_t filters_median_f32_step(filters_median_f32_t *ctx, float input,
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
+ * @retval LINEARS_ERROR_RANGE A scalar input is nonfinite.
  * @retval LINEARS_ERROR_DOMAIN alpha is outside [0,1].
  *
  * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
@@ -504,7 +511,7 @@ linears_status_t filters_ema_f32_reset(filters_ema_f32_t *ctx, float initial);
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A scalar input or intermediate is nonfinite.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -525,7 +532,7 @@ linears_status_t filters_ema_f32_step(filters_ema_f32_t *ctx, float input, float
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
+ * @retval LINEARS_ERROR_RANGE A scalar input is nonfinite.
  * @retval LINEARS_ERROR_DOMAIN alpha is outside [0,1] or sample_period is not positive.
  *
  * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
@@ -561,7 +568,7 @@ linears_status_t filters_complementary_f32_reset(filters_complementary_f32_t *ct
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A scalar input or intermediate is nonfinite.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -658,7 +665,7 @@ typedef filters_lowpass_f64_t filters_ema_f64_t;
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
+ * @retval LINEARS_ERROR_RANGE A scalar input is nonfinite.
  * @retval LINEARS_ERROR_SIZE A required byte/count size overflows.
  * @retval LINEARS_ERROR_WORKSPACE A supplied element capacity is too small.
  * @retval LINEARS_ERROR_ALIAS Live context/array prefixes overlap.
@@ -693,7 +700,7 @@ linears_status_t filters_fir_f64_reset(filters_fir_f64_t *ctx);
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A scalar input or intermediate is nonfinite.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -719,7 +726,7 @@ linears_status_t filters_fir_f64_step(filters_fir_f64_t *ctx, double input, doub
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
+ * @retval LINEARS_ERROR_RANGE A scalar input is nonfinite.
  * @retval LINEARS_ERROR_SIZE A required byte/count size overflows.
  * @retval LINEARS_ERROR_WORKSPACE A supplied element capacity is too small.
  * @retval LINEARS_ERROR_ALIAS Live context/array prefixes overlap.
@@ -754,7 +761,7 @@ linears_status_t filters_biquad_f64_reset(filters_biquad_f64_t *ctx);
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A scalar input or intermediate is nonfinite.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -775,7 +782,7 @@ linears_status_t filters_biquad_f64_step(filters_biquad_f64_t *ctx, double input
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
+ * @retval LINEARS_ERROR_RANGE A scalar input is nonfinite.
  * @retval LINEARS_ERROR_DOMAIN alpha is outside [0,1].
  *
  * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
@@ -811,7 +818,7 @@ linears_status_t filters_highpass_f64_reset(filters_highpass_f64_t *ctx, double 
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A scalar input or intermediate is nonfinite.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -870,7 +877,7 @@ linears_status_t filters_moving_average_f64_reset(filters_moving_average_f64_t *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A scalar input or intermediate is nonfinite.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -931,7 +938,7 @@ linears_status_t filters_median_f64_reset(filters_median_f64_t *ctx);
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A scalar input or intermediate is nonfinite.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -951,7 +958,7 @@ linears_status_t filters_median_f64_step(filters_median_f64_t *ctx, double input
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
+ * @retval LINEARS_ERROR_RANGE A scalar input is nonfinite.
  * @retval LINEARS_ERROR_DOMAIN alpha is outside [0,1].
  *
  * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
@@ -986,7 +993,7 @@ linears_status_t filters_ema_f64_reset(filters_ema_f64_t *ctx, double initial);
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A scalar input or intermediate is nonfinite.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -1007,7 +1014,7 @@ linears_status_t filters_ema_f64_step(filters_ema_f64_t *ctx, double input, doub
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
+ * @retval LINEARS_ERROR_RANGE A scalar input is nonfinite.
  * @retval LINEARS_ERROR_DOMAIN alpha is outside [0,1] or sample_period is not positive.
  *
  * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
@@ -1043,7 +1050,7 @@ linears_status_t filters_complementary_f64_reset(filters_complementary_f64_t *ct
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A scalar input or intermediate is nonfinite.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -1055,7 +1062,7 @@ linears_status_t filters_complementary_f64_step(filters_complementary_f64_t *ctx
  * @brief Caller-owned FIR delay ring and immutable coefficient reference.
  */
 typedef struct {
-    const linears_q15_t *coefficients; /**< h[0] multiplies the current input; length taps. */
+    const linears_fixed_t *coefficients; /**< h[0] multiplies the current input; length taps. */
     linears_q15_t *state; /**< Private zero-padded delay ring; length taps. */
     size_t taps; /**< Positive coefficient and history length, in samples. */
     size_t head; /**< Next replaced ring index; maintained by the API. */
@@ -1065,11 +1072,11 @@ typedef struct {
  * @brief Normalized biquad coefficients: denominator 1 + a1*z^-1 + a2*z^-2.
  */
 typedef struct {
-    linears_q15_t b0; /**< Current-input feedforward coefficient, dimensionless. */
-    linears_q15_t b1; /**< One-delay feedforward coefficient, dimensionless. */
-    linears_q15_t b2; /**< Two-delay feedforward coefficient, dimensionless. */
-    linears_q15_t a1; /**< One-delay denominator coefficient, subtracted in recurrence. */
-    linears_q15_t a2; /**< Two-delay denominator coefficient, subtracted in recurrence. */
+    linears_fixed_t b0; /**< Current-input feedforward coefficient, dimensionless F31 raw/2^31. */
+    linears_fixed_t b1; /**< One-delay feedforward coefficient, dimensionless F31 raw/2^31. */
+    linears_fixed_t b2; /**< Two-delay feedforward coefficient, dimensionless F31 raw/2^31. */
+    linears_fixed_t a1; /**< One-delay denominator coefficient, F31 raw/2^31, subtracted in recurrence. */
+    linears_fixed_t a2; /**< Two-delay denominator coefficient, F31 raw/2^31, subtracted in recurrence. */
 } filters_biquad_q15_coefficients_t;
 
 /**
@@ -1077,8 +1084,8 @@ typedef struct {
  */
 typedef struct {
     const filters_biquad_q15_coefficients_t *coefficients; /**< Immutable sections array. */
-    linears_q15_t *state; /**< Private pairs (s1,s2), length 2*sections. */
-    linears_q15_t *workspace; /**< Tentative states, length 2*sections; not persistent. */
+    linears_fixed_t *state; /**< Private F31 pairs (s1,s2), length 2*sections. */
+    linears_fixed_t *workspace; /**< Tentative F31 states, length 2*sections; not persistent. */
     size_t sections; /**< Positive number of cascaded second-order sections. */
 } filters_biquad_q15_t;
 
@@ -1086,9 +1093,9 @@ typedef struct {
  * @brief Caller-owned first-order high-pass context.
  */
 typedef struct {
-    linears_q15_t alpha; /**< Dimensionless recurrence multiplier in [0,1]. */
+    linears_q15_t alpha; /**< Dimensionless recurrence multiplier raw/2^15, in [0,1); MAX is not one. */
     linears_q15_t previous_input; /**< Previous sample in input units. */
-    linears_q15_t value; /**< Last output in input units. */
+    linears_fixed_t value; /**< Private F31 recursive output in input units. */
 } filters_highpass_q15_t;
 
 /**
@@ -1098,6 +1105,7 @@ typedef struct {
     linears_q15_t *state; /**< Private sample ring, length window. */
     size_t window; /**< Positive averaging-window length, in samples. */
     size_t head; /**< Next replaced ring index; maintained by the API. */
+    linears_accum_t sum; /**< Exact rolling F62 sum; maintained transactionally. */
 } filters_moving_average_q15_t;
 
 /**
@@ -1114,9 +1122,9 @@ typedef struct {
  * @brief Caller-owned linear complementary rate/measurement filter.
  */
 typedef struct {
-    linears_q15_t alpha; /**< Dimensionless prediction weight in [0,1]. */
-    linears_q15_t sample_period; /**< Fixed positive interval between steps, in seconds. */
-    linears_q15_t value; /**< Last estimate in the measurement physical unit. */
+    linears_q15_t alpha; /**< Dimensionless prediction weight raw/2^15, in [0,1); MAX is not one. */
+    linears_fixed_t sample_period; /**< Positive F31 raw/2^31 interval, in seconds. */
+    linears_fixed_t value; /**< Private F31 estimate in measurement units. */
 } filters_complementary_q15_t;
 
 /**
@@ -1131,7 +1139,7 @@ typedef filters_lowpass_q15_t filters_ema_q15_t;
  * valid for the context lifetime. Coefficient signs and gains are unrestricted.
  *
  * @param[out] ctx Non-NULL caller-owned context; unchanged on failure.
- * @param[in] coefficients Non-NULL immutable tap array in increasing delay order.
+ * @param[in] coefficients Non-NULL immutable wide F31 (int64_t/2^31) taps, in increasing delay order.
  * @param[in] taps Positive number of coefficients, in samples.
  * @param[out] state Non-NULL history array, zero-filled in its required prefix.
  * @param[in] state_capacity Available state elements; at least FILTERS_FIR_STATE_COUNT(taps).
@@ -1140,14 +1148,13 @@ typedef filters_lowpass_q15_t filters_ema_q15_t;
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
  * @retval LINEARS_ERROR_SIZE A required byte/count size overflows.
  * @retval LINEARS_ERROR_WORKSPACE A supplied element capacity is too small.
  * @retval LINEARS_ERROR_ALIAS Live context/array prefixes overlap.
  *
- * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
+ * @note All raw integers have a fixed binary point. Serialize use of ctx.
  */
-linears_status_t filters_fir_q15_init(filters_fir_q15_t *ctx, const linears_q15_t *coefficients, size_t taps, linears_q15_t *state, size_t state_capacity);
+linears_status_t filters_fir_q15_init(filters_fir_q15_t *ctx, const linears_fixed_t *coefficients, size_t taps, linears_q15_t *state, size_t state_capacity);
 
 /**
  * @brief Reset a Q15 fir history.
@@ -1167,15 +1174,15 @@ linears_status_t filters_fir_q15_reset(filters_fir_q15_t *ctx);
  * @brief Process one Q15 fir sample.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
- * @param[in] input One sample in the physical units used for the state.
- * @param[out] output Non-NULL scalar; must not overlap ctx or any retained live array prefix.
+ * @param[in] input Raw Q1.15 sample in the physical units used for the state.
+ * @param[out] output Non-NULL raw Q1.15 destination; disjoint from ctx and retained live prefixes.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A working accumulator overflows or the true output exceeds [-1,+1].
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -1187,28 +1194,27 @@ linears_status_t filters_fir_q15_step(filters_fir_q15_t *ctx, linears_q15_t inpu
  * All context/array live prefixes must be pairwise disjoint. Arrays remain
  * valid for the context lifetime. Stability and scaling are caller choices.
  * Each section computes y=b0*x+s1, s1=b1*x-a1*y+s2, s2=b2*x-a2*y.
- * The section output and state are rounded to this API storage precision.
+ * States retain F31 precision and headroom; only each section output is Q1.15.
  *
  * @param[out] ctx Non-NULL caller-owned context; unchanged on failure.
- * @param[in] coefficients Non-NULL immutable normalized SOS array; a0 is implicitly one.
+ * @param[in] coefficients Non-NULL immutable wide F31 SOS array; a0 is exactly one.
  * @param[in] sections Positive number of cascaded sections.
- * @param[out] state Non-NULL state array, zero-filled; 2*sections elements are used.
- * @param[in] state_capacity Available state elements; at least FILTERS_BIQUAD_STATE_COUNT(sections).
- * @param[in,out] workspace Non-NULL tentative-state array; contents are unspecified after step.
- * @param[in] workspace_capacity Scratch elements; at least FILTERS_BIQUAD_WORKSPACE_COUNT(sections).
+ * @param[out] state Non-NULL F31 state array, zero-filled; 2*sections int64_t elements used.
+ * @param[in] state_capacity Available F31 state elements; at least FILTERS_BIQUAD_STATE_COUNT(sections).
+ * @param[in,out] workspace Non-NULL F31 tentative-state array; contents unspecified after step.
+ * @param[in] workspace_capacity F31 scratch elements; at least FILTERS_BIQUAD_WORKSPACE_COUNT(sections).
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
  * @retval LINEARS_ERROR_SIZE A required byte/count size overflows.
  * @retval LINEARS_ERROR_WORKSPACE A supplied element capacity is too small.
  * @retval LINEARS_ERROR_ALIAS Live context/array prefixes overlap.
  *
- * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
+ * @note All raw integers have a fixed binary point. Serialize use of ctx.
  */
-linears_status_t filters_biquad_q15_init(filters_biquad_q15_t *ctx, const filters_biquad_q15_coefficients_t *coefficients, size_t sections, linears_q15_t *state, size_t state_capacity, linears_q15_t *workspace, size_t workspace_capacity);
+linears_status_t filters_biquad_q15_init(filters_biquad_q15_t *ctx, const filters_biquad_q15_coefficients_t *coefficients, size_t sections, linears_fixed_t *state, size_t state_capacity, linears_fixed_t *workspace, size_t workspace_capacity);
 
 /**
  * @brief Reset a Q15 biquad history.
@@ -1228,15 +1234,15 @@ linears_status_t filters_biquad_q15_reset(filters_biquad_q15_t *ctx);
  * @brief Process one Q15 biquad sample.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
- * @param[in] input One sample in the physical units used for the state.
- * @param[out] output Non-NULL scalar; must not overlap ctx or any retained live array prefix.
+ * @param[in] input Raw Q1.15 sample in the physical units used for the state.
+ * @param[out] output Non-NULL raw Q1.15 destination; disjoint from ctx and retained live prefixes.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A working accumulator overflows or the true output exceeds [-1,+1].
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -1249,18 +1255,17 @@ linears_status_t filters_biquad_q15_step(filters_biquad_q15_t *ctx, linears_q15_
  * For a backward-Euler RC high-pass choose alpha=tau/(tau+dt).
  *
  * @param[out] ctx Non-NULL caller-owned context; unchanged on failure.
- * @param[in] alpha Dimensionless weight in [0,1].
- * @param[in] initial_input Previous input sample in signal units.
- * @param[in] initial_output Previous output sample in signal units.
+ * @param[in] alpha Dimensionless raw Q1.15 weight, nonnegative; MAX is 1-2^-15.
+ * @param[in] initial_input Raw Q1.15 previous input sample in signal units.
+ * @param[in] initial_output Raw Q1.15 previous output sample, converted exactly to F31.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
- * @retval LINEARS_ERROR_DOMAIN alpha is outside [0,1].
+ * @retval LINEARS_ERROR_DOMAIN alpha is negative.
  *
- * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
+ * @note All raw integers have a fixed binary point. Serialize use of ctx.
  */
 linears_status_t filters_highpass_q15_init(filters_highpass_q15_t *ctx, linears_q15_t alpha, linears_q15_t initial_input, linears_q15_t initial_output);
 
@@ -1268,14 +1273,13 @@ linears_status_t filters_highpass_q15_init(filters_highpass_q15_t *ctx, linears_
  * @brief Reset a Q15 highpass history.
  *
  * @param[in,out] ctx Non-NULL initialized context; coefficients and storage are preserved.
- * @param[in] initial_input New previous input, in signal units.
- * @param[in] initial_output New previous output, in signal units.
+ * @param[in] initial_input Raw Q1.15 new previous input, in signal units.
+ * @param[in] initial_output Raw Q1.15 new previous output, converted exactly to F31.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK History replaced (zero-filled for window/cascade filters).
  * @retval LINEARS_ERROR_ARGUMENT ctx is NULL.
- * @retval LINEARS_ERROR_RANGE An initial value is nonfinite or outside the exponent range.
  *
  * @note Failure preserves state. Caller must serialize use of ctx; scratch is not cleared.
  */
@@ -1285,15 +1289,15 @@ linears_status_t filters_highpass_q15_reset(filters_highpass_q15_t *ctx, linears
  * @brief Process one Q15 highpass sample.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
- * @param[in] input One sample in the physical units used for the state.
- * @param[out] output Non-NULL scalar; must not overlap ctx or any retained live array prefix.
+ * @param[in] input Raw Q1.15 sample in the physical units used for the state.
+ * @param[out] output Non-NULL raw Q1.15 destination; disjoint from ctx and retained live prefixes.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A working accumulator overflows or the true output exceeds [-1,+1].
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -1319,7 +1323,7 @@ linears_status_t filters_highpass_q15_step(filters_highpass_q15_t *ctx, linears_
  * @retval LINEARS_ERROR_WORKSPACE A supplied element capacity is too small.
  * @retval LINEARS_ERROR_ALIAS Live context/array prefixes overlap.
  *
- * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
+ * @note All raw integers have a fixed binary point. Serialize use of ctx.
  */
 linears_status_t filters_moving_average_q15_init(filters_moving_average_q15_t *ctx, size_t window, linears_q15_t *state, size_t state_capacity);
 
@@ -1340,19 +1344,19 @@ linears_status_t filters_moving_average_q15_reset(filters_moving_average_q15_t *
 /**
  * @brief Process one Q15 moving average sample.
  *
- * Recomputes the window mean in O(window) work to avoid accumulated
- * running-sum drift. Each term is divided before the sum is formed.
+ * Updates an exact 128-bit F62 rolling sum in O(1) work. Division by the
+ * window and output rounding happen once; integer accumulation has no drift.
+ * Persistent storage includes the sample ring and the 16-byte running sum.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
- * @param[in] input One sample in the physical units used for the state.
- * @param[out] output Non-NULL scalar; must not overlap ctx or any retained live array prefix.
+ * @param[in] input Raw Q1.15 sample in the physical units used for the state.
+ * @param[out] output Non-NULL raw Q1.15 destination; disjoint from ctx and retained live prefixes.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -1380,7 +1384,7 @@ linears_status_t filters_moving_average_q15_step(filters_moving_average_q15_t *c
  * @retval LINEARS_ERROR_WORKSPACE A supplied element capacity is too small.
  * @retval LINEARS_ERROR_ALIAS Live context/array prefixes overlap.
  *
- * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
+ * @note All raw integers have a fixed binary point. Serialize use of ctx.
  */
 linears_status_t filters_median_q15_init(filters_median_q15_t *ctx, size_t window, linears_q15_t *state, size_t state_capacity, linears_q15_t *workspace, size_t workspace_capacity);
 
@@ -1405,15 +1409,14 @@ linears_status_t filters_median_q15_reset(filters_median_q15_t *ctx);
  * for an even window. Sorting is O(window^2) with caller-owned scratch.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
- * @param[in] input One sample in the physical units used for the state.
- * @param[out] output Non-NULL scalar; must not overlap ctx or any retained live array prefix.
+ * @param[in] input Raw Q1.15 sample in the physical units used for the state.
+ * @param[out] output Non-NULL raw Q1.15 destination; disjoint from ctx and retained live prefixes.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -1426,17 +1429,16 @@ linears_status_t filters_median_q15_step(filters_median_q15_t *ctx, linears_q15_
  * This API delegates to the same implementation as the first-order low-pass.
  *
  * @param[out] ctx Non-NULL caller-owned context; unchanged on failure.
- * @param[in] alpha Dimensionless weight in [0,1].
- * @param[in] initial Initial estimate/output in signal units.
+ * @param[in] alpha Dimensionless raw Q1.15 weight, nonnegative; MAX is 1-2^-15.
+ * @param[in] initial Raw Q1.15 initial signal, converted exactly to F31 history.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
- * @retval LINEARS_ERROR_DOMAIN alpha is outside [0,1].
+ * @retval LINEARS_ERROR_DOMAIN alpha is negative.
  *
- * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
+ * @note All raw integers have a fixed binary point. Serialize use of ctx.
  */
 linears_status_t filters_ema_q15_init(filters_ema_q15_t *ctx, linears_q15_t alpha, linears_q15_t initial);
 
@@ -1444,13 +1446,12 @@ linears_status_t filters_ema_q15_init(filters_ema_q15_t *ctx, linears_q15_t alph
  * @brief Reset a Q15 ema history.
  *
  * @param[in,out] ctx Non-NULL initialized context; coefficients and storage are preserved.
- * @param[in] initial New output history, in signal units.
+ * @param[in] initial Raw Q1.15 new signal history, converted exactly to F31.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK History replaced (zero-filled for window/cascade filters).
  * @retval LINEARS_ERROR_ARGUMENT ctx is NULL.
- * @retval LINEARS_ERROR_RANGE An initial value is nonfinite or outside the exponent range.
  *
  * @note Failure preserves state. Caller must serialize use of ctx; scratch is not cleared.
  */
@@ -1460,17 +1461,18 @@ linears_status_t filters_ema_q15_reset(filters_ema_q15_t *ctx, linears_q15_t ini
  * @brief Process one Q15 ema sample.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
- * @param[in] input One sample in the physical units used for the state.
- * @param[out] output Non-NULL scalar; must not overlap ctx or any retained live array prefix.
+ * @param[in] input Raw Q1.15 sample in the physical units used for the state.
+ * @param[out] output Non-NULL raw Q1.15 destination; disjoint from ctx and retained live prefixes.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A wider work-step history produces output outside [-1,+1].
  *
- * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
+ * @note The context aliases the Q low-pass type and may use work_step on value.
+ *       Failure preserves state and output. Serialize calls sharing ctx.
  */
 linears_status_t filters_ema_q15_step(filters_ema_q15_t *ctx, linears_q15_t input, linears_q15_t *output);
 
@@ -1481,32 +1483,30 @@ linears_status_t filters_ema_q15_step(filters_ema_q15_t *ctx, linears_q15_t inpu
  * +(1-alpha)*measurement. No angle wrapping or nonlinear state model is used.
  *
  * @param[out] ctx Non-NULL caller-owned context; unchanged on failure.
- * @param[in] alpha Dimensionless weight in [0,1].
- * @param[in] sample_period Positive fixed sample period, in seconds.
- * @param[in] initial Initial estimate/output in signal units.
+ * @param[in] alpha Dimensionless raw Q1.15 weight, nonnegative; MAX is 1-2^-15.
+ * @param[in] sample_period Positive wide F31 raw/2^31 sample period, in seconds.
+ * @param[in] initial Raw Q1.15 initial signal, converted exactly to F31 history.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
- * @retval LINEARS_ERROR_DOMAIN alpha is outside [0,1] or sample_period is not positive.
+ * @retval LINEARS_ERROR_DOMAIN alpha is negative or sample_period is not positive.
  *
- * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
+ * @note All raw integers have a fixed binary point. Serialize use of ctx.
  */
-linears_status_t filters_complementary_q15_init(filters_complementary_q15_t *ctx, linears_q15_t alpha, linears_q15_t sample_period, linears_q15_t initial);
+linears_status_t filters_complementary_q15_init(filters_complementary_q15_t *ctx, linears_q15_t alpha, linears_fixed_t sample_period, linears_q15_t initial);
 
 /**
  * @brief Reset a Q15 complementary history.
  *
  * @param[in,out] ctx Non-NULL initialized context; coefficients and storage are preserved.
- * @param[in] initial New output history, in signal units.
+ * @param[in] initial Raw Q1.15 new signal history, converted exactly to F31.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK History replaced (zero-filled for window/cascade filters).
  * @retval LINEARS_ERROR_ARGUMENT ctx is NULL.
- * @retval LINEARS_ERROR_RANGE An initial value is nonfinite or outside the exponent range.
  *
  * @note Failure preserves state. Caller must serialize use of ctx; scratch is not cleared.
  */
@@ -1516,16 +1516,16 @@ linears_status_t filters_complementary_q15_reset(filters_complementary_q15_t *ct
  * @brief Process one Q15 complementary sample.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
- * @param[in] rate Measured derivative in measurement units per second.
- * @param[in] measurement Absolute observation in the estimate physical unit.
- * @param[out] output Non-NULL scalar; must not overlap ctx or any retained live array prefix.
+ * @param[in] rate Raw Q1.15 derivative in measurement units per second.
+ * @param[in] measurement Raw Q1.15 absolute observation in estimate units.
+ * @param[out] output Non-NULL raw Q1.15 destination; disjoint from ctx and retained live prefixes.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A working accumulator overflows or the true output exceeds [-1,+1].
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -1537,7 +1537,7 @@ linears_status_t filters_complementary_q15_step(filters_complementary_q15_t *ctx
  * @brief Caller-owned FIR delay ring and immutable coefficient reference.
  */
 typedef struct {
-    const linears_q31_t *coefficients; /**< h[0] multiplies the current input; length taps. */
+    const linears_fixed_t *coefficients; /**< h[0] multiplies the current input; length taps. */
     linears_q31_t *state; /**< Private zero-padded delay ring; length taps. */
     size_t taps; /**< Positive coefficient and history length, in samples. */
     size_t head; /**< Next replaced ring index; maintained by the API. */
@@ -1547,11 +1547,11 @@ typedef struct {
  * @brief Normalized biquad coefficients: denominator 1 + a1*z^-1 + a2*z^-2.
  */
 typedef struct {
-    linears_q31_t b0; /**< Current-input feedforward coefficient, dimensionless. */
-    linears_q31_t b1; /**< One-delay feedforward coefficient, dimensionless. */
-    linears_q31_t b2; /**< Two-delay feedforward coefficient, dimensionless. */
-    linears_q31_t a1; /**< One-delay denominator coefficient, subtracted in recurrence. */
-    linears_q31_t a2; /**< Two-delay denominator coefficient, subtracted in recurrence. */
+    linears_fixed_t b0; /**< Current-input feedforward coefficient, dimensionless F31 raw/2^31. */
+    linears_fixed_t b1; /**< One-delay feedforward coefficient, dimensionless F31 raw/2^31. */
+    linears_fixed_t b2; /**< Two-delay feedforward coefficient, dimensionless F31 raw/2^31. */
+    linears_fixed_t a1; /**< One-delay denominator coefficient, F31 raw/2^31, subtracted in recurrence. */
+    linears_fixed_t a2; /**< Two-delay denominator coefficient, F31 raw/2^31, subtracted in recurrence. */
 } filters_biquad_q31_coefficients_t;
 
 /**
@@ -1559,8 +1559,8 @@ typedef struct {
  */
 typedef struct {
     const filters_biquad_q31_coefficients_t *coefficients; /**< Immutable sections array. */
-    linears_q31_t *state; /**< Private pairs (s1,s2), length 2*sections. */
-    linears_q31_t *workspace; /**< Tentative states, length 2*sections; not persistent. */
+    linears_fixed_t *state; /**< Private F31 pairs (s1,s2), length 2*sections. */
+    linears_fixed_t *workspace; /**< Tentative F31 states, length 2*sections; not persistent. */
     size_t sections; /**< Positive number of cascaded second-order sections. */
 } filters_biquad_q31_t;
 
@@ -1568,9 +1568,9 @@ typedef struct {
  * @brief Caller-owned first-order high-pass context.
  */
 typedef struct {
-    linears_q31_t alpha; /**< Dimensionless recurrence multiplier in [0,1]. */
+    linears_q31_t alpha; /**< Dimensionless recurrence multiplier raw/2^31, in [0,1); MAX is not one. */
     linears_q31_t previous_input; /**< Previous sample in input units. */
-    linears_q31_t value; /**< Last output in input units. */
+    linears_fixed_t value; /**< Private F31 recursive output in input units. */
 } filters_highpass_q31_t;
 
 /**
@@ -1580,6 +1580,7 @@ typedef struct {
     linears_q31_t *state; /**< Private sample ring, length window. */
     size_t window; /**< Positive averaging-window length, in samples. */
     size_t head; /**< Next replaced ring index; maintained by the API. */
+    linears_accum_t sum; /**< Exact rolling F62 sum; maintained transactionally. */
 } filters_moving_average_q31_t;
 
 /**
@@ -1596,9 +1597,9 @@ typedef struct {
  * @brief Caller-owned linear complementary rate/measurement filter.
  */
 typedef struct {
-    linears_q31_t alpha; /**< Dimensionless prediction weight in [0,1]. */
-    linears_q31_t sample_period; /**< Fixed positive interval between steps, in seconds. */
-    linears_q31_t value; /**< Last estimate in the measurement physical unit. */
+    linears_q31_t alpha; /**< Dimensionless prediction weight raw/2^31, in [0,1); MAX is not one. */
+    linears_fixed_t sample_period; /**< Positive F31 raw/2^31 interval, in seconds. */
+    linears_fixed_t value; /**< Private F31 estimate in measurement units. */
 } filters_complementary_q31_t;
 
 /**
@@ -1613,7 +1614,7 @@ typedef filters_lowpass_q31_t filters_ema_q31_t;
  * valid for the context lifetime. Coefficient signs and gains are unrestricted.
  *
  * @param[out] ctx Non-NULL caller-owned context; unchanged on failure.
- * @param[in] coefficients Non-NULL immutable tap array in increasing delay order.
+ * @param[in] coefficients Non-NULL immutable wide F31 (int64_t/2^31) taps, in increasing delay order.
  * @param[in] taps Positive number of coefficients, in samples.
  * @param[out] state Non-NULL history array, zero-filled in its required prefix.
  * @param[in] state_capacity Available state elements; at least FILTERS_FIR_STATE_COUNT(taps).
@@ -1622,14 +1623,13 @@ typedef filters_lowpass_q31_t filters_ema_q31_t;
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
  * @retval LINEARS_ERROR_SIZE A required byte/count size overflows.
  * @retval LINEARS_ERROR_WORKSPACE A supplied element capacity is too small.
  * @retval LINEARS_ERROR_ALIAS Live context/array prefixes overlap.
  *
- * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
+ * @note All raw integers have a fixed binary point. Serialize use of ctx.
  */
-linears_status_t filters_fir_q31_init(filters_fir_q31_t *ctx, const linears_q31_t *coefficients, size_t taps, linears_q31_t *state, size_t state_capacity);
+linears_status_t filters_fir_q31_init(filters_fir_q31_t *ctx, const linears_fixed_t *coefficients, size_t taps, linears_q31_t *state, size_t state_capacity);
 
 /**
  * @brief Reset a Q31 fir history.
@@ -1649,15 +1649,15 @@ linears_status_t filters_fir_q31_reset(filters_fir_q31_t *ctx);
  * @brief Process one Q31 fir sample.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
- * @param[in] input One sample in the physical units used for the state.
- * @param[out] output Non-NULL scalar; must not overlap ctx or any retained live array prefix.
+ * @param[in] input Raw Q1.31 sample in the physical units used for the state.
+ * @param[out] output Non-NULL raw Q1.31 destination; disjoint from ctx and retained live prefixes.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A working accumulator overflows or the true output exceeds [-1,+1].
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -1669,28 +1669,27 @@ linears_status_t filters_fir_q31_step(filters_fir_q31_t *ctx, linears_q31_t inpu
  * All context/array live prefixes must be pairwise disjoint. Arrays remain
  * valid for the context lifetime. Stability and scaling are caller choices.
  * Each section computes y=b0*x+s1, s1=b1*x-a1*y+s2, s2=b2*x-a2*y.
- * The section output and state are rounded to this API storage precision.
+ * States retain F31 precision and headroom; only each section output is Q1.31.
  *
  * @param[out] ctx Non-NULL caller-owned context; unchanged on failure.
- * @param[in] coefficients Non-NULL immutable normalized SOS array; a0 is implicitly one.
+ * @param[in] coefficients Non-NULL immutable wide F31 SOS array; a0 is exactly one.
  * @param[in] sections Positive number of cascaded sections.
- * @param[out] state Non-NULL state array, zero-filled; 2*sections elements are used.
- * @param[in] state_capacity Available state elements; at least FILTERS_BIQUAD_STATE_COUNT(sections).
- * @param[in,out] workspace Non-NULL tentative-state array; contents are unspecified after step.
- * @param[in] workspace_capacity Scratch elements; at least FILTERS_BIQUAD_WORKSPACE_COUNT(sections).
+ * @param[out] state Non-NULL F31 state array, zero-filled; 2*sections int64_t elements used.
+ * @param[in] state_capacity Available F31 state elements; at least FILTERS_BIQUAD_STATE_COUNT(sections).
+ * @param[in,out] workspace Non-NULL F31 tentative-state array; contents unspecified after step.
+ * @param[in] workspace_capacity F31 scratch elements; at least FILTERS_BIQUAD_WORKSPACE_COUNT(sections).
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
  * @retval LINEARS_ERROR_SIZE A required byte/count size overflows.
  * @retval LINEARS_ERROR_WORKSPACE A supplied element capacity is too small.
  * @retval LINEARS_ERROR_ALIAS Live context/array prefixes overlap.
  *
- * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
+ * @note All raw integers have a fixed binary point. Serialize use of ctx.
  */
-linears_status_t filters_biquad_q31_init(filters_biquad_q31_t *ctx, const filters_biquad_q31_coefficients_t *coefficients, size_t sections, linears_q31_t *state, size_t state_capacity, linears_q31_t *workspace, size_t workspace_capacity);
+linears_status_t filters_biquad_q31_init(filters_biquad_q31_t *ctx, const filters_biquad_q31_coefficients_t *coefficients, size_t sections, linears_fixed_t *state, size_t state_capacity, linears_fixed_t *workspace, size_t workspace_capacity);
 
 /**
  * @brief Reset a Q31 biquad history.
@@ -1710,15 +1709,15 @@ linears_status_t filters_biquad_q31_reset(filters_biquad_q31_t *ctx);
  * @brief Process one Q31 biquad sample.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
- * @param[in] input One sample in the physical units used for the state.
- * @param[out] output Non-NULL scalar; must not overlap ctx or any retained live array prefix.
+ * @param[in] input Raw Q1.31 sample in the physical units used for the state.
+ * @param[out] output Non-NULL raw Q1.31 destination; disjoint from ctx and retained live prefixes.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A working accumulator overflows or the true output exceeds [-1,+1].
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -1731,18 +1730,17 @@ linears_status_t filters_biquad_q31_step(filters_biquad_q31_t *ctx, linears_q31_
  * For a backward-Euler RC high-pass choose alpha=tau/(tau+dt).
  *
  * @param[out] ctx Non-NULL caller-owned context; unchanged on failure.
- * @param[in] alpha Dimensionless weight in [0,1].
- * @param[in] initial_input Previous input sample in signal units.
- * @param[in] initial_output Previous output sample in signal units.
+ * @param[in] alpha Dimensionless raw Q1.31 weight, nonnegative; MAX is 1-2^-31.
+ * @param[in] initial_input Raw Q1.31 previous input sample in signal units.
+ * @param[in] initial_output Raw Q1.31 previous output sample, converted exactly to F31.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
- * @retval LINEARS_ERROR_DOMAIN alpha is outside [0,1].
+ * @retval LINEARS_ERROR_DOMAIN alpha is negative.
  *
- * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
+ * @note All raw integers have a fixed binary point. Serialize use of ctx.
  */
 linears_status_t filters_highpass_q31_init(filters_highpass_q31_t *ctx, linears_q31_t alpha, linears_q31_t initial_input, linears_q31_t initial_output);
 
@@ -1750,14 +1748,13 @@ linears_status_t filters_highpass_q31_init(filters_highpass_q31_t *ctx, linears_
  * @brief Reset a Q31 highpass history.
  *
  * @param[in,out] ctx Non-NULL initialized context; coefficients and storage are preserved.
- * @param[in] initial_input New previous input, in signal units.
- * @param[in] initial_output New previous output, in signal units.
+ * @param[in] initial_input Raw Q1.31 new previous input, in signal units.
+ * @param[in] initial_output Raw Q1.31 new previous output, converted exactly to F31.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK History replaced (zero-filled for window/cascade filters).
  * @retval LINEARS_ERROR_ARGUMENT ctx is NULL.
- * @retval LINEARS_ERROR_RANGE An initial value is nonfinite or outside the exponent range.
  *
  * @note Failure preserves state. Caller must serialize use of ctx; scratch is not cleared.
  */
@@ -1767,15 +1764,15 @@ linears_status_t filters_highpass_q31_reset(filters_highpass_q31_t *ctx, linears
  * @brief Process one Q31 highpass sample.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
- * @param[in] input One sample in the physical units used for the state.
- * @param[out] output Non-NULL scalar; must not overlap ctx or any retained live array prefix.
+ * @param[in] input Raw Q1.31 sample in the physical units used for the state.
+ * @param[out] output Non-NULL raw Q1.31 destination; disjoint from ctx and retained live prefixes.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A working accumulator overflows or the true output exceeds [-1,+1].
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -1801,7 +1798,7 @@ linears_status_t filters_highpass_q31_step(filters_highpass_q31_t *ctx, linears_
  * @retval LINEARS_ERROR_WORKSPACE A supplied element capacity is too small.
  * @retval LINEARS_ERROR_ALIAS Live context/array prefixes overlap.
  *
- * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
+ * @note All raw integers have a fixed binary point. Serialize use of ctx.
  */
 linears_status_t filters_moving_average_q31_init(filters_moving_average_q31_t *ctx, size_t window, linears_q31_t *state, size_t state_capacity);
 
@@ -1822,19 +1819,19 @@ linears_status_t filters_moving_average_q31_reset(filters_moving_average_q31_t *
 /**
  * @brief Process one Q31 moving average sample.
  *
- * Recomputes the window mean in O(window) work to avoid accumulated
- * running-sum drift. Each term is divided before the sum is formed.
+ * Updates an exact 128-bit F62 rolling sum in O(1) work. Division by the
+ * window and output rounding happen once; integer accumulation has no drift.
+ * Persistent storage includes the sample ring and the 16-byte running sum.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
- * @param[in] input One sample in the physical units used for the state.
- * @param[out] output Non-NULL scalar; must not overlap ctx or any retained live array prefix.
+ * @param[in] input Raw Q1.31 sample in the physical units used for the state.
+ * @param[out] output Non-NULL raw Q1.31 destination; disjoint from ctx and retained live prefixes.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -1862,7 +1859,7 @@ linears_status_t filters_moving_average_q31_step(filters_moving_average_q31_t *c
  * @retval LINEARS_ERROR_WORKSPACE A supplied element capacity is too small.
  * @retval LINEARS_ERROR_ALIAS Live context/array prefixes overlap.
  *
- * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
+ * @note All raw integers have a fixed binary point. Serialize use of ctx.
  */
 linears_status_t filters_median_q31_init(filters_median_q31_t *ctx, size_t window, linears_q31_t *state, size_t state_capacity, linears_q31_t *workspace, size_t workspace_capacity);
 
@@ -1887,15 +1884,14 @@ linears_status_t filters_median_q31_reset(filters_median_q31_t *ctx);
  * for an even window. Sorting is O(window^2) with caller-owned scratch.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
- * @param[in] input One sample in the physical units used for the state.
- * @param[out] output Non-NULL scalar; must not overlap ctx or any retained live array prefix.
+ * @param[in] input Raw Q1.31 sample in the physical units used for the state.
+ * @param[out] output Non-NULL raw Q1.31 destination; disjoint from ctx and retained live prefixes.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */
@@ -1908,17 +1904,16 @@ linears_status_t filters_median_q31_step(filters_median_q31_t *ctx, linears_q31_
  * This API delegates to the same implementation as the first-order low-pass.
  *
  * @param[out] ctx Non-NULL caller-owned context; unchanged on failure.
- * @param[in] alpha Dimensionless weight in [0,1].
- * @param[in] initial Initial estimate/output in signal units.
+ * @param[in] alpha Dimensionless raw Q1.31 weight, nonnegative; MAX is 1-2^-31.
+ * @param[in] initial Raw Q1.31 initial signal, converted exactly to F31 history.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
- * @retval LINEARS_ERROR_DOMAIN alpha is outside [0,1].
+ * @retval LINEARS_ERROR_DOMAIN alpha is negative.
  *
- * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
+ * @note All raw integers have a fixed binary point. Serialize use of ctx.
  */
 linears_status_t filters_ema_q31_init(filters_ema_q31_t *ctx, linears_q31_t alpha, linears_q31_t initial);
 
@@ -1926,13 +1921,12 @@ linears_status_t filters_ema_q31_init(filters_ema_q31_t *ctx, linears_q31_t alph
  * @brief Reset a Q31 ema history.
  *
  * @param[in,out] ctx Non-NULL initialized context; coefficients and storage are preserved.
- * @param[in] initial New output history, in signal units.
+ * @param[in] initial Raw Q1.31 new signal history, converted exactly to F31.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK History replaced (zero-filled for window/cascade filters).
  * @retval LINEARS_ERROR_ARGUMENT ctx is NULL.
- * @retval LINEARS_ERROR_RANGE An initial value is nonfinite or outside the exponent range.
  *
  * @note Failure preserves state. Caller must serialize use of ctx; scratch is not cleared.
  */
@@ -1942,17 +1936,18 @@ linears_status_t filters_ema_q31_reset(filters_ema_q31_t *ctx, linears_q31_t ini
  * @brief Process one Q31 ema sample.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
- * @param[in] input One sample in the physical units used for the state.
- * @param[out] output Non-NULL scalar; must not overlap ctx or any retained live array prefix.
+ * @param[in] input Raw Q1.31 sample in the physical units used for the state.
+ * @param[out] output Non-NULL raw Q1.31 destination; disjoint from ctx and retained live prefixes.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A wider work-step history produces output outside [-1,+1].
  *
- * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
+ * @note The context aliases the Q low-pass type and may use work_step on value.
+ *       Failure preserves state and output. Serialize calls sharing ctx.
  */
 linears_status_t filters_ema_q31_step(filters_ema_q31_t *ctx, linears_q31_t input, linears_q31_t *output);
 
@@ -1963,32 +1958,30 @@ linears_status_t filters_ema_q31_step(filters_ema_q31_t *ctx, linears_q31_t inpu
  * +(1-alpha)*measurement. No angle wrapping or nonlinear state model is used.
  *
  * @param[out] ctx Non-NULL caller-owned context; unchanged on failure.
- * @param[in] alpha Dimensionless weight in [0,1].
- * @param[in] sample_period Positive fixed sample period, in seconds.
- * @param[in] initial Initial estimate/output in signal units.
+ * @param[in] alpha Dimensionless raw Q1.31 weight, nonnegative; MAX is 1-2^-31.
+ * @param[in] sample_period Positive wide F31 raw/2^31 sample period, in seconds.
+ * @param[in] initial Raw Q1.31 initial signal, converted exactly to F31 history.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Context initialized and documented history cleared.
  * @retval LINEARS_ERROR_ARGUMENT A required pointer is NULL or a count is zero.
- * @retval LINEARS_ERROR_RANGE A scalar is nonfinite or an exponent cannot be represented.
- * @retval LINEARS_ERROR_DOMAIN alpha is outside [0,1] or sample_period is not positive.
+ * @retval LINEARS_ERROR_DOMAIN alpha is negative or sample_period is not positive.
  *
- * @note All numeric values must be valid for the chosen format. Serialize use of ctx.
+ * @note All raw integers have a fixed binary point. Serialize use of ctx.
  */
-linears_status_t filters_complementary_q31_init(filters_complementary_q31_t *ctx, linears_q31_t alpha, linears_q31_t sample_period, linears_q31_t initial);
+linears_status_t filters_complementary_q31_init(filters_complementary_q31_t *ctx, linears_q31_t alpha, linears_fixed_t sample_period, linears_q31_t initial);
 
 /**
  * @brief Reset a Q31 complementary history.
  *
  * @param[in,out] ctx Non-NULL initialized context; coefficients and storage are preserved.
- * @param[in] initial New output history, in signal units.
+ * @param[in] initial Raw Q1.31 new signal history, converted exactly to F31.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK History replaced (zero-filled for window/cascade filters).
  * @retval LINEARS_ERROR_ARGUMENT ctx is NULL.
- * @retval LINEARS_ERROR_RANGE An initial value is nonfinite or outside the exponent range.
  *
  * @note Failure preserves state. Caller must serialize use of ctx; scratch is not cleared.
  */
@@ -1998,16 +1991,16 @@ linears_status_t filters_complementary_q31_reset(filters_complementary_q31_t *ct
  * @brief Process one Q31 complementary sample.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
- * @param[in] rate Measured derivative in measurement units per second.
- * @param[in] measurement Absolute observation in the estimate physical unit.
- * @param[out] output Non-NULL scalar; must not overlap ctx or any retained live array prefix.
+ * @param[in] rate Raw Q1.31 derivative in measurement units per second.
+ * @param[in] measurement Raw Q1.31 absolute observation in estimate units.
+ * @param[out] output Non-NULL raw Q1.31 destination; disjoint from ctx and retained live prefixes.
  *
  * @return linears_status_t Operation status.
  *
  * @retval LINEARS_OK Output and complete persistent state committed.
  * @retval LINEARS_ERROR_ARGUMENT ctx or output is NULL.
  * @retval LINEARS_ERROR_ALIAS output overlaps a retained live buffer or ctx.
- * @retval LINEARS_ERROR_RANGE A scalar/intermediate is nonfinite or outside the exponent range.
+ * @retval LINEARS_ERROR_RANGE A working accumulator overflows or the true output exceeds [-1,+1].
  *
  * @note Failure preserves all persistent state and output; scratch may change. Serialize ctx.
  */

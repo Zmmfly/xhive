@@ -6,23 +6,73 @@ ADCs, GPIO, interrupts or a motor. Hardware operation is not validated here.
 
 ## Numeric and coordinate conventions
 
-- Scalar q values use `linears_q15_t`/`linears_q31_t`: value = mantissa times
-  `2^(exponent - 15)` or `2^(exponent - 31)`. Each scalar has its own exponent.
-  Fixed-point algorithms use the integer-only `linears_numeric.h` core;
-  they do not convert to floating point.
+- `linears_q15_t` is `int16_t` with **15 fixed fraction bits**: raw/32768.
+  `linears_q31_t` is `int32_t` with **31 fixed fraction bits**: raw/2147483648.
+  Their exact signal ranges are `[-1,1-2^-15]` and `[-1,1-2^-31]`. No scalar,
+  vector or context carries a variable binary point. Q paths use the shared
+  integer-only `linears_numeric.h` core, never a floating-point wrapper.
+- Explicitly wide Q gains/state/diagnostics use `linears_fixed_t`, an `int64_t`
+  **always divided by 2^31**, including in the q15 API. Its range is
+  `[-2^32,2^32-2^-31]`. Do not pass a Q15 raw gain to a wide-coefficient argument.
 - Angles are **electrical turns**, positive from alpha to beta. One turn equals
-  `2*pi` radians. Wrapped angles lie in `[0,1)`. Frequencies are electrical
-  turns/second (Hz). Mechanical speed interfaces state their pole-pair mapping.
+  `2*pi` radians. Wrapped angles lie in `[0,1)`. Floating frequency arguments
+  are electrical turns/second (Hz); Q frequencies are `f*Tbase`. Mechanical
+  speed interfaces explicitly divide electrical frequency by pole pairs.
 - Clarke is amplitude-invariant: alpha = `(2a-b-c)/3`, beta = `(b-c)/sqrt(3)`.
   It removes zero sequence. The inverse produces balanced phase values.
 - Park uses d = alpha*cos + beta*sin and q = -alpha*sin + beta*cos.
-- Voltage/current/flux use SI units or one mutually consistent per-unit system.
-  Gains and sample time must use the corresponding units.
+- Floating APIs document SI units. Q APIs require the per-unit conversion
+  below; raw signal storage cannot represent an unscaled 50 Hz or 24 V value.
 - All contexts are caller-owned. Calls on separate contexts are reentrant.
   The caller serializes calls sharing a context. There is no mutable global
   state, heap allocation, VLA, alloca or recursive algorithm.
 - Calls use fixed-size scalar/vector/context locals. No dimension-dependent
   workspaces are required by this library.
+
+## Q per-unit contract
+
+The caller chooses positive physical bases `Vbase` (V), `Ibase` (A) and `Tbase`
+(s). These are application-side conversion constants, **not context fields**.
+Use one consistent selection for connected controllers and observers:
+
+| Quantity | Q signal or coefficient value |
+|---|---|
+| Voltage / DC bus | `V / Vbase` |
+| Current / current reference | `I / Ibase` |
+| Sample time | `dt / Tbase` |
+| Electrical or mechanical frequency | `f * Tbase` |
+| Resistance | `R * Ibase / Vbase` |
+| Inductance | `L * Ibase / (Vbase*Tbase)` |
+| Stator or magnet flux linkage | `psi / (Vbase*Tbase)` |
+| Torque | `T / (Vbase*Ibase*Tbase)` |
+| Current-loop proportional gain | `kp_SI * Ibase / Vbase` |
+| Current-loop integral gain | `ki_SI * Ibase*Tbase / Vbase` |
+| Speed-loop proportional gain | `kp_SI / (Ibase*Tbase)` |
+| Speed-loop integral gain | `ki_SI / Ibase` |
+
+All ordinary Q arguments must fit their fixed signal domain. In particular,
+encoded `dt/Tbase` must be positive, and positive frequencies cannot exceed the
+largest raw signal. Only PI/FOC gains are wide F31 coefficients; resistance,
+inductance, thresholds, actual voltages, currents, duty and angle remain bounded
+signals. Gain range errors are not silently saturated. Choose bases against the
+actual operating envelope and resolution, not merely to encode one nominal point.
+
+The voltage-model equations remain `dpsi_pu = dt_pu*(v_pu-R_pu*i_pu)` and
+`torque_pu = 1.5*pole_pairs*cross(psi_pu,i_pu)`. Arbitrary independent torque/flux
+normalizations would change their coefficients and are not this API's contract.
+For the speed/current cascade, two valid speed signals can differ by more than
+one. Its private shared PI entry keeps that error in F31 until actuator limiting;
+it does not narrow or clip the intermediate error. The public generic PI error
+argument itself is still a Q1 signal.
+
+Q conversion checks the actual closed domain `[-1,+1]` before rounding.
+Mathematical `+1`, or an in-domain Q15 value whose nearest rounding reaches
+`32768`, maps to `INT_MAX`; this upper cell has at most one signal LSB error.
+`-1` maps exactly to `INT_MIN`; actual values outside the domain return RANGE.
+Raw `INT_MAX` still means `1-LSB`, including filter weights, not exactly one.
+**Angles are periodic:** a Q15 computed angle in the upper half-LSB cell rounds
+to zero turns instead of MAX. Q31 phases first wrap to `[0,2^31)` raw counts,
+then store at the same F31 binary point.
 
 ## Control primitives
 
@@ -32,26 +82,30 @@ anti-windup PI, radial voltage limiting, SVPWM duty calculation and VVVF.
 ### State precision and failures
 
 The q15 public values are quantized at the API boundary, but PI integrals and
-VVVF phase retain the canonical Q31 working representation. This prevents a
-small `ki*dt*error` or frequency increment from disappearing at every q15 state
-update. q31 uses the same working scalar. f32/f64 use native float/double state.
-The precision is finite: increments smaller than half a working ULP can still
-round away. All q arithmetic is 64-bit integer arithmetic, including division,
-square root, normalization, and at most 32 CORDIC rotations/vectoring steps.
-There is no hidden floating conversion in q entry points. The CORDIC constants
-are nearest-rounded `atan(2^-i)/(2*pi)` in Q62 turns and gain in Q60.
+VVVF phase retain int64 F31 state. A sub-Q15-LSB update can therefore accumulate
+before the signal is rounded. Q31 already has 31 fraction bits: its wider state
+adds integer headroom, not hidden fractional bits. Both Q paths round products
+nearest with halfway cases away from zero. An increment below half an F31 LSB
+can round to zero; there is no remainder accumulator. f32/f64 keep native state.
 
-Invalid arguments, nonfinite floating inputs, invalid exponents and arithmetic
-range errors leave every output and mutable context unchanged. Intentional
+Q multiplication/division and exact F62 multiply-accumulates use the shared
+portable two-uint64-limb core. CORDIC uses at most 32 raw integer rotations with
+constant Q60 coordinates and Q62 turns. Its input ratios and final conversion
+reuse integer core division/muldiv; no variable binary point is propagated.
+The angle table is nearest-rounded `atan(2^-i)/(2*pi)` in Q62 turns.
+
+Invalid arguments, nonfinite floating inputs and actual work/output range
+errors leave every output and mutable context unchanged. Intentional
 voltage/PI clipping is successful calculation, not a range error. Outputs may
 not overlap mutable contexts; multi-output sine/cosine ranges must be disjoint.
 Initialize contexts through their init entry point and do not edit their fields.
 
-Radial component rescaling separates mantissas from exponents before evaluating
-`component*limit/magnitude`. Floating variants use native `frexp`/`ldexp`; q
-variants multiply/divide normalized mantissas with linears, combine exponents
-in int64, then validate the final exponent. Neither an underflowing `limit/norm`
-nor an underflowing `component/norm` may erase a representable final component.
+Radial component rescaling evaluates `component*limit/magnitude` without
+prematurely discarding a representable result. Floating variants retain native
+`frexp`/`ldexp` decomposition. Q variants use `linears_fixed_muldiv`, with an
+exact wide raw product and one final rounded integer quotient. Neither an
+underflowing intermediate ratio nor an overflowing intermediate product needs
+to be constructed first.
 The general voltage limiter and FOC do materialize the vector norm at working
 precision: two sufficiently large finite components can have an unrepresentable
 norm. They report RANGE without committing, even if a clipped vector would fit.
@@ -87,6 +141,40 @@ frequency holds the phase; zero amplitude yields three 0.5 duties. Amplitude
 clipping is indicated in the result. Voltage-frequency laws and ramps remain
 caller policy rather than an implicit motor-specific choice.
 
+### Complete Q15 caller-side conversion example
+
+This C99 program requests a 50 Hz electrical field, 8 V amplitude and a 24 V
+bus, using `Vbase=32 V` and `Tbase=0.005 s`. A 100 us sample gives `dt_pu=0.02`,
+rounded to raw 655. Consequently the represented interval is about 99.945 us;
+that input quantization is not silently repaired. The context stores none of
+these physical bases. This example is checked by `VvvfPerUnit` in `test/vvvf.cc`.
+
+```c
+#include "fieldctrl.h"
+
+int main(void) {
+    fieldctrl_q15_vvvf_t state;
+    fieldctrl_q15_vvvf_output_t output;
+    linears_status_t status = fieldctrl_q15_vvvf_init(&state, 0);
+    if (status != LINEARS_OK) return 1;
+
+    /* Initialize once. Reuse state for subsequent control samples. */
+    status = fieldctrl_q15_vvvf_step(&state,
+        8192,   /* 50 Hz * 0.005 s = 0.25, encoded Q1.15 */
+        8192,   /* 8 V / 32 V = 0.25 */
+        24576,  /* 24 V / 32 V = 0.75 */
+        655,    /* (100 us / 0.005 s) * 32768, nearest integer */
+        &output);
+    return status == LINEARS_OK ? 0 : 1;
+}
+```
+
+The first working phase is exactly raw `10731520` in F31 and the Q15 angle
+output is raw `164`. There is no gate-drive action. For a gain above one, use
+the different wide-coefficient format explicitly, for example
+`linears_fixed_t kp = INT64_C(4) * LINEARS_FIXED_ONE;`; raw Q15 `4*32768`
+is neither the correct format nor representable as a Q15 signal.
+
 ## FOC and sliding-mode observer
 
 The umbrella `fieldctrl.h` also exposes `fieldctrl_foc.h` for d/q current control
@@ -95,7 +183,12 @@ sliding-mode current/back-EMF observer. See the
 [FOC/SMO design and validation notes](README_foc_smo.md) for the motor model,
 anti-windup rules, signed electrical-angle reconstruction, discrete low-pass
 phase compensation, locking criteria and software-only rotating handover tests.
-The observer is not a standstill startup procedure.
+The observer is not a standstill startup procedure. In the documented dynamic
+SMO software case, Q15 sensor quantization misses the original 0.25 Hz peak
+frequency-error target under both tested caller scalings. Agreement with the
+quantized-input arithmetic oracle does not make that physical target pass.
+Use Q31 or a floating variant when that tested target is required; the companion
+notes separate raw physical error, input quantization and working-arithmetic error.
 
 ## Direct torque control
 
@@ -120,7 +213,12 @@ The VVVF generator is open loop: a commanded field frequency is not a measured
 rotor speed. Back-EMF observers cannot identify rotor angle at standstill or
 when induced voltage is below the sensing/model-error floor. A separate startup
 strategy and handover criteria are required; this library does not claim
-sensorless standstill self-start.
+sensorless standstill self-start. Fixed signal quantization also changes model
+parameters and sampled inputs; a pure DTC voltage integrator can accumulate the
+resulting bias. The DTC notes report both a Q15 scaling choice that misses the
+previous physical-flux error target and an engineering-selected nominal set.
+These are documented limitations and unit-selection results, not hidden observer
+corrections or a claim that quantization has disappeared.
 
 ## Algorithm references
 
@@ -139,9 +237,11 @@ sensorless standstill self-start.
 
 The category tests (`transforms`, `pi_pwm`, `vvvf`) instantiate f32, f64, q15
 and q31. They use fixed-seed independent equations with quantized reference
-inputs, cardinal/zero and invalid-value cases, alias/failure atomicity checks,
-a 12,000-sample closed-loop RL plant with saturation and direction changes,
-20,000 integral updates and a 16,000-sample frequency/amplitude ramp. The VVVF
+inputs, raw MIN/MAX/LSB and periodic endpoints, real output-domain failures,
+alias/failure atomicity checks, a 12,000-sample physical RL plant with caller-side
+per-unit conversion, saturation and direction changes, 20,000 integral updates,
+F31 halfway/sub-LSB behavior and a 16,000-sample frequency/amplitude ramp. Original
+floating subnormal and extreme-scale counterexamples remain tests. The VVVF
 voltage oracle uses long-double trigonometry so a rounded full-turn double
 argument does not dominate the f64 error budget. None are hardware-in-the-loop
 tests. SDK build/test commands and results are recorded in the integration log.

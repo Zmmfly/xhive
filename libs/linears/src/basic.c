@@ -1,5 +1,7 @@
 #include "linears.h"
 #include "linears_numeric.h"
+#include "linears_work.h"
+#include "numeric_internal.h"
 
 #include <float.h>
 #include <math.h>
@@ -11,12 +13,14 @@ struct basic_align_f32 { char padding; float value; };
 struct basic_align_f64 { char padding; double value; };
 struct basic_align_q15 { char padding; int16_t value; };
 struct basic_align_q31 { char padding; int32_t value; };
+struct basic_align_work { char padding; int64_t value; };
 struct basic_align_matrix { char padding; linears_matrix_t value; };
 struct basic_align_workspace { char padding; linears_workspace_unit_t value; };
-struct basic_align_scalar_q15 { char padding; linears_q15_t value; };
-struct basic_align_scalar_q31 { char padding; linears_q31_t value; };
 
-typedef enum { F32, F64, Q15, Q31 } numeric_kind;
+/* The raw-product accumulator proof covers both supported size_t widths. */
+typedef char linears_size_t_fits_64[(sizeof(size_t) <= sizeof(uint64_t)) ? 1 : -1];
+
+typedef enum { F32, F64, Q15, Q31, WORK } numeric_kind;
 typedef enum { ADD, SUB, HADAMARD, MUL, MATVEC, TRANSPOSE, AXPBY, SCALE } matrix_op;
 typedef enum { DOT, NORM, TRACE } reduction_op;
 
@@ -25,7 +29,8 @@ static size_t element_size(numeric_kind kind) {
         case F32: return sizeof(float);
         case F64: return sizeof(double);
         case Q15: return sizeof(int16_t);
-        default: return sizeof(int32_t);
+        case Q31: return sizeof(int32_t);
+        default: return sizeof(int64_t);
     }
 }
 
@@ -34,7 +39,8 @@ static size_t element_alignment(numeric_kind kind) {
         case F32: return offsetof(struct basic_align_f32, value);
         case F64: return offsetof(struct basic_align_f64, value);
         case Q15: return offsetof(struct basic_align_q15, value);
-        default: return offsetof(struct basic_align_q31, value);
+        case Q31: return offsetof(struct basic_align_q31, value);
+        default: return offsetof(struct basic_align_work, value);
     }
 }
 
@@ -59,12 +65,6 @@ static linears_status_t matrix_storage(const linears_matrix_t *matrix,
     return LINEARS_OK;
 }
 
-static linears_status_t load_fixed(const linears_matrix_t *a, size_t i,
-                                  numeric_kind kind, linears_fixed_t *out) {
-    int64_t raw = kind == Q15 ? ((const int16_t *)a->data)[i] : ((const int32_t *)a->data)[i];
-    return linears_fixed_from_i64(raw, kind == Q15 ? 15 : 31, a->exponent, out);
-}
-
 static linears_status_t input_values(const linears_matrix_t *a, size_t count, numeric_kind kind) {
     if (kind == F32) {
         for (size_t i = 0; i < count; ++i)
@@ -72,14 +72,6 @@ static linears_status_t input_values(const linears_matrix_t *a, size_t count, nu
     } else if (kind == F64) {
         for (size_t i = 0; i < count; ++i)
             if (!isfinite(((const double *)a->data)[i])) return LINEARS_ERROR_RANGE;
-    } else {
-        if (a->exponent < LINEARS_EXPONENT_MIN || a->exponent > LINEARS_EXPONENT_MAX)
-            return LINEARS_ERROR_RANGE;
-        for (size_t i = 0; i < count; ++i) {
-            linears_fixed_t ignored;
-            linears_status_t status = load_fixed(a, i, kind, &ignored);
-            if (status != LINEARS_OK) return status;
-        }
     }
     return LINEARS_OK;
 }
@@ -139,82 +131,63 @@ static linears_status_t scratch_storage(linears_workspace_unit_t *workspace, siz
 #define FLOAT_SQRT sqrt
 #include "basic_float_impl.h"
 
-/* Uses the public scalar quantizers, but accesses each typed union member
- * directly instead of pretending that workspace is a linears_fixed_t array. */
-static linears_status_t commit_result(linears_matrix_t *out, size_t count,
-                                     linears_workspace_unit_t *workspace, numeric_kind kind) {
-    if (kind == F32 || kind == F64) {
-        for (size_t i = 0; i < count; ++i) {
-            if (kind == F32) ((float *)out->data)[i] = workspace[i].f32;
-            else ((double *)out->data)[i] = workspace[i].floating;
-        }
-        return LINEARS_OK;
-    }
-    int exponent = LINEARS_EXPONENT_MIN;
-    int any = 0;
+#define Q_TYPE int16_t
+#define Q_BITS 15
+#define Q_SUFFIX q15
+#include "basic_q_impl.h"
+
+#define Q_TYPE int32_t
+#define Q_BITS 31
+#define Q_SUFFIX q31
+#include "basic_q_impl.h"
+
+/* Every staged Q element has already passed exact range checking and its sole
+ * quantization. Committing typed members cannot introduce a new failure. */
+static void commit_result(linears_matrix_t *out, size_t count,
+                          linears_workspace_unit_t *workspace, numeric_kind kind) {
     for (size_t i = 0; i < count; ++i) {
-        if (workspace[i].fixed.mantissa != 0) {
-            any = 1;
-            if (workspace[i].fixed.exponent > exponent) exponent = workspace[i].fixed.exponent;
+        switch (kind) {
+            case F32: ((float *)out->data)[i] = workspace[i].f32; break;
+            case F64: ((double *)out->data)[i] = workspace[i].floating; break;
+            case Q15: ((int16_t *)out->data)[i] = workspace[i].q15; break;
+            case Q31: ((int32_t *)out->data)[i] = workspace[i].q31; break;
+            case WORK: ((int64_t *)out->data)[i] = workspace[i].fixed; break;
         }
     }
-    if (!any) exponent = 0;
-    if (kind == Q15) {
-        for (size_t i = 0; i < count; ++i) {
-            int16_t ignored;
-            if (linears_fixed_to_q15(workspace[i].fixed, exponent, &ignored) != LINEARS_OK) {
-                if (exponent == LINEARS_EXPONENT_MAX) return LINEARS_ERROR_RANGE;
-                ++exponent;
-                break;
-            }
-        }
-    }
-    for (size_t i = 0; i < count; ++i) {
-        if (kind == Q15)
-            (void)linears_fixed_to_q15(workspace[i].fixed, exponent, &((int16_t *)out->data)[i]);
-        else
-            (void)linears_fixed_to_q31(workspace[i].fixed, exponent, &((int32_t *)out->data)[i]);
-    }
-    out->exponent = exponent;
-    return LINEARS_OK;
 }
 
-static linears_status_t evaluate_fixed(matrix_op operation, numeric_kind kind,
-                                      const linears_matrix_t *a, const linears_matrix_t *b,
-                                      linears_matrix_t *out, linears_fixed_t alpha,
-                                      linears_fixed_t beta, linears_workspace_unit_t *workspace) {
+static linears_status_t evaluate_work(matrix_op operation,
+                                     const linears_matrix_t *a, const linears_matrix_t *b,
+                                     linears_matrix_t *out, linears_fixed_t alpha,
+                                     linears_fixed_t beta, linears_workspace_unit_t *workspace) {
+    const int64_t *adata = (const int64_t *)a->data;
+    const int64_t *bdata = b == NULL ? NULL : (const int64_t *)b->data;
     for (size_t row = 0; row < out->rows; ++row) {
         for (size_t col = 0; col < out->cols; ++col) {
             size_t i = row * out->cols + col;
-            linears_fixed_t result = {0, 0}, x, y, product;
-            linears_status_t status = LINEARS_OK;
-            if (operation == MUL || operation == MATVEC) {
-                for (size_t k = 0; k < a->cols; ++k) {
-                    (void)load_fixed(a, row * a->cols + k, kind, &x);
-                    (void)load_fixed(b, k * b->cols + col, kind, &y);
-                    status = linears_fixed_mul(x, y, &product);
-                    if (status == LINEARS_OK) status = linears_fixed_add(result, product, &result);
+            linears_status_t status;
+            if (operation == TRANSPOSE) {
+                workspace[i].fixed = adata[col * a->cols + row];
+                continue;
+            }
+            if (operation == ADD || operation == SUB) {
+                status = operation == ADD ? linears_fixed_add(adata[i], bdata[i], &workspace[i].fixed)
+                                          : linears_fixed_sub(adata[i], bdata[i], &workspace[i].fixed);
+            } else {
+                linears_accum_t sum = {0, 0};
+                if (operation == MUL) {
+                    for (size_t k = 0; k < a->cols; ++k) {
+                        status = ln_add_checked(sum, ln_product(adata[row * a->cols + k],
+                                                               bdata[k * b->cols + col]), &sum);
+                        if (status != LINEARS_OK) return status;
+                    }
+                } else {
+                    status = ln_add_checked(ln_product(alpha, adata[i]), ln_product(beta, bdata[i]), &sum);
                     if (status != LINEARS_OK) return status;
                 }
-            } else if (operation == TRANSPOSE) {
-                (void)load_fixed(a, col * a->cols + row, kind, &result);
-            } else {
-                (void)load_fixed(a, i, kind, &x);
-                if (b != NULL) (void)load_fixed(b, i, kind, &y);
-                switch (operation) {
-                    case ADD: status = linears_fixed_add(x, y, &result); break;
-                    case SUB: status = linears_fixed_sub(x, y, &result); break;
-                    case HADAMARD: status = linears_fixed_mul(x, y, &result); break;
-                    case SCALE: status = linears_fixed_mul(alpha, x, &result); break;
-                    default:
-                        status = linears_fixed_mul(alpha, x, &product);
-                        if (status == LINEARS_OK) status = linears_fixed_mul(beta, y, &result);
-                        if (status == LINEARS_OK) status = linears_fixed_add(product, result, &result);
-                        break;
-                }
+                status = linears_accum_to_fixed(sum, &workspace[i].fixed);
             }
             if (status != LINEARS_OK) return status;
-            workspace[i].fixed = result;
         }
     }
     return LINEARS_OK;
@@ -248,14 +221,19 @@ static linears_status_t matrix_compute(matrix_op operation, numeric_kind kind,
     if (status == LINEARS_OK) status = input_values(a, acount, kind);
     if (status == LINEARS_OK && b != NULL) status = input_values(b, bcount, kind);
     if (status != LINEARS_OK) return status;
-    if (outcount == 0) return commit_result(out, 0, workspace, kind);
+    if (outcount == 0) return LINEARS_OK;
     if (kind == F32)
         status = evaluate_f32(operation, a, b, out, alpha.f32, beta.f32, workspace);
     else if (kind == F64)
         status = evaluate_f64(operation, a, b, out, alpha.floating, beta.floating, workspace);
+    else if (kind == Q15)
+        status = evaluate_q15(operation, a, b, out, alpha.fixed, beta.fixed, workspace);
+    else if (kind == Q31)
+        status = evaluate_q31(operation, a, b, out, alpha.fixed, beta.fixed, workspace);
     else
-        status = evaluate_fixed(operation, kind, a, b, out, alpha.fixed, beta.fixed, workspace);
-    return status == LINEARS_OK ? commit_result(out, outcount, workspace, kind) : status;
+        status = evaluate_work(operation, a, b, out, alpha.fixed, beta.fixed, workspace);
+    if (status == LINEARS_OK) commit_result(out, outcount, workspace, kind);
+    return status;
 }
 
 static linears_status_t copy_matrix(numeric_kind kind, const linears_matrix_t *a,
@@ -269,7 +247,6 @@ static linears_status_t copy_matrix(numeric_kind kind, const linears_matrix_t *a
     if (status == LINEARS_OK) status = input_values(a, acount, kind);
     if (status != LINEARS_OK) return status;
     if (acount != 0) memmove(out->data, a->data, acount * element_size(kind));
-    if (kind == Q15 || kind == Q31) out->exponent = a->exponent;
     return LINEARS_OK;
 }
 
@@ -285,49 +262,11 @@ static linears_status_t fill_matrix(numeric_kind kind, linears_matrix_t *out, in
         switch (kind) {
             case F32: ((float *)out->data)[i] = diagonal ? 1.0f : 0.0f; break;
             case F64: ((double *)out->data)[i] = diagonal ? 1.0 : 0.0; break;
-            case Q15: ((int16_t *)out->data)[i] = diagonal ? INT16_C(16384) : 0; break;
-            case Q31: ((int32_t *)out->data)[i] = diagonal ? INT32_C(1073741824) : 0; break;
+            case Q15: ((int16_t *)out->data)[i] = diagonal ? INT16_MAX : 0; break;
+            case Q31: ((int32_t *)out->data)[i] = diagonal ? INT32_MAX : 0; break;
+            case WORK: ((int64_t *)out->data)[i] = diagonal ? LINEARS_FIXED_ONE : 0; break;
         }
     }
-    if (kind == Q15 || kind == Q31) out->exponent = identity && count != 0 ? 1 : 0;
-    return LINEARS_OK;
-}
-
-static linears_status_t reduce_fixed(reduction_op operation, numeric_kind kind,
-                                    const linears_matrix_t *a, const linears_matrix_t *b,
-                                    size_t count, linears_fixed_t *out) {
-    linears_fixed_t sum = {0, 0}, scale = {0, 0};
-    if (operation == NORM) {
-        for (size_t i = 0; i < count; ++i) {
-            linears_fixed_t x;
-            (void)load_fixed(a, i, kind, &x);
-            (void)linears_fixed_abs(x, &x);
-            if (linears_fixed_compare(x, scale) > 0) scale = x;
-        }
-        if (scale.mantissa == 0) { *out = scale; return LINEARS_OK; }
-    }
-    for (size_t i = 0; i < count; ++i) {
-        size_t index = operation == TRACE ? i * a->cols + i : i;
-        linears_fixed_t x, y, term;
-        (void)load_fixed(a, index, kind, &x);
-        linears_status_t status = LINEARS_OK;
-        if (operation == NORM) {
-            if (x.mantissa == 0) continue;
-            status = linears_fixed_div(x, scale, &y);
-            if (status == LINEARS_OK) status = linears_fixed_mul(y, y, &term);
-        } else if (operation == DOT) {
-            (void)load_fixed(b, i, kind, &y);
-            status = linears_fixed_mul(x, y, &term);
-        } else term = x;
-        if (status == LINEARS_OK) status = linears_fixed_add(sum, term, &sum);
-        if (status != LINEARS_OK) return status;
-    }
-    if (operation == NORM) {
-        linears_status_t status = linears_fixed_sqrt(sum, &sum);
-        if (status == LINEARS_OK) status = linears_fixed_mul(scale, sum, &sum);
-        if (status != LINEARS_OK) return status;
-    }
-    *out = sum;
     return LINEARS_OK;
 }
 
@@ -340,9 +279,8 @@ static linears_status_t reduction(reduction_op operation, numeric_kind kind,
     if (operation == DOT && b == NULL) return LINEARS_ERROR_ARGUMENT;
     if ((operation == TRACE && a->rows != a->cols) ||
         (b != NULL && (a->rows != b->rows || a->cols != b->cols))) return LINEARS_ERROR_DIMENSION;
-    size_t outsize = kind == Q15 ? sizeof(linears_q15_t) : kind == Q31 ? sizeof(linears_q31_t) : element_size(kind);
-    size_t alignment = kind == Q15 ? offsetof(struct basic_align_scalar_q15, value) :
-                       kind == Q31 ? offsetof(struct basic_align_scalar_q31, value) : element_alignment(kind);
+    size_t outsize = element_size(kind);
+    size_t alignment = element_alignment(kind);
     if (out == NULL || (uintptr_t)out % alignment != 0) return LINEARS_ERROR_ARGUMENT;
     if (overlap(out, outsize, a, sizeof(*a)) || (b != NULL && overlap(out, outsize, b, sizeof(*b))))
         return LINEARS_ERROR_ALIAS;
@@ -359,26 +297,15 @@ static linears_status_t reduction(reduction_op operation, numeric_kind kind,
         double value;
         status = reduce_f64(operation, a, b, count, &value);
         if (status == LINEARS_OK) *(double *)out = value;
-    } else {
-        linears_fixed_t value;
-        status = reduce_fixed(operation, kind, a, b, count, &value);
-        if (status == LINEARS_OK && kind == Q15) {
-            linears_q15_t result;
-            status = linears_fixed_export_q15(&value, 1, &result.mantissa, &result.exponent);
-            if (status == LINEARS_OK) *(linears_q15_t *)out = result;
-        } else if (status == LINEARS_OK) {
-            *(linears_q31_t *)out = value;
-        }
-    }
+    } else if (kind == Q15) status = reduce_q15(operation, a, b, count, (int16_t *)out);
+    else status = reduce_q31(operation, a, b, count, (int32_t *)out);
     return status;
 }
 
 static linears_workspace_unit_t empty_scalar(numeric_kind kind) {
     linears_workspace_unit_t value;
-    if (kind == Q15 || kind == Q31) {
-        value.fixed.mantissa = 0;
-        value.fixed.exponent = 0;
-    } else if (kind == F32) value.f32 = 0;
+    if (kind == Q15 || kind == Q31 || kind == WORK) value.fixed = 0;
+    else if (kind == F32) value.f32 = 0;
     else value.floating = 0;
     return value;
 }
@@ -422,15 +349,54 @@ linears_status_t linears_scale_##SUFFIX(TYPE alpha, const linears_matrix_t *a, l
 DEFINE_FLOAT_SCALE(f32, F32, float, f32)
 DEFINE_FLOAT_SCALE(f64, F64, double, floating)
 
-#define DEFINE_FIXED_SCALE(SUFFIX, KIND, TYPE) \
-linears_status_t linears_axpby_##SUFFIX(TYPE alpha, const linears_matrix_t *a, TYPE beta, const linears_matrix_t *b, linears_matrix_t *out, linears_workspace_unit_t *w, size_t bytes) { \
-    linears_workspace_unit_t x, y; \
-    linears_status_t status = linears_fixed_from_##SUFFIX(alpha, &x.fixed); \
-    if (status == LINEARS_OK) status = linears_fixed_from_##SUFFIX(beta, &y.fixed); \
-    return status == LINEARS_OK ? matrix_compute(AXPBY, KIND, a, b, out, x, y, w, bytes) : status; } \
-linears_status_t linears_scale_##SUFFIX(TYPE alpha, const linears_matrix_t *a, linears_matrix_t *out, linears_workspace_unit_t *w, size_t bytes) { \
-    linears_workspace_unit_t x; linears_status_t status = linears_fixed_from_##SUFFIX(alpha, &x.fixed); \
-    return status == LINEARS_OK ? matrix_compute(SCALE, KIND, a, NULL, out, x, x, w, bytes) : status; }
+#define DEFINE_FIXED_SCALE(SUFFIX, KIND) \
+linears_status_t linears_axpby_##SUFFIX(linears_fixed_t alpha, const linears_matrix_t *a, linears_fixed_t beta, const linears_matrix_t *b, linears_matrix_t *out, linears_workspace_unit_t *w, size_t bytes) { \
+    linears_workspace_unit_t x, y; x.fixed = alpha; y.fixed = beta; \
+    return matrix_compute(AXPBY, KIND, a, b, out, x, y, w, bytes); } \
+linears_status_t linears_scale_##SUFFIX(linears_fixed_t alpha, const linears_matrix_t *a, linears_matrix_t *out, linears_workspace_unit_t *w, size_t bytes) { \
+    linears_workspace_unit_t x; x.fixed = alpha; \
+    return matrix_compute(SCALE, KIND, a, NULL, out, x, x, w, bytes); }
 
-DEFINE_FIXED_SCALE(q15, Q15, linears_q15_t)
-DEFINE_FIXED_SCALE(q31, Q31, linears_q31_t)
+DEFINE_FIXED_SCALE(q15, Q15)
+DEFINE_FIXED_SCALE(q31, Q31)
+
+linears_status_t linears_add_fixed(const linears_matrix_t *a, const linears_matrix_t *b,
+                                 linears_matrix_t *out, linears_workspace_unit_t *workspace,
+                                 size_t workspace_bytes) {
+    linears_workspace_unit_t unused = empty_scalar(WORK);
+    return matrix_compute(ADD, WORK, a, b, out, unused, unused, workspace, workspace_bytes);
+}
+
+linears_status_t linears_sub_fixed(const linears_matrix_t *a, const linears_matrix_t *b,
+                                 linears_matrix_t *out, linears_workspace_unit_t *workspace,
+                                 size_t workspace_bytes) {
+    linears_workspace_unit_t unused = empty_scalar(WORK);
+    return matrix_compute(SUB, WORK, a, b, out, unused, unused, workspace, workspace_bytes);
+}
+
+linears_status_t linears_mul_fixed(const linears_matrix_t *a, const linears_matrix_t *b,
+                                 linears_matrix_t *out, linears_workspace_unit_t *workspace,
+                                 size_t workspace_bytes) {
+    linears_workspace_unit_t unused = empty_scalar(WORK);
+    return matrix_compute(MUL, WORK, a, b, out, unused, unused, workspace, workspace_bytes);
+}
+
+linears_status_t linears_transpose_fixed(const linears_matrix_t *a, linears_matrix_t *out,
+                                       linears_workspace_unit_t *workspace, size_t workspace_bytes) {
+    linears_workspace_unit_t unused = empty_scalar(WORK);
+    return matrix_compute(TRANSPOSE, WORK, a, NULL, out, unused, unused, workspace, workspace_bytes);
+}
+
+linears_status_t linears_axpby_fixed(linears_fixed_t alpha, const linears_matrix_t *a,
+                                   linears_fixed_t beta, const linears_matrix_t *b,
+                                   linears_matrix_t *out, linears_workspace_unit_t *workspace,
+                                   size_t workspace_bytes) {
+    linears_workspace_unit_t x, y;
+    x.fixed = alpha;
+    y.fixed = beta;
+    return matrix_compute(AXPBY, WORK, a, b, out, x, y, workspace, workspace_bytes);
+}
+
+linears_status_t linears_identity_fixed(linears_matrix_t *out) {
+    return fill_matrix(WORK, out, 1);
+}

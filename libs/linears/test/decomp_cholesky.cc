@@ -12,6 +12,7 @@ TYPED_TEST(LinearCholesky, FixedSeedPositiveDefiniteInputsMatchEigen)
         Eigen::MatrixXd basis = random_matrix(n, n, 0x2718u + static_cast<uint32_t>(n));
         Eigen::MatrixXd values = basis * basis.transpose();
         values.diagonal().array() += static_cast<double>(n);
+        if constexpr (F::bits != 0) values /= 4.0 * static_cast<double>(n);
         // Eigen's vectorized product may round the two triangles differently;
         // this API explicitly requires exactly symmetric stored input.
         for (size_t i = 0; i < n; ++i)
@@ -24,9 +25,11 @@ TYPED_TEST(LinearCholesky, FixedSeedPositiveDefiniteInputsMatchEigen)
         const Eigen::MatrixXd expected = reference.matrixL();
         const Eigen::MatrixXd actual = l.decoded();
         const double rounding = quantization_bound(l);
-        EXPECT_LE((actual - expected).norm(), rounding + 8.0 * n * F::working_epsilon * expected.norm());
+        const double arithmetic_scale = F::bits == 0 ? expected.norm() : static_cast<double>(n);
+        EXPECT_LE((actual - expected).norm(), rounding + 8.0 * n * F::working_epsilon * arithmetic_scale);
         const double residual = 2.0 * actual.norm() * rounding + rounding * rounding +
-                                8.0 * n * F::working_epsilon * a.decoded().norm();
+                                8.0 * n * F::working_epsilon *
+                                (F::bits == 0 ? a.decoded().norm() : static_cast<double>(n));
         EXPECT_LE((actual * actual.transpose() - a.decoded()).norm(), residual);
         for (size_t i = 0; i < n; ++i) {
             EXPECT_GT(actual(i, i), 0.0);
@@ -44,27 +47,44 @@ TYPED_TEST(LinearCholesky, IndefiniteSemidefiniteAndNonsymmetricInputsFailAtomic
         if (kind == 0) values << 0, 1, 1, 0;
         else if (kind == 1) values << 1, -1, -1, 1;
         else values << 2, 1, 0, 2;
+        if constexpr (F::bits != 0) values *= 0.25;
         Matrix<F> a(values), l(2, 2);
         l.sentinel(); const auto old = l.data;
         Scratch<F> scratch(LINEARS_CHOLESKY_WORKSPACE(2));
         EXPECT_EQ(F::cholesky(&a.matrix, &l.matrix, scratch.workspace),
             kind == 2 ? LINEARS_ERROR_DIMENSION : LINEARS_ERROR_NOT_POSITIVE_DEFINITE);
-        EXPECT_EQ(l.data, old); EXPECT_EQ(l.matrix.exponent, 17);
+        EXPECT_EQ(l.data, old);
         scratch.check();
     }
 }
 
-TYPED_TEST(LinearCholesky, EmptyScalarAndPowerOfTwoScales)
+TYPED_TEST(LinearCholesky, EmptyScalarNativeScalesAndFixedExtremes)
 {
     using F = TypeParam;
     Matrix<F> empty(0, 0), result(0, 0);
     typename F::Workspace none{nullptr, 0};
     ASSERT_EQ(F::cholesky(&empty.matrix, &result.matrix, none), LINEARS_OK);
-    for (int exponent : {-40, 0, 40}) {
-        Matrix<F> scalar(4.0 * Eigen::MatrixXd::Identity(1, 1), exponent), root(1, 1);
+    if constexpr (F::bits == 0) {
+        for (int exponent : {-40, 0, 40}) {
+            Matrix<F> scalar(4.0 * Eigen::MatrixXd::Identity(1, 1), exponent), root(1, 1);
+            Scratch<F> scratch(1);
+            ASSERT_EQ(F::cholesky(&scalar.matrix, &root.matrix, scratch.workspace), LINEARS_OK);
+            EXPECT_EQ(root.decoded()(0, 0), std::scalbn(2.0, exponent / 2));
+            scratch.check();
+        }
+    } else {
+        Matrix<F> scalar(1, 1), root(1, 1);
         Scratch<F> scratch(1);
-        ASSERT_EQ(F::cholesky(&scalar.matrix, &root.matrix, scratch.workspace), LINEARS_OK);
-        EXPECT_EQ(root.decoded()(0, 0), std::scalbn(2.0, exponent / 2));
+        for (auto raw : {typename F::Raw(1), std::numeric_limits<typename F::Raw>::max()}) {
+            scalar.data[0] = raw;
+            ASSERT_EQ(F::cholesky(&scalar.matrix, &root.matrix, scratch.workspace), LINEARS_OK);
+            EXPECT_NEAR(root.decoded()(0, 0), std::sqrt(scalar.decoded()(0, 0)),
+                quantization_bound(root) + 0.5 * F::working_epsilon);
+        }
+        scalar.data[0] = std::numeric_limits<typename F::Raw>::min();
+        root.sentinel(); const auto old = root.data;
+        EXPECT_EQ(F::cholesky(&scalar.matrix, &root.matrix, scratch.workspace), LINEARS_ERROR_NOT_POSITIVE_DEFINITE);
+        EXPECT_EQ(root.data, old);
         scratch.check();
     }
 }

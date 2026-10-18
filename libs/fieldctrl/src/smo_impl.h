@@ -1,5 +1,5 @@
-/* Reused by four C99 instantiations. Fixed variants retain Q31 work state;
- * public q15 conversion happens only at the API boundary. */
+/* Reused by four C99 instantiations. Fixed variants retain int64_t/F31 state;
+ * public Q1 conversion happens only at the API boundary. */
 #if FC_VARIANT == 32
 #define FC_LP_INIT filters_lowpass_f32_init
 #define FC_LP_RESET filters_lowpass_f32_reset
@@ -9,9 +9,38 @@
 #define FC_LP_RESET filters_lowpass_f64_reset
 #define FC_LP_STEP filters_lowpass_f64_step
 #else
-#define FC_LP_INIT filters_lowpass_q31_init
-#define FC_LP_RESET filters_lowpass_q31_reset
-#define FC_LP_STEP filters_lowpass_q31_step
+/* Only bridge storage formats here. The exact F62 low-pass recurrence belongs
+ * to filters and is shared with its public Q APIs. */
+static linears_status_t FC_N(smo_lowpass_init)(filters_lowpass_q31_t *ctx,
+    linears_fixed_t alpha, linears_fixed_t initial)
+{
+    linears_q31_t a, value;
+    linears_status_t status = linears_fixed_to_q31(alpha, &a);
+    if (status != LINEARS_OK) return status;
+    status = linears_fixed_to_q31(initial, &value);
+    if (status != LINEARS_OK) return status;
+    return filters_lowpass_q31_init(ctx, a, value);
+}
+
+static linears_status_t FC_N(smo_lowpass_reset)(filters_lowpass_q31_t *ctx,
+    linears_fixed_t initial)
+{
+    linears_q31_t value;
+    linears_status_t status = linears_fixed_to_q31(initial, &value);
+    if (status != LINEARS_OK) return status;
+    return filters_lowpass_q31_reset(ctx, value);
+}
+
+static linears_status_t FC_N(smo_lowpass_step)(filters_lowpass_q31_t *ctx,
+    linears_fixed_t input, linears_fixed_t *output)
+{
+    linears_status_t status = filters_lowpass_work_step(&ctx->value, ctx->alpha, input);
+    if (status == LINEARS_OK) *output = ctx->value;
+    return status;
+}
+#define FC_LP_INIT FC_N(smo_lowpass_init)
+#define FC_LP_RESET FC_N(smo_lowpass_reset)
+#define FC_LP_STEP FC_N(smo_lowpass_step)
 #endif
 
 linears_status_t FC_N(smo_init)(FC_TYPE(smo) *ctx,
@@ -83,6 +112,9 @@ linears_status_t FC_N(smo_step)(FC_TYPE(smo) *ctx, FC_TYPE(ab) current,
     FC_W sine, cosine, alpha, rho, numerator, denominator, phase;
     FC_W min_speed, max_speed, raw_magnitude, speed_magnitude;
     FC_W zero, one, negative_one;
+#if FC_VARIANT == 15 || FC_VARIANT == 31
+    FC_W negative_boundary;
+#endif
     int had_angle, direction_ok;
     if (ctx == NULL || output == NULL) return LINEARS_ERROR_ARGUMENT;
     if (fc_overlap(ctx, sizeof(*ctx), output, sizeof(*output)))
@@ -102,6 +134,17 @@ linears_status_t FC_N(smo_step)(FC_TYPE(smo) *ctx, FC_TYPE(ab) current,
     negative_one = FC_I(-1);
     error_a = FC_SUB(next.current_hat.alpha, ia);
     error_b = FC_SUB(next.current_hat.beta, ib);
+#if FC_VARIANT == 15 || FC_VARIANT == 31
+    negative_boundary = FC_NEG(boundary);
+    if (status != LINEARS_OK) return status;
+    /* Saturate before division. A valid F31 current error of +2 divided by
+     * a one-LSB Q31 boundary exceeds the working range, although sat is +1. */
+    sat_a = FC_CMP(error_a, boundary) >= 0 ? one :
+        (FC_CMP(error_a, negative_boundary) <= 0 ? negative_one : FC_DIV(error_a, boundary));
+    sat_b = FC_CMP(error_b, boundary) >= 0 ? one :
+        (FC_CMP(error_b, negative_boundary) <= 0 ? negative_one : FC_DIV(error_b, boundary));
+#else
+    /* Preserve the floating API's division/range behavior. */
     sat_a = FC_DIV(error_a, boundary);
     sat_b = FC_DIV(error_b, boundary);
     if (status != LINEARS_OK) return status;
@@ -109,6 +152,7 @@ linears_status_t FC_N(smo_step)(FC_TYPE(smo) *ctx, FC_TYPE(ab) current,
     if (FC_CMP(sat_a, negative_one) < 0) sat_a = negative_one;
     if (FC_CMP(sat_b, one) > 0) sat_b = one;
     if (FC_CMP(sat_b, negative_one) < 0) sat_b = negative_one;
+#endif
     za = FC_MUL(gain, sat_a);
     zb = FC_MUL(gain, sat_b);
     step = FC_DIV(period, inductance);
@@ -195,7 +239,7 @@ linears_status_t FC_N(smo_step)(FC_TYPE(smo) *ctx, FC_TYPE(ab) current,
     FC_STORE(next.current_hat.beta, &result.current_hat.beta);
     FC_STORE(ea, &result.emf.alpha);
     FC_STORE(eb, &result.emf.beta);
-    FC_STORE(speed, &result.electrical_speed);
+    FC_ACC_STORE(speed, &result.electrical_speed);
     FC_ANGLE_STORE(next.angle, &result.electrical_angle);
     if (status != LINEARS_OK) return status;
     *ctx = next;

@@ -10,6 +10,7 @@
 
 #include "linears_decomp.h"
 #include "linears_numeric.h"
+#include "linears_work.h"
 #include <float.h>
 #include <limits.h>
 #include <math.h>
@@ -29,7 +30,7 @@ struct linears_decomp_align_double { char prefix; double member; };
 struct linears_decomp_align_int16_t { char prefix; int16_t member; };
 /** @brief Alignment carrier for q31 raw storage. */
 struct linears_decomp_align_int32_t { char prefix; int32_t member; };
-/** @brief Alignment carrier for normalized integer scratch. */
+/** @brief Alignment carrier for fixed-F31 integer scratch. */
 struct linears_decomp_align_linears_fixed_t { char prefix; linears_fixed_t member; };
 /** @brief Alignment carrier for matrix descriptors. */
 struct linears_decomp_align_linears_matrix_t { char prefix; linears_matrix_t member; };

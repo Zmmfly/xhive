@@ -24,6 +24,8 @@
 #undef FC_SINCOS
 #undef FC_ATAN2
 #undef FC_ACC_T
+#undef FC_COEFF_T
+#undef FC_COEFF_LOAD
 #undef FC_ACC_LOAD
 #undef FC_ACC_STORE
 #undef FC_ANGLE_STORE

@@ -14,12 +14,24 @@ static linears_status_t D_LOCAL(svd_correlation)(const D_SCALAR *b,
     linears_status_t status = LINEARS_OK;
     D_SCALAR sum = D_ZERO;
     size_t row;
+#if D_FIXED
+    linears_accum_t accumulator = {0, 0};
+#endif
     for (row = 0; row < rows; ++row) {
         D_SCALAR left = D_DIV(b[row * columns + p], norm_p);
         D_SCALAR right = D_DIV(b[row * columns + q], norm_q);
+#if D_FIXED
+        if (status != LINEARS_OK) return status;
+        status = linears_fixed_mac(&accumulator, left, right);
+        if (status != LINEARS_OK) return status;
+#else
         D_SCALAR product = D_MUL(left, right);
         sum = D_ADD(sum, product);
+#endif
     }
+#if D_FIXED
+    status = linears_accum_to_fixed(accumulator, &sum);
+#endif
     if (status == LINEARS_OK) {
         *correlation = sum;
     }
@@ -86,19 +98,41 @@ static linears_status_t D_LOCAL(svd_rotate_columns)(D_SCALAR *b,
                                                    size_t columns,
                                                    size_t p, size_t q,
                                                    D_SCALAR cosine,
-                                                   D_SCALAR sine)
+                                                   D_SCALAR sine,
+                                                   int *changed)
 {
     linears_status_t status = LINEARS_OK;
     size_t row;
+    *changed = 0;
     for (row = 0; row < rows; ++row) {
         D_SCALAR old_p = b[row * columns + p];
         D_SCALAR old_q = b[row * columns + q];
+#if D_FIXED
+        linears_accum_t first = {0, 0};
+        linears_accum_t second = {0, 0};
+        D_SCALAR new_p = D_ZERO;
+        D_SCALAR new_q = D_ZERO;
+        status = linears_fixed_mac(&first, cosine, old_p);
+        if (status == LINEARS_OK) status = linears_fixed_msu(&first, sine, old_q);
+        if (status == LINEARS_OK) status = linears_fixed_mac(&second, sine, old_p);
+        if (status == LINEARS_OK) status = linears_fixed_mac(&second, cosine, old_q);
+        if (status == LINEARS_OK) status = linears_accum_to_fixed(first, &new_p);
+        if (status == LINEARS_OK) status = linears_accum_to_fixed(second, &new_q);
+        if (status != LINEARS_OK) return status;
+        b[row * columns + p] = new_p;
+        b[row * columns + q] = new_q;
+#else
         D_SCALAR cp = D_MUL(cosine, old_p);
         D_SCALAR sq = D_MUL(sine, old_q);
         D_SCALAR sp = D_MUL(sine, old_p);
         D_SCALAR cq = D_MUL(cosine, old_q);
         b[row * columns + p] = D_SUB(cp, sq);
         b[row * columns + q] = D_ADD(sp, cq);
+#endif
+        if (D_CMP(b[row * columns + p], old_p) != 0 ||
+            D_CMP(b[row * columns + q], old_q) != 0) {
+            *changed = 1;
+        }
     }
     return status;
 }
@@ -128,16 +162,27 @@ static linears_status_t D_LOCAL(svd_complete_column)(D_SCALAR *b,
         for (pass = 0; pass < 2; ++pass) {
             for (previous = 0; previous < column; ++previous) {
                 D_SCALAR projection = D_ZERO;
+#if D_FIXED
+                projection = D_LOCAL(dot)(b + previous, columns, b + column,
+                                           columns, rows, &status);
+#else
                 for (row = 0; row < rows; ++row) {
                     D_SCALAR product = D_MUL(b[row * columns + previous],
                                              b[row * columns + column]);
                     projection = D_ADD(projection, product);
                 }
+#endif
                 for (row = 0; row < rows; ++row) {
+#if D_FIXED
+                    b[row * columns + column] = D_LOCAL(sub_product)(
+                        b[row * columns + column], projection,
+                        b[row * columns + previous], &status);
+#else
                     D_SCALAR product = D_MUL(projection,
                                              b[row * columns + previous]);
                     b[row * columns + column] =
                         D_SUB(b[row * columns + column], product);
+#endif
                 }
             }
         }
@@ -201,6 +246,7 @@ static linears_status_t D_LOCAL(svd_factor)(D_SCALAR *b, D_SCALAR *w,
                 D_SCALAR magnitude;
                 D_SCALAR cosine;
                 D_SCALAR sine;
+                int changed;
                 if (D_CMP(norms[p], D_ZERO) == 0 ||
                     D_CMP(norms[q], D_ZERO) == 0) {
                     continue;
@@ -223,13 +269,24 @@ static linears_status_t D_LOCAL(svd_factor)(D_SCALAR *b, D_SCALAR *w,
                 if (status != LINEARS_OK) {
                     return status;
                 }
+#if D_FIXED
+                /* Constant-F31 rounding can erase a required rotation. */
+                if (D_CMP(sine, D_ZERO) == 0) {
+                    return LINEARS_ERROR_NO_CONVERGENCE;
+                }
+#endif
                 status = D_LOCAL(svd_rotate_columns)(b, rows, columns, p, q,
-                                                     cosine, sine);
+                                                     cosine, sine, &changed);
                 if (status != LINEARS_OK) {
                     return status;
                 }
+#if D_FIXED
+                if (!changed) {
+                    return LINEARS_ERROR_NO_CONVERGENCE;
+                }
+#endif
                 status = D_LOCAL(svd_rotate_columns)(w, columns, columns, p, q,
-                                                     cosine, sine);
+                                                     cosine, sine, &changed);
                 if (status != LINEARS_OK) {
                     return status;
                 }
@@ -310,9 +367,6 @@ linears_status_t D_NAME(svd)(const linears_matrix_t *a,
     size_t row;
     size_t column;
     size_t index;
-    int u_exponent;
-    int s_exponent;
-    int v_exponent;
     matrices[0] = a;
     matrices[1] = u;
     matrices[2] = singular_values;
@@ -336,9 +390,6 @@ linears_status_t D_NAME(svd)(const linears_matrix_t *a,
         return status;
     }
     if (columns == 0) {
-        u->exponent = 0;
-        singular_values->exponent = 0;
-        v->exponent = 0;
         return LINEARS_OK;
     }
     b = workspace.data;
@@ -358,7 +409,8 @@ linears_status_t D_NAME(svd)(const linears_matrix_t *a,
     if (status != LINEARS_OK) {
         return status;
     }
-    /* Keep every Jacobi intermediate near unit scale, including q exponents. */
+    /* Ordinary scalar division keeps Jacobi intermediates near unit scale.
+     * Fixed arithmetic retains exactly 31 fractional bits throughout. */
     if (D_CMP(scale, D_ZERO) != 0) {
         for (index = 0; index < m * n; ++index) {
             b[index] = D_DIV(b[index], scale);
@@ -393,29 +445,26 @@ linears_status_t D_NAME(svd)(const linears_matrix_t *a,
     left = m < n ? w : b;
     right = m < n ? b : w;
     /* Preflight every independent output block before writing any output. */
-    status = D_LOCAL(block_exponent)(left, m * columns, &u_exponent);
+    status = D_LOCAL(check_block)(left, m * columns);
     if (status != LINEARS_OK) {
         return status;
     }
-    status = D_LOCAL(block_exponent)(norms, columns, &s_exponent);
+    status = D_LOCAL(check_block)(norms, columns);
     if (status != LINEARS_OK) {
         return status;
     }
-    status = D_LOCAL(block_exponent)(right, n * columns, &v_exponent);
+    status = D_LOCAL(check_block)(right, n * columns);
     if (status != LINEARS_OK) {
         return status;
     }
     for (index = 0; index < m * columns; ++index) {
-        D_LOCAL(store)(u, index, left[index], u_exponent);
+        D_LOCAL(store)(u, index, left[index]);
     }
     for (index = 0; index < columns; ++index) {
-        D_LOCAL(store)(singular_values, index, norms[index], s_exponent);
+        D_LOCAL(store)(singular_values, index, norms[index]);
     }
     for (index = 0; index < n * columns; ++index) {
-        D_LOCAL(store)(v, index, right[index], v_exponent);
+        D_LOCAL(store)(v, index, right[index]);
     }
-    u->exponent = u_exponent;
-    singular_values->exponent = s_exponent;
-    v->exponent = v_exponent;
     return LINEARS_OK;
 }

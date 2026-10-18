@@ -2,12 +2,19 @@
  * @file linears_decomp.h
  * @brief Bounded, allocation-free dense matrix factorizations.
  *
- * All matrices are contiguous row-major blocks. Floating variants perform
- * arithmetic in their named type and ignore input exponents; successful
- * floating outputs have exponent zero. Fixed variants use the integer-only
- * linears_fixed_t working arithmetic and round each output matrix to its own
- * automatically selected block exponent. This is 31-significant-bit working
- * arithmetic, not an exact wide dot-product accumulator.
+ * All matrices are contiguous row-major blocks with no scale metadata.
+ * Floating variants use their named native type. q15 and q31 store raw signed
+ * integers divided by 2^15 and 2^31 respectively. Their integer-only working
+ * arithmetic uses int64_t with exactly 31 fractional bits, independent of data.
+ * Selected dot products accumulate products at a fixed 62-bit binary point.
+ *
+ * Fixed outputs are checked at working precision against [-1,+1] before any
+ * output is written. Values outside that interval fail with RANGE; they are
+ * not rescaled or generally saturated. Within the interval, nearest rounding
+ * uses ties away from zero, except that the positive endpoint and its rounding
+ * interval map to INT_MAX. That endpoint error is at most one output LSB;
+ * ordinary rounding error is at most half an output LSB. Logical unit factors
+ * therefore store +1 as INT_MAX, not as an exactly representable real one.
  *
  * Every data pointer must have the natural alignment of its element type.
  * Workspaces hold elements of their declared type, not bytes, and need that
@@ -21,7 +28,7 @@
  * These routines neither allocate nor retain state. Calls with disjoint
  * storage are reentrant; callers serialize shared storage. They are blocking,
  * CPU-only routines with dimension-bounded loops and no hardware effects.
- * Matrix outputs, including exponents, remain unchanged on every failure.
+ * Matrix outputs remain unchanged on every failure.
  * Workspace contents are unspecified after any call. Permutation/block
  * metadata may be partially written on numerical failure and is valid only
  * after LINEARS_OK. Invalid-argument failures do not write metadata.
@@ -29,9 +36,12 @@
  * Common failures are ARGUMENT (NULL/misaligned data or metadata), DIMENSION
  * (wrong shapes), SIZE (size/address overflow),
  * WORKSPACE (insufficient/misaligned workspace or metadata capacity), ALIAS
- * (prohibited overlap), and RANGE (nonfinite input/intermediate, exponent or
- * output range). No conditioning estimate or forward-error guarantee is
- * implied by success. Zero pivots are tested at working precision.
+ * (prohibited overlap), and RANGE (nonfinite input/intermediate, working or
+ * output overflow). No conditioning estimate or forward-error guarantee is
+ * implied by success. Zero pivots and range checks use the rounded working
+ * values, not an exact-real or interval proof. Fixed working underflow can
+ * turn a mathematically nonzero pivot into zero; final q15 quantization can
+ * discard a pivot that remained nonzero in the F31 working matrix.
  */
 #ifndef LINEARS_DECOMP_H
 #define LINEARS_DECOMP_H
@@ -59,18 +69,18 @@ typedef struct {
 } linears_f64_workspace_t;
 
 /**
- * @brief Caller-owned q15 scratch containing normalized integer working scalars.
+ * @brief Caller-owned q15 scratch containing int64_t values with 31 fractional bits.
  */
 typedef struct {
-    linears_q31_t *data; /**< Canonical working scalars (linears_fixed_t), not raw int16_t. */
+    linears_fixed_t *data; /**< Fixed-F31 working values, not raw int16_t storage. */
     size_t capacity;      /**< Number of available linears_fixed_t elements. */
 } linears_q15_workspace_t;
 
 /**
- * @brief Caller-owned q31 scratch containing normalized integer working scalars.
+ * @brief Caller-owned q31 scratch containing int64_t values with 31 fractional bits.
  */
 typedef struct {
-    linears_q31_t *data; /**< Canonical working scalars (linears_fixed_t), not raw int32_t. */
+    linears_fixed_t *data; /**< Fixed-F31 working values, not raw int32_t storage. */
     size_t capacity;      /**< Number of available linears_fixed_t elements. */
 } linears_q31_workspace_t;
 
@@ -129,9 +139,10 @@ typedef struct {
  *                    row-swap count; written only on success.
  * @param[in,out] workspace Typed scratch of at least LINEARS_LU_WORKSPACE(n) elements.
  * @return linears_status_t Common status or SINGULAR for a zero pivot.
- * @note n=0 succeeds with parity +1. L and U have independent block exponents;
- *       fixed block quantization can discard tiny nonzero U pivots. Failure,
- *       alignment, alias and concurrency rules are in the file contract.
+ * @note n=0 succeeds with parity +1. Fixed L diagonal entries encode logical
+ *       +1 as INT_MAX; final quantization can discard tiny nonzero U pivots.
+ *       Fixed factors outside [-1,+1] fail with RANGE. Failure, alignment,
+ *       alias and concurrency rules are in the file contract.
  */
 linears_status_t linears_lu_f32(const linears_matrix_t *a, linears_matrix_t *l,
     linears_matrix_t *u, size_t *permutation, size_t permutation_capacity,
@@ -164,8 +175,9 @@ linears_status_t linears_lu_q31(const linears_matrix_t *a, linears_matrix_t *l,
  * @param[in,out] workspace At least LINEARS_SOLVE_WORKSPACE(n,rhs) typed elements.
  * @return linears_status_t Common status or SINGULAR for a zero pivot.
  * @note Empty n or zero rhs is supported; A is still factored when n is nonzero.
- *       A and B may have different fixed-point block exponents. File-level
- *       alignment, nonaliasing, ownership and concurrency rules apply.
+ *       Fixed solutions outside [-1,+1] fail with RANGE. Input identity codes
+ *       INT_MAX represent 1-2^-F, not one. File-level alignment, nonaliasing,
+ *       ownership and concurrency rules apply.
  */
 linears_status_t linears_solve_f32(const linears_matrix_t *a, const linears_matrix_t *b,
     linears_matrix_t *x, linears_f32_workspace_t workspace);
@@ -192,7 +204,9 @@ linears_status_t linears_solve_q31(const linears_matrix_t *a, const linears_matr
  * @param[out] inverse Non-NULL n-by-n output matrix, unchanged on failure.
  * @param[in,out] workspace At least LINEARS_INVERSE_WORKSPACE(n) typed elements.
  * @return linears_status_t Common status or SINGULAR for a zero pivot.
- * @note n=0 succeeds. File-level alignment, alias and concurrency rules apply.
+ * @note n=0 succeeds. Fixed inverse entries outside [-1,+1] fail with RANGE;
+ *       for example the inverse of the scalar 0.5 is not representable.
+ *       File-level alignment, alias and concurrency rules apply.
  */
 linears_status_t linears_inverse_f32(const linears_matrix_t *a, linears_matrix_t *inverse,
     linears_f32_workspace_t workspace);
@@ -219,9 +233,10 @@ linears_status_t linears_inverse_q31(const linears_matrix_t *a, linears_matrix_t
  * @param[out] determinant Non-NULL 1-by-1 output matrix, unchanged on failure.
  * @param[in,out] workspace At least LINEARS_DETERMINANT_WORKSPACE(n) typed elements.
  * @return linears_status_t Common status; singular input succeeds with zero.
- * @note The determinant of the 0-by-0 matrix is one. Floating product overflow
- *       returns RANGE. Fixed output has its own exponent, subject to the shared
- *       exponent limits. File-level alias/alignment/concurrency rules apply.
+ * @note The determinant of the 0-by-0 matrix is one (INT_MAX in fixed output).
+ *       Floating product overflow or a fixed working result outside [-1,+1]
+ *       returns RANGE. Fixed product underflow can round a tiny determinant
+ *       to zero. File-level alias/alignment/concurrency rules apply.
  */
 linears_status_t linears_determinant_f32(const linears_matrix_t *a,
     linears_matrix_t *determinant, linears_f32_workspace_t workspace);
@@ -315,7 +330,7 @@ linears_status_t linears_qr_q31(const linears_matrix_t *a, linears_matrix_t *q,
  * @return linears_status_t Common status, DIMENSION for nonsymmetry, or SINGULAR
  *         for a zero working pivot.
  * @note Complete symmetric pivoting supports indefinite zero-diagonal inputs.
- *       Fixed output block quantization can discard tiny nonzero D pivots;
+ *       Fixed output quantization can discard tiny nonzero D pivots;
  *       success does not assert that quantized factors retain the input rank.
  *       n=0 succeeds. L/D remain unchanged on failure; metadata can be partial
  *       after a numerical failure. File-level alignment/alias rules apply.
@@ -357,7 +372,7 @@ linears_status_t linears_ldlt_q31(const linears_matrix_t *a, linears_matrix_t *l
  * @return linears_status_t Common status or NO_CONVERGENCE when the budget or
  *         working precision cannot produce the required orthogonal factors.
  * @note Wide inputs use the transposed tall problem. Numerically zero singular
- *       columns are completed to an orthonormal basis; output block quantization
+ *       columns are completed to an orthonormal basis; fixed output quantization
  *       can also round small singular values to zero. Empty r succeeds. The
  *       algorithmic rank/convergence thresholds are documented in decomp_svd.md.
  *       File-level alignment, alias and failure-atomic output rules apply.

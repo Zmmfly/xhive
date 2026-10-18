@@ -8,36 +8,64 @@
 #include <cstring>
 #include <limits>
 #include <type_traits>
+#include <stdexcept>
 #include "fieldctrl_base.h"
 
 namespace fc_test {
 
-/* Conversion is a test-only oracle boundary; production q code is integer. */
+/* Test-only conversions reject accidental SI/gain values in a unit signal.
+ * Their independent long-double rounding is not a production conversion call. */
 inline linears_q15_t q15(double x) {
-    if (x == 0) return {0, 0};
-    int e = 0;
-    const double f = std::frexp(x, &e);
-    auto m = static_cast<int64_t>(std::round(std::ldexp(f, 15)));
-    if (m == 32768) { m = 16384; ++e; }
-    return {static_cast<int16_t>(m), e};
+    if (!std::isfinite(x) || x < -1 || x > 1) throw std::domain_error("Q15 signal outside [-1,1]");
+    const auto raw = static_cast<int64_t>(std::round(static_cast<long double>(x) * 32768));
+    return raw == 32768 ? INT16_MAX : static_cast<int16_t>(raw);
 }
 inline linears_q31_t q31(double x) {
-    if (x == 0) return {0, 0};
-    int e = 0;
-    const double f = std::frexp(x, &e);
-    auto m = static_cast<int64_t>(std::round(std::ldexp(f, 31)));
-    if (m == INT64_C(2147483648)) { m = INT64_C(1073741824); ++e; }
-    return {static_cast<int32_t>(m), e};
+    if (!std::isfinite(x) || x < -1 || x > 1) throw std::domain_error("Q31 signal outside [-1,1]");
+    const auto raw = static_cast<int64_t>(std::round(static_cast<long double>(x) * 2147483648.L));
+    return raw == INT64_C(2147483648) ? INT32_MAX : static_cast<int32_t>(raw);
+}
+inline linears_fixed_t work(double x) {
+    if (!std::isfinite(x)) throw std::domain_error("nonfinite F31 test coefficient");
+    const long double raw = std::round(static_cast<long double>(x) * 2147483648.L);
+    if (raw < -9223372036854775808.L || raw >= 9223372036854775808.L)
+        throw std::domain_error("F31 test coefficient outside int64 range");
+    return static_cast<int64_t>(raw);
 }
 inline double value(float x) { return x; }
 inline double value(double x) { return x; }
-inline double value(linears_q15_t x) { return std::ldexp(double(x.mantissa), x.exponent - 15); }
-inline double value(linears_q31_t x) { return std::ldexp(double(x.mantissa), x.exponent - 31); }
+inline double value(linears_q15_t x) { return double(x) / 32768.0; }
+inline double value(linears_q31_t x) { return double(x) / 2147483648.0; }
+inline double value(linears_fixed_t x) { return double(x) / 2147483648.0; }
 
-struct F32 { using scalar = float; static scalar make(double x) { return static_cast<float>(x); } static constexpr double unit = 1.2e-7; static constexpr bool fixed = false; };
-struct F64 { using scalar = double; static scalar make(double x) { return x; } static constexpr double unit = 2.3e-16; static constexpr bool fixed = false; };
-struct Q15 { using scalar = linears_q15_t; static scalar make(double x) { return q15(x); } static constexpr double unit = 3.1e-5; static constexpr bool fixed = true; };
-struct Q31 { using scalar = linears_q31_t; static scalar make(double x) { return q31(x); } static constexpr double unit = 9.4e-10; static constexpr bool fixed = true; };
+struct F32 {
+    using scalar = float; using coefficient = float; using work_type = float;
+    static scalar make(double x) { return static_cast<float>(x); }
+    static coefficient gain(double x) { return make(x); }
+    static work_type work_make(double x) { return make(x); }
+    static constexpr double unit = 1.2e-7; static constexpr bool fixed = false;
+};
+struct F64 {
+    using scalar = double; using coefficient = double; using work_type = double;
+    static scalar make(double x) { return x; }
+    static coefficient gain(double x) { return x; }
+    static work_type work_make(double x) { return x; }
+    static constexpr double unit = 2.3e-16; static constexpr bool fixed = false;
+};
+struct Q15 {
+    using scalar = linears_q15_t; using coefficient = linears_fixed_t; using work_type = linears_fixed_t;
+    static scalar make(double x) { return q15(x); }
+    static coefficient gain(double x) { return work(x); }
+    static work_type work_make(double x) { return work(x); }
+    static constexpr double unit = 1.0 / 32768.0; static constexpr bool fixed = true;
+};
+struct Q31 {
+    using scalar = linears_q31_t; using coefficient = linears_fixed_t; using work_type = linears_fixed_t;
+    static scalar make(double x) { return q31(x); }
+    static coefficient gain(double x) { return work(x); }
+    static work_type work_make(double x) { return work(x); }
+    static constexpr double unit = 1.0 / 2147483648.0; static constexpr bool fixed = true;
+};
 
 using Types = ::testing::Types<F32, F64, Q15, Q31>;
 

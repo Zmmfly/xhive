@@ -29,10 +29,10 @@ linears_status_t FC_N(foc_init)(FC_TYPE(foc) *ctx,
     FC_TYPE(foc) next;
     FC_W kp_d, ki_d, kp_q, ki_q, radius, zero;
     if (ctx == NULL || config == NULL) return LINEARS_ERROR_ARGUMENT;
-    kp_d = FC_LOAD(config->kp_d);
-    ki_d = FC_LOAD(config->ki_d);
-    kp_q = FC_LOAD(config->kp_q);
-    ki_q = FC_LOAD(config->ki_q);
+    kp_d = FC_COEFF_LOAD(config->kp_d);
+    ki_d = FC_COEFF_LOAD(config->ki_d);
+    kp_q = FC_COEFF_LOAD(config->kp_q);
+    ki_q = FC_COEFF_LOAD(config->ki_q);
     radius = FC_LOAD(config->voltage_limit);
     zero = FC_I(0);
     if (status != LINEARS_OK) return status;
@@ -56,7 +56,10 @@ linears_status_t FC_N(foc_step)(FC_TYPE(foc) *ctx,
     FC_W zero, one, period, bus, angle, radius, bus_radius;
     FC_W error_d, error_q, delta_d, delta_q, p_d, p_q;
     FC_W candidate_d, candidate_q, raw_d, raw_q, limited_d, limited_q;
+    int outward;
+#if FC_VARIANT == 32 || FC_VARIANT == 64
     FC_W projection, component, delta_scale, voltage_scale;
+#endif
     if (ctx == NULL || output == NULL) return LINEARS_ERROR_ARGUMENT;
     if (fc_overlap(ctx, sizeof(*ctx), output, sizeof(*output)))
         return LINEARS_ERROR_ALIAS;
@@ -74,11 +77,11 @@ linears_status_t FC_N(foc_step)(FC_TYPE(foc) *ctx,
     if (status != LINEARS_OK) return status;
     error_d = FC_SUB(FC_LOAD(reference.d), FC_LOAD(result.current.d));
     error_q = FC_SUB(FC_LOAD(reference.q), FC_LOAD(result.current.q));
-    p_d = FC_MUL(FC_LOAD(next.config.kp_d), error_d);
-    p_q = FC_MUL(FC_LOAD(next.config.kp_q), error_q);
-    delta_d = FC_MUL(FC_LOAD(next.config.ki_d), period);
+    p_d = FC_MUL(FC_COEFF_LOAD(next.config.kp_d), error_d);
+    p_q = FC_MUL(FC_COEFF_LOAD(next.config.kp_q), error_q);
+    delta_d = FC_MUL(FC_COEFF_LOAD(next.config.ki_d), period);
     delta_d = FC_MUL(delta_d, error_d);
-    delta_q = FC_MUL(FC_LOAD(next.config.ki_q), period);
+    delta_q = FC_MUL(FC_COEFF_LOAD(next.config.ki_q), period);
     delta_q = FC_MUL(delta_q, error_q);
     candidate_d = FC_ADD(next.integral.d, delta_d);
     candidate_q = FC_ADD(next.integral.q, delta_q);
@@ -92,6 +95,17 @@ linears_status_t FC_N(foc_step)(FC_TYPE(foc) *ctx,
         &limited_d, &limited_q, &result.saturated);
     if (status != LINEARS_OK) return status;
     if (result.saturated) {
+#if FC_VARIANT == 15 || FC_VARIANT == 31
+        /* Test the exact F62 product sum: quantizing a tiny positive product
+         * to F31 would incorrectly enable integration into saturation. */
+        linears_accum_t projection = {0, 0};
+        status = linears_fixed_mac(&projection, delta_d, raw_d);
+        if (status != LINEARS_OK) return status;
+        status = linears_fixed_mac(&projection, delta_q, raw_q);
+        if (status != LINEARS_OK) return status;
+        outward = (projection.high >> 63) == 0 &&
+            (projection.high != 0 || projection.low != 0);
+#else
         /* The request is collinear with the saturation residual. Normalize
          * BOTH vectors independently before testing their dot-product sign:
          * multiplying physical units can underflow/overflow even when every
@@ -111,7 +125,9 @@ linears_status_t FC_N(foc_step)(FC_TYPE(foc) *ctx,
             projection = FC_ADD(projection, component);
         }
         if (status != LINEARS_OK) return status;
-        if (FC_CMP(projection, zero) > 0) {
+        outward = FC_CMP(projection, zero) > 0;
+#endif
+        if (outward) {
             candidate_d = next.integral.d;
             candidate_q = next.integral.q;
             raw_d = FC_ADD(p_d, candidate_d);
@@ -124,8 +140,8 @@ linears_status_t FC_N(foc_step)(FC_TYPE(foc) *ctx,
     }
     next.integral.d = candidate_d;
     next.integral.q = candidate_q;
-    FC_STORE(raw_d, &result.requested_voltage.d);
-    FC_STORE(raw_q, &result.requested_voltage.q);
+    FC_ACC_STORE(raw_d, &result.requested_voltage.d);
+    FC_ACC_STORE(raw_q, &result.requested_voltage.q);
     FC_STORE(limited_d, &result.voltage.d);
     FC_STORE(limited_q, &result.voltage.q);
     if (status != LINEARS_OK) return status;
@@ -173,25 +189,26 @@ linears_status_t FC_N(speed_foc_step)(FC_TYPE(speed_foc) *ctx,
     linears_status_t status = LINEARS_OK;
     FC_TYPE(speed_foc) next;
     FC_TYPE(speed_foc_output) result;
-    FC_T error;
-    FC_W mechanical, speed_error, residual, zero;
+    FC_W mechanical, speed_error, residual, zero, period, q_reference;
     if (ctx == NULL || output == NULL) return LINEARS_ERROR_ARGUMENT;
     if (fc_overlap(ctx, sizeof(*ctx), output, sizeof(*output)))
         return LINEARS_ERROR_ALIAS;
     next = *ctx;
     mechanical = FC_DIV(FC_LOAD(electrical_speed), FC_I(next.pole_pairs));
     speed_error = FC_SUB(FC_LOAD(mechanical_reference), mechanical);
+    period = FC_LOAD(dt);
     FC_STORE(mechanical, &result.mechanical_speed);
-    FC_STORE(speed_error, &error);
     FC_STORE(FC_I(0), &result.reference.d);
     if (status != LINEARS_OK) return status;
-    status = FC_N(pi_step)(&next.speed, error, dt, &result.reference.q);
+    status = FC_N(pi_step_work)(&next.speed, speed_error, period, &q_reference);
+    if (status != LINEARS_OK) return status;
+    FC_STORE(q_reference, &result.reference.q);
     if (status != LINEARS_OK) return status;
     status = FC_N(foc_step)(&next.current, current, result.reference,
         electrical_angle, dc_bus, dt, &result.current);
     if (status != LINEARS_OK) return status;
     if (result.current.saturated) {
-        residual = FC_SUB(FC_LOAD(result.current.requested_voltage.q),
+        residual = FC_SUB(FC_ACC_LOAD(result.current.requested_voltage.q),
             FC_LOAD(result.current.voltage.q));
         zero = FC_I(0);
         if (status != LINEARS_OK) return status;

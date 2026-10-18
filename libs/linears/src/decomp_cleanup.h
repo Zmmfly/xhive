@@ -12,6 +12,7 @@
 #undef D_RAW
 #undef D_WORKSPACE
 #undef D_FIXED
+#undef D_WORKING
 #undef D_ZERO
 #undef D_ONE
 #undef D_EPSILON
@@ -19,7 +20,6 @@
 #undef D_MATH_ABS
 #undef D_MATH_SCALE
 #undef D_IMPORT
-#undef D_INPUT_SCALAR
 #undef D_QUANTIZE
 #undef D_CMP
 #undef D_ADD
@@ -30,5 +30,4 @@
 #undef D_NEG
 #undef D_ABS
 #undef D_CONST
-#undef D_POW2
 #undef D_FORMAT

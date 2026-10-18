@@ -170,13 +170,13 @@ linears_status_t FC_N(svpwm)(FC_TYPE(ab) voltage, FC_T dc_bus, FC_TYPE(abc) *dut
     return FC_N(base_pwm)(a, b, bus, duty);
 }
 
-linears_status_t FC_N(pi_init)(FC_TYPE(pi) *ctx, FC_T kp, FC_T ki,
+linears_status_t FC_N(pi_init)(FC_TYPE(pi) *ctx, FC_COEFF_T kp, FC_COEFF_T ki,
                               FC_T lower, FC_T upper, FC_T integral) {
     linears_status_t status = LINEARS_OK;
     FC_W p, i, lo, hi, initial;
     FC_TYPE(pi) result;
     if (ctx == NULL) return LINEARS_ERROR_ARGUMENT;
-    p = FC_LOAD(kp); i = FC_LOAD(ki); lo = FC_LOAD(lower); hi = FC_LOAD(upper); initial = FC_LOAD(integral);
+    p = FC_COEFF_LOAD(kp); i = FC_COEFF_LOAD(ki); lo = FC_LOAD(lower); hi = FC_LOAD(upper); initial = FC_LOAD(integral);
     if (status != LINEARS_OK) return status;
     if (FC_CMP(p, FC_I(0)) < 0 || FC_CMP(i, FC_I(0)) < 0 || FC_CMP(lo, hi) >= 0 ||
         FC_CMP(initial, lo) < 0 || FC_CMP(initial, hi) > 0) return LINEARS_ERROR_DOMAIN;
@@ -186,27 +186,37 @@ linears_status_t FC_N(pi_init)(FC_TYPE(pi) *ctx, FC_T kp, FC_T ki,
     return status;
 }
 
-linears_status_t FC_N(pi_step)(FC_TYPE(pi) *ctx, FC_T error, FC_T dt, FC_T *output) {
+linears_status_t FC_N(pi_step_work)(FC_TYPE(pi) *ctx, FC_W error, FC_W period, FC_W *output) {
     linears_status_t status = LINEARS_OK;
-    FC_W e, period, p, inc, next, u, old, lo, hi;
-    FC_T result;
+    FC_W p, inc, next, u, old, lo, hi;
     FC_TYPE(pi) state;
-    if (ctx == NULL || output == NULL) return LINEARS_ERROR_ARGUMENT;
-    if (fc_overlap(ctx, sizeof(*ctx), output, sizeof(*output))) return LINEARS_ERROR_ALIAS;
-    e = FC_LOAD(error); period = FC_LOAD(dt);
-    if (status != LINEARS_OK) return status;
     if (FC_CMP(period, FC_I(0)) <= 0) return LINEARS_ERROR_DOMAIN;
     state = *ctx;
     old = state.integral; lo = FC_LOAD(state.lower); hi = FC_LOAD(state.upper);
-    p = FC_MUL(FC_LOAD(state.kp), e);
-    inc = FC_MUL(FC_MUL(FC_LOAD(state.ki), period), e);
+    p = FC_MUL(FC_COEFF_LOAD(state.kp), error);
+    inc = FC_MUL(FC_MUL(FC_COEFF_LOAD(state.ki), period), error);
     next = FC_N(base_clamp)(FC_ADD(old, inc), lo, hi);
     u = FC_ADD(p, next);
     if ((FC_CMP(u, hi) > 0 && FC_CMP(inc, FC_I(0)) > 0) ||
         (FC_CMP(u, lo) < 0 && FC_CMP(inc, FC_I(0)) < 0)) next = old;
     u = FC_N(base_clamp)(FC_ADD(p, next), lo, hi);
     FC_ACC_STORE(next, &state.integral);
-    FC_STORE(u, &result);
+    if (status == LINEARS_OK) { *ctx = state; *output = u; }
+    return status;
+}
+
+linears_status_t FC_N(pi_step)(FC_TYPE(pi) *ctx, FC_T error, FC_T dt, FC_T *output) {
+    linears_status_t status = LINEARS_OK;
+    FC_W e, period, command = FC_I(0);
+    FC_T result;
+    FC_TYPE(pi) state;
+    if (ctx == NULL || output == NULL) return LINEARS_ERROR_ARGUMENT;
+    if (fc_overlap(ctx, sizeof(*ctx), output, sizeof(*output))) return LINEARS_ERROR_ALIAS;
+    e = FC_LOAD(error); period = FC_LOAD(dt);
+    if (status != LINEARS_OK) return status;
+    state = *ctx;
+    status = FC_N(pi_step_work)(&state, e, period, &command);
+    FC_STORE(command, &result);
     if (status == LINEARS_OK) { *ctx = state; *output = result; }
     return status;
 }

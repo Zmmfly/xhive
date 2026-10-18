@@ -2,8 +2,8 @@
 
 /* Volder rotation/vectoring, 32 iterations. Angles use 2^62 counts/turn;
  * vector coordinates use 2^60 counts/unit. The largest vectoring coordinate
- * is < 2.34*2^60, so every signed addition fits int64_t. Division, not signed
- * right shift, specifies rounding toward zero on all C99 implementations. */
+ * is < 2.34*2^60, so every signed addition fits int64_t. Unsigned-magnitude
+ * shifts preserve division's toward-zero rule without a per-round divider. */
 static const int64_t fc_atan_turns[32] = {
     INT64_C(576460752303423488), INT64_C(340304653033718298),
     INT64_C(179807632645220259), INT64_C(91273161881380487),
@@ -23,36 +23,20 @@ static const int64_t fc_atan_turns[32] = {
     INT64_C(683565276), INT64_C(341782638)
 };
 
-linears_fixed_t fcq_wrap(linears_fixed_t x, linears_status_t *status) {
-    linears_fixed_t r = {0, 0};
-    const linears_fixed_t one = {INT32_C(1073741824), 1};
-    int shift;
-    int64_t magnitude, fraction;
-    if (*status != LINEARS_OK || x.mantissa == 0 || x.exponent >= 31) return r;
-    if (x.exponent <= 0) {
-        r = x;
-    } else {
-        shift = 31 - x.exponent;
-        magnitude = x.mantissa < 0 ? -(int64_t)x.mantissa : x.mantissa;
-        fraction = magnitude & ((INT64_C(1) << shift) - 1);
-        if (x.mantissa < 0) fraction = -fraction;
-        *status = linears_fixed_from_i64(fraction, shift, 0, &r);
-    }
-    if (*status == LINEARS_OK && r.mantissa < 0) *status = linears_fixed_add(one, r, &r);
-    if (*status == LINEARS_OK && linears_fixed_compare(r, one) >= 0) r = fcq_zero();
-    return r;
+/* CORDIC coordinates have magnitude < 2^62 and bits is in [0,31]. Thus the
+ * shifted magnitude fits int64_t before sign restoration. No implementation-
+ * defined right shift of a negative signed value is used. */
+static inline int64_t fc_coord_shift(int64_t value, unsigned bits) {
+    uint64_t magnitude = value < 0 ? UINT64_C(0) - (uint64_t)value : (uint64_t)value;
+    int64_t shifted = (int64_t)(magnitude >> bits);
+    return value < 0 ? -shifted : shifted;
 }
 
-/* Canonical nonnegative input below one, rounded to the angular accumulator. */
-static int64_t fc_turn_counts(linears_fixed_t x) {
-    int shift = x.exponent + 31;
-    uint64_t m = (uint32_t)x.mantissa;
-    if (x.mantissa == 0) return 0;
-    if (shift >= 0) return (int64_t)(m << shift);
-    shift = -shift;
-    if (shift >= 64) return 0;
-    return (int64_t)((m >> shift) + ((m & ((UINT64_C(1) << shift) - 1)) >=
-                                    (UINT64_C(1) << (shift - 1))));
+linears_fixed_t fcq_wrap(linears_fixed_t x, linears_status_t *status) {
+    linears_fixed_t remainder;
+    if (*status != LINEARS_OK) return 0;
+    remainder = x % LINEARS_FIXED_ONE;
+    return remainder < 0 ? remainder + LINEARS_FIXED_ONE : remainder;
 }
 
 void fcq_sincos(linears_fixed_t a, linears_fixed_t *sn, linears_fixed_t *cs,
@@ -63,72 +47,61 @@ void fcq_sincos(linears_fixed_t a, linears_fixed_t *sn, linears_fixed_t *cs,
     int64_t z, dx, dy;
     int sign = 1;
     unsigned i;
-    linears_fixed_t w = fcq_wrap(a, status), s, c;
+    linears_fixed_t w = fcq_wrap(a, status), s = 0, c = 0;
     if (*status != LINEARS_OK) return;
-    z = fc_turn_counts(w);
+    /* Invariant F31 turns to invariant F62 turns; the product is < 2^62. */
+    z = w * LINEARS_FIXED_ONE;
     if (z == 0 || z == quarter || z == 2 * quarter || z == 3 * quarter) {
-        s = fcq_i(z == quarter ? 1 : (z == 3 * quarter ? -1 : 0), status);
-        c = fcq_i(z == 0 ? 1 : (z == 2 * quarter ? -1 : 0), status);
+        s = z == quarter ? LINEARS_FIXED_ONE : (z == 3 * quarter ? -LINEARS_FIXED_ONE : 0);
+        c = z == 0 ? LINEARS_FIXED_ONE : (z == 2 * quarter ? -LINEARS_FIXED_ONE : 0);
     } else {
         if (z >= 2 * quarter) z -= turn;
         if (z > quarter) { z -= 2 * quarter; sign = -1; }
         else if (z < -quarter) { z += 2 * quarter; sign = -1; }
         for (i = 0; i < 32; ++i) {
-            dx = x / (INT64_C(1) << i);
-            dy = y / (INT64_C(1) << i);
+            dx = fc_coord_shift(x, i);
+            dy = fc_coord_shift(y, i);
             if (z >= 0) { x -= dy; y += dx; z -= fc_atan_turns[i]; }
             else { x += dy; y -= dx; z += fc_atan_turns[i]; }
         }
-        *status = linears_fixed_from_i64(sign * y, 60, 0, &s);
-        if (*status == LINEARS_OK) *status = linears_fixed_from_i64(sign * x, 60, 0, &c);
-        /* Working rounding can place a component one LSB outside [-1,1]. */
-        if (*status == LINEARS_OK) {
-            const linears_fixed_t one = {INT32_C(1073741824), 1};
-            const linears_fixed_t negone = {-INT32_C(1073741824), 1};
-            if (linears_fixed_compare(s, one) > 0) s = one;
-            if (linears_fixed_compare(s, negone) < 0) s = negone;
-            if (linears_fixed_compare(c, one) > 0) c = one;
-            if (linears_fixed_compare(c, negone) < 0) c = negone;
-        }
+        /* Core raw muldiv supplies nearest-away F60 -> F31 conversion. */
+        *status = linears_fixed_muldiv(sign * y, 1, INT64_C(536870912), &s);
+        if (*status == LINEARS_OK)
+            *status = linears_fixed_muldiv(sign * x, 1, INT64_C(536870912), &c);
     }
     if (*status == LINEARS_OK) { *sn = s; *cs = c; }
 }
 
-/* Scale both coordinates into one 60-fractional-bit integer block. */
-static int64_t fc_vector_counts(linears_fixed_t x, int exponent) {
-    int shift = x.exponent - exponent + 29;
-    uint64_t m = x.mantissa < 0 ? (uint64_t)(-(int64_t)x.mantissa) : (uint64_t)x.mantissa;
-    if (shift >= 0) m <<= shift;
-    else if (-shift >= 64) m = 0;
-    else m >>= -shift;
-    return x.mantissa < 0 ? -(int64_t)m : (int64_t)m;
-}
-
 linears_fixed_t fcq_atan2(linears_fixed_t fy, linears_fixed_t fx,
                         linears_status_t *status) {
-    linears_fixed_t a = {0, 0};
-    int exponent;
+    linears_fixed_t a = 0, ax, ay, largest, nx, ny;
     int64_t x, y, z = 0, dx, dy;
     unsigned i;
     const int64_t turn = INT64_C(4611686018427387904);
-    if (*status != LINEARS_OK) return a;
-    if (fx.mantissa == 0 && fy.mantissa == 0) { *status = LINEARS_ERROR_DOMAIN; return a; }
-    if (fy.mantissa == 0) return fx.mantissa > 0 ? a : (linears_fixed_t){INT32_C(1073741824), 0};
-    if (fx.mantissa == 0) return fy.mantissa > 0 ? (linears_fixed_t){INT32_C(1073741824), -1} :
-                                                                (linears_fixed_t){INT32_C(1610612736), 0};
-    exponent = fx.exponent > fy.exponent ? fx.exponent : fy.exponent;
-    x = fc_vector_counts(fx, exponent);
-    y = fc_vector_counts(fy, exponent);
+    if (*status != LINEARS_OK) return 0;
+    if (fx == 0 && fy == 0) { *status = LINEARS_ERROR_DOMAIN; return 0; }
+    if (fy == 0) return fx > 0 ? 0 : LINEARS_FIXED_ONE / 2;
+    if (fx == 0) return fy > 0 ? LINEARS_FIXED_ONE / 4 : 3 * (LINEARS_FIXED_ONE / 4);
+    ax = fcq_abs(fx, status);
+    ay = fcq_abs(fy, status);
+    largest = ax >= ay ? ax : ay;
+    nx = fcq_div(fx, largest, status);
+    ny = fcq_div(fy, largest, status);
+    if (*status != LINEARS_OK) return 0;
+    /* Unit ratios are F31. A constant 29-bit shift supplies F60 coordinates;
+     * no input-dependent binary point or exponent is stored or propagated. */
+    x = nx * INT64_C(536870912);
+    y = ny * INT64_C(536870912);
     if (x < 0) { x = -x; y = -y; z = turn / 2; }
     for (i = 0; i < 32; ++i) {
         if (y == 0) break;
-        dx = x / (INT64_C(1) << i);
-        dy = y / (INT64_C(1) << i);
+        dx = fc_coord_shift(x, i);
+        dy = fc_coord_shift(y, i);
         if (y > 0) { x += dy; y -= dx; z += fc_atan_turns[i]; }
         else { x -= dy; y += dx; z -= fc_atan_turns[i]; }
     }
     if (z < 0) z += turn;
     if (z >= turn) z -= turn;
-    *status = linears_fixed_from_i64(z, 62, 0, &a);
+    *status = linears_fixed_muldiv(z, 1, LINEARS_FIXED_ONE, &a);
     return fcq_wrap(a, status);
 }

@@ -16,28 +16,25 @@
 
 #if FILTERS_FIXED
 
-static F_W F_LOCAL(zero)(void)
-{
-    F_W value = {0, 0};
-    return value;
-}
+#define F_C linears_fixed_t
+#define F_STATE linears_fixed_t
 
-static F_W F_LOCAL(one)(void)
-{
-    F_W value = {INT32_C(1073741824), 1};
-    return value;
-}
+static F_W F_LOCAL(zero)(void) { return 0; }
 
 static linears_status_t F_LOCAL(load)(F_S value, F_W *out)
 {
-    return FILTERS_LOAD(value, out);
+    *out = FILTERS_LOAD(value);
+    return LINEARS_OK;
 }
 
 static linears_status_t F_LOCAL(store)(F_W value, F_S *out)
 {
-    F_S result;
-    F_TRY(FILTERS_EXPORT(&value, 1, &result.mantissa, &result.exponent));
-    *out = result;
+    return FILTERS_EXPORT(value, out);
+}
+
+static linears_status_t F_LOCAL(coefficient)(F_C value, F_W *out)
+{
+    *out = value;
     return LINEARS_OK;
 }
 
@@ -49,11 +46,14 @@ static linears_status_t F_LOCAL(store)(F_W value, F_S *out)
 
 static linears_status_t F_LOCAL(count)(size_t count, F_W *out)
 {
-    /* A live scalar array's byte-size limit bounds count below INT64_MAX. */
-    return linears_fixed_from_i64((int64_t)count, 0, 0, out);
+    /* Only the median's constant divisor reaches this fixed-point adapter. */
+    return linears_fixed_from_int((int64_t)count, out);
 }
 
 #else
+
+#define F_C FILTERS_SCALAR
+#define F_STATE FILTERS_SCALAR
 
 static F_W F_LOCAL(zero)(void) { return (F_W)0; }
 static F_W F_LOCAL(one)(void) { return (F_W)1; }
@@ -70,6 +70,11 @@ static linears_status_t F_LOCAL(store)(F_W value, F_S *out)
     if (!isfinite(value)) return LINEARS_ERROR_RANGE;
     *out = value;
     return LINEARS_OK;
+}
+
+static linears_status_t F_LOCAL(coefficient)(F_C value, F_W *out)
+{
+    return F_LOCAL(load)(value, out);
 }
 
 #define FILTERS_FLOAT_BINARY(name, op) \
@@ -105,21 +110,25 @@ static linears_status_t F_LOCAL(count)(size_t count, F_W *out)
 
 #endif
 
-/* Validate and canonicalize a public scalar before it enters persistent state. */
-static linears_status_t F_LOCAL(canonical)(F_S value, F_S *out)
+/* Validate an external signal once; raw Q storage requires no conversion. */
+static linears_status_t F_LOCAL(signal)(F_S value, F_S *out)
 {
     F_W working;
     F_TRY(F_LOCAL(load)(value, &working));
-    return F_LOCAL(store)(working, out);
+    *out = value;
+    return LINEARS_OK;
 }
 
 static linears_status_t F_LOCAL(weight)(F_S value, F_S *out)
 {
     F_W working;
     F_TRY(F_LOCAL(load)(value, &working));
-    if (F_CMP(working, F_LOCAL(zero)()) < 0 ||
-        F_CMP(working, F_LOCAL(one)()) > 0) return LINEARS_ERROR_DOMAIN;
-    return F_LOCAL(store)(working, out);
+    if (F_CMP(working, F_LOCAL(zero)()) < 0) return LINEARS_ERROR_DOMAIN;
+#if !FILTERS_FIXED
+    if (F_CMP(working, F_LOCAL(one)()) > 0) return LINEARS_ERROR_DOMAIN;
+#endif
+    *out = value;
+    return LINEARS_OK;
 }
 
 /* Endpoints are exact. Opposite-sign floating inputs use a weighted sum to
@@ -127,6 +136,12 @@ static linears_status_t F_LOCAL(weight)(F_S value, F_S *out)
  * constant signal and avoid rounding two near-maximum terms upward. */
 static linears_status_t F_LOCAL(blend)(F_W alpha, F_W previous, F_W input, F_W *out)
 {
+#if FILTERS_FIXED
+    /* The initialized raw alpha is nonnegative and at most INT32_MAX. */
+    F_TRY(filters_lowpass_work_step(&previous, (linears_q31_t)alpha, input));
+    *out = previous;
+    return LINEARS_OK;
+#else
     F_W complement, old_part, new_part;
     if (F_CMP(alpha, F_LOCAL(zero)()) == 0) { *out = previous; return LINEARS_OK; }
     if (F_CMP(alpha, F_LOCAL(one)()) == 0 || F_CMP(previous, input) == 0) {
@@ -144,4 +159,5 @@ static linears_status_t F_LOCAL(blend)(F_W alpha, F_W previous, F_W input, F_W *
     F_TRY(F_MUL(complement, previous, &old_part));
     F_TRY(F_MUL(alpha, input, &new_part));
     return F_ADD(old_part, new_part, out);
+#endif
 }

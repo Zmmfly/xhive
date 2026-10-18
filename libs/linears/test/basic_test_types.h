@@ -18,6 +18,7 @@ using Dense = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMa
 #define BASIC_TRAIT(NAME, SUFFIX, RAW, SCALAR, BITS, TOLERANCE) \
 struct NAME { \
     using Raw = RAW; using Scalar = SCALAR; \
+    using Coefficient = std::conditional_t<BITS == 0, SCALAR, linears_fixed_t>; \
     static constexpr int bits = BITS; \
     static constexpr double tolerance = TOLERANCE; \
     static constexpr auto add = linears_add_##SUFFIX; \
@@ -38,8 +39,8 @@ struct NAME { \
 
 BASIC_TRAIT(F32, f32, float, float, 0, 3e-6)
 BASIC_TRAIT(F64, f64, double, double, 0, 2e-13)
-BASIC_TRAIT(Q15, q15, int16_t, linears_q15_t, 15, 9e-5)
-BASIC_TRAIT(Q31, q31, int32_t, linears_q31_t, 31, 9e-9)
+BASIC_TRAIT(Q15, q15, int16_t, linears_q15_t, 15, 1.0 / 32768.0)
+BASIC_TRAIT(Q31, q31, int32_t, linears_q31_t, 31, 1.0 / 2147483648.0 + 1e-15)
 #undef BASIC_TRAIT
 
 using Types = ::testing::Types<F32, F64, Q15, Q31>;
@@ -47,14 +48,14 @@ using Types = ::testing::Types<F32, F64, Q15, Q31>;
 template<class T> struct Matrix {
     std::vector<typename T::Raw> storage;
     linears_matrix_t view;
-    Matrix(size_t rows, size_t cols, int exponent = 0)
-        : storage(rows * cols), view{storage.data(), rows, cols, exponent} {}
-    explicit Matrix(const Dense &reference, int exponent = 0)
-        : Matrix(static_cast<size_t>(reference.rows()), static_cast<size_t>(reference.cols()), exponent) {
+    Matrix(size_t rows, size_t cols)
+        : storage(rows * cols), view{storage.data(), rows, cols} {}
+    explicit Matrix(const Dense &reference)
+        : Matrix(static_cast<size_t>(reference.rows()), static_cast<size_t>(reference.cols())) {
         for (size_t i = 0; i < storage.size(); ++i) {
             if constexpr (T::bits == 0) storage[i] = static_cast<typename T::Raw>(reference.data()[i]);
             else {
-                double raw = std::round(std::ldexp(reference.data()[i], T::bits - exponent));
+                double raw = std::round(std::ldexp(reference.data()[i], T::bits));
                 EXPECT_GE(raw, static_cast<double>(std::numeric_limits<typename T::Raw>::min()));
                 EXPECT_LE(raw, static_cast<double>(std::numeric_limits<typename T::Raw>::max()));
                 storage[i] = static_cast<typename T::Raw>(raw);
@@ -68,7 +69,7 @@ template<class T> struct Matrix {
         const auto *data = static_cast<const typename T::Raw *>(view.data);
         for (size_t i = 0; i < view.rows * view.cols; ++i) {
             if constexpr (T::bits == 0) result.data()[i] = data[i];
-            else result.data()[i] = std::ldexp(static_cast<double>(data[i]), view.exponent - T::bits);
+            else result.data()[i] = std::ldexp(static_cast<double>(data[i]), -T::bits);
         }
         return result;
     }
@@ -77,21 +78,26 @@ template<class T> struct Matrix {
 template<class T> typename T::Scalar scalar(double value) {
     if constexpr (T::bits == 0) return static_cast<typename T::Scalar>(value);
     else {
-        if (value == 0) return {0, 0};
-        int exponent;
-        double mantissa = std::frexp(value, &exponent);
-        int64_t raw = std::llround(std::ldexp(mantissa, T::bits));
-        if (raw > std::numeric_limits<typename T::Raw>::max()) {
-            ++exponent;
-            raw = std::llround(std::ldexp(mantissa, T::bits - 1));
-        }
-        return {static_cast<typename T::Raw>(raw), exponent};
+        if (value < -1 || value > 1) { ADD_FAILURE() << "signal fixture outside [-1,1]"; return 0; }
+        int64_t raw = std::llround(std::ldexp(value, T::bits));
+        if (raw == (INT64_C(1) << T::bits)) --raw;
+        return static_cast<typename T::Scalar>(raw);
     }
+}
+
+template<class T> typename T::Coefficient coefficient(double value) {
+    if constexpr (T::bits == 0) return static_cast<typename T::Coefficient>(value);
+    else return std::llround(std::ldexp(value, 31));
 }
 
 template<class T> double decoded(typename T::Scalar value) {
     if constexpr (T::bits == 0) return static_cast<double>(value);
-    else return std::ldexp(static_cast<double>(value.mantissa), value.exponent - T::bits);
+    else return std::ldexp(static_cast<double>(value), -T::bits);
+}
+
+template<class T> double decoded_coefficient(typename T::Coefficient value) {
+    if constexpr (T::bits == 0) return static_cast<double>(value);
+    else return std::ldexp(static_cast<double>(value), -31);
 }
 
 template<class T> void expect_close(const Dense &actual, const Dense &reference) {
@@ -111,6 +117,15 @@ inline Dense samples(size_t rows, size_t cols, unsigned seed = 1) {
         state = state * UINT32_C(1664525) + UINT32_C(1013904223);
         result.data()[i] = (static_cast<int>(state % 15001) - 7500) / 10000.0;
     }
+    return result;
+}
+
+/* Preserve floating fixtures exactly. Narrow-Q success fixtures reserve enough
+ * absolute headroom for the largest 7x7 norm and 9-term products in this suite;
+ * separate raw tests exercise the full signal range and expected RANGE errors. */
+template<class T> Dense samples_for(size_t rows, size_t cols, unsigned seed = 1) {
+    Dense result = samples(rows, cols, seed);
+    if constexpr (T::bits != 0) result *= 0.125;
     return result;
 }
 }

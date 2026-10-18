@@ -1,4 +1,5 @@
 #include "kalman_support.h"
+#include "linears_work.h"
 #include <Eigen/Dense>
 
 namespace {
@@ -41,31 +42,42 @@ TYPED_TEST_SUITE(KalmanMatrix, Formats);
 
 TYPED_TEST(KalmanMatrix, ScalarAgreementAndZeroInnovation) {
     using A = TypeParam;
-    Matrix<A> x(Dense(1, 1, {2})), p(Dense(1, 1, {4}));
-    Matrix<A> f(Dense(1, 1, {1})), q(Dense(1, 1, {1}));
-    Matrix<A> z(Dense(1, 1, {2})), h(Dense(1, 1, {1})), r(Dense(1, 1, {1}));
+    Matrix<A> x(Dense(1, 1, {A::bits ? 0.25L : 2})), p(Dense(1, 1, {A::bits ? 0.25L : 4}));
+    Matrix<A> f(Dense(1, 1, {A::bits ? 0.5L : 1})), q(Dense(1, 1, {A::bits ? 0.0625L : 1}));
+    Matrix<A> z(Dense(1, 1, {A::bits ? 0.0625L : 2}));
+    Matrix<A> h(Dense(1, 1, {A::bits ? 0.5L : 1})), r(Dense(1, 1, {A::bits ? 0.125L : 1}));
     auto xv = x.view(), pv = p.view(), fv = f.view(), qv = q.view();
     auto zv = z.view(), hv = h.view(), rv = r.view();
     MatrixState<A> fixture(1);
     Workspace<A> predict(1), update(1, 1);
     typename A::State scalar{};
     ASSERT_EQ(A::reset_matrix(&fixture.state, &xv, &pv), LINEARS_OK);
-    ASSERT_EQ(A::reset(&scalar, A::encode(2), A::encode(4)), LINEARS_OK);
+    ASSERT_EQ(A::reset(&scalar, x.data[0], p.data[0]), LINEARS_OK);
     ASSERT_EQ(A::predict_matrix(&fixture.state, &fv, &qv, predict.view()), LINEARS_OK);
-    ASSERT_EQ(A::predict(&scalar, A::encode(1), A::encode(1)), LINEARS_OK);
+    ASSERT_EQ(A::predict(&scalar, A::coefficient_from_raw(f.data[0]), q.data[0]), LINEARS_OK);
     ASSERT_EQ(A::update_matrix(&fixture.state, &zv, &hv, &rv, update.view()), LINEARS_OK);
-    ASSERT_EQ(A::update(&scalar, A::encode(2), A::encode(1), A::encode(1)), LINEARS_OK);
+    ASSERT_EQ(A::update(&scalar, z.data[0], A::coefficient_from_raw(h.data[0]), r.data[0]), LINEARS_OK);
     expect_near<A>(decode<A>(fixture.state.estimate).values[0], A::decode(scalar.estimate));
     expect_near<A>(decode<A>(fixture.state.covariance).values[0], A::decode(scalar.covariance));
-    expect_near<A>(decode<A>(fixture.state.covariance).values[0], 5.0L / 6);
+    expect_near<A>(decode<A>(fixture.state.covariance).values[0], A::bits ? 0.1L : 5.0L / 6);
+    /* Q MAX coefficients remain 1-LSB, not wide exact unity. */
+    f.data[0] = A::encode(1); h.data[0] = A::encode(1);
+    ASSERT_EQ(A::reset_matrix(&fixture.state, &xv, &pv), LINEARS_OK);
+    ASSERT_EQ(A::reset(&scalar, x.data[0], p.data[0]), LINEARS_OK);
+    ASSERT_EQ(A::predict_matrix(&fixture.state, &fv, &qv, predict.view()), LINEARS_OK);
+    ASSERT_EQ(A::predict(&scalar, A::coefficient_from_raw(f.data[0]), q.data[0]), LINEARS_OK);
+    ASSERT_EQ(A::update_matrix(&fixture.state, &zv, &hv, &rv, update.view()), LINEARS_OK);
+    ASSERT_EQ(A::update(&scalar, z.data[0], A::coefficient_from_raw(h.data[0]), r.data[0]), LINEARS_OK);
+    expect_near<A>(decode<A>(fixture.state.estimate).values[0], A::decode(scalar.estimate));
+    expect_near<A>(decode<A>(fixture.state.covariance).values[0], A::decode(scalar.covariance));
     fixture.guards(); predict.guards(); update.guards();
 }
 
-TYPED_TEST(KalmanMatrix, JosephRetainsNoiseBelowGainResolution) {
+TYPED_TEST(KalmanMatrix, JosephRetainsRepresentableNoise) {
     using A = TypeParam;
-    Matrix<A> x(Dense(1, 1, {0})), p(Dense(1, 1, {1}));
+    Matrix<A> x(Dense(1, 1, {0})), p(Dense(1, 1, {A::bits ? 0.5L : 1}));
     Matrix<A> z(Dense(1, 1, {0})), h(Dense(1, 1, {1}));
-    Matrix<A> r(Dense(1, 1, {std::ldexp(1.0L, -80)}));
+    Matrix<A> r(Dense(1, 1, {std::ldexp(1.0L, A::bits ? -A::bits : -80)}));
     auto xv = x.view(), pv = p.view(), zv = z.view(), hv = h.view(), rv = r.view();
     MatrixState<A> fixture(1);
     Workspace<A> workspace(1, 1);
@@ -74,34 +86,39 @@ TYPED_TEST(KalmanMatrix, JosephRetainsNoiseBelowGainResolution) {
     const long double variance = decode<A>(fixture.state.covariance).values[0];
     EXPECT_GT(variance, 0);
     EXPECT_LT(std::abs(variance / decode<A>(rv).values[0] - 1), 1e-5L);
+    if constexpr (A::bits != 0) {
+        const auto before_x = fixture.x, before_p = fixture.p;
+        r.data[0] = A::encode(std::ldexp(1.0L, -80));
+        ASSERT_EQ(r.data[0], 0);
+        EXPECT_EQ(A::update_matrix(&fixture.state, &zv, &hv, &rv, workspace.view()), LINEARS_ERROR_NOT_POSITIVE_DEFINITE);
+        EXPECT_EQ(fixture.x, before_x); EXPECT_EQ(fixture.p, before_p);
+    }
     fixture.guards(); workspace.guards();
 }
 
-TYPED_TEST(KalmanMatrix, SemidefiniteStateAndExplicitBlockQuantization) {
+TYPED_TEST(KalmanMatrix, SemidefiniteStateAndFixedFractionEndpoints) {
     using A = TypeParam;
-    const long double large = A::bits ? std::ldexp(0.75L, A::bits) : 1024;
-    Matrix<A> x(Dense(2, 1, {1, 1})), zero(Dense::identity(2, 0));
-    Matrix<A> f(Dense(2, 2, {large, large, 1, 0}));
-    Matrix<A> z(Dense(2, 1, {0, 0})), h(Dense::identity(2)), r(Dense::identity(2));
+    Matrix<A> x(Dense(2, 1, {-1, 0})), zero(Dense::identity(2, 0));
+    Matrix<A> f(Dense(2, 2, {-1, 0, 0, 0.5L}));
+    Matrix<A> z(Dense(2, 1, {-0.5L, 0.5L})), h(Dense::identity(2, 0.5L)), r(Dense::identity(2, 0.25L));
     auto xv = x.view(), pv = zero.view(), fv = f.view(), zv = z.view(), hv = h.view(), rv = r.view();
     MatrixState<A> fixture(2);
     Workspace<A> prediction(2), correction(2, 2);
     ASSERT_EQ(A::reset_matrix(&fixture.state, &xv, &pv), LINEARS_OK);
     ASSERT_EQ(A::predict_matrix(&fixture.state, &fv, &pv, prediction.view()), LINEARS_OK);
     const Dense predicted = decode<A>(fixture.state.estimate);
-    EXPECT_EQ(predicted.values[0], 2 * large);
     if constexpr (A::bits != 0) {
-        /* Output scale has a two-unit LSB: +1 rounds away from zero to +2. */
-        EXPECT_EQ(fixture.state.estimate.exponent, A::bits + 1);
-        EXPECT_EQ(predicted.values[1], 2);
+        EXPECT_EQ(fixture.x[1], std::numeric_limits<typename A::Raw>::max());
+        EXPECT_EQ(1 - predicted.values[0], std::ldexp(1.0L, -A::bits));
     } else {
-        EXPECT_EQ(predicted.values[1], 1);
+        EXPECT_EQ(predicted.values[0], 1);
     }
+    EXPECT_EQ(predicted.values[1], 0);
     ASSERT_EQ(A::update_matrix(&fixture.state, &zv, &hv, &rv, correction.view()), LINEARS_OK);
     expect_matrix<A>(fixture.state.estimate, predicted);
     expect_matrix<A>(fixture.state.covariance, Dense::identity(2, 0));
     /* Rank-deficient nonzero PSD P is accepted: only R and S need Cholesky. */
-    Matrix<A> rank_one(Dense(2, 2, {1, 1, 1, 1}));
+    Matrix<A> rank_one(Dense(2, 2, {0.25L, 0.25L, 0.25L, 0.25L}));
     auto rank_one_view = rank_one.view();
     ASSERT_EQ(A::reset_matrix(&fixture.state, &xv, &rank_one_view), LINEARS_OK);
     MatrixReference reference{decode<A>(xv), decode<A>(rank_one_view)};
@@ -112,17 +129,53 @@ TYPED_TEST(KalmanMatrix, SemidefiniteStateAndExplicitBlockQuantization) {
     fixture.guards(); prediction.guards(); correction.guards();
 }
 
+TYPED_TEST(KalmanMatrix, WideWorkingGainInnovationAndExactIdentity) {
+    using A = TypeParam;
+    const long double models[2][3] = {{0.5L, 0.25L, 0.015625L}, {0.75L, 0.75L, 0.75L}};
+    for (int i = 0; i < 2; ++i) {
+        Matrix<A> x(Dense(1, 1, {0})), p(Dense(1, 1, {models[i][0]}));
+        Matrix<A> z(Dense(1, 1, {0.125L})), h(Dense(1, 1, {models[i][1]})), r(Dense(1, 1, {models[i][2]}));
+        auto xv = x.view(), pv = p.view(), zv = z.view(), hv = h.view(), rv = r.view();
+        const long double covariance = decode<A>(pv).values[0], observation = decode<A>(hv).values[0];
+        const long double innovation = observation * covariance * observation + decode<A>(rv).values[0];
+        if (i == 0) ASSERT_GT(covariance * observation / innovation, 1);
+        else ASSERT_GT(innovation, 1);
+        MatrixState<A> fixture(1);
+        Workspace<A> workspace(1, 1);
+        MatrixReference reference{decode<A>(xv), decode<A>(pv)};
+        reference.update(decode<A>(zv), decode<A>(hv), decode<A>(rv));
+        ASSERT_EQ(A::reset_matrix(&fixture.state, &xv, &pv), LINEARS_OK);
+        ASSERT_EQ(A::update_matrix(&fixture.state, &zv, &hv, &rv, workspace.view()), LINEARS_OK);
+        expect_matrix<A>(fixture.state.estimate, reference.x);
+        expect_matrix<A>(fixture.state.covariance, reference.p);
+        fixture.guards(); workspace.guards();
+    }
+    Matrix<A> x(Dense(2, 1, {0.25L, -0.25L})), p(Dense::identity(2, 0.5L));
+    Matrix<A> z(Dense(2, 1, {0.5L, -0.5L})), h(Dense(2, 2)), r(Dense::identity(2, 0.25L));
+    auto xv = x.view(), pv = p.view(), zv = z.view(), hv = h.view(), rv = r.view();
+    MatrixState<A> fixture(2);
+    Workspace<A> workspace(2, 2);
+    ASSERT_EQ(A::reset_matrix(&fixture.state, &xv, &pv), LINEARS_OK);
+    const auto before_x = fixture.x, before_p = fixture.p;
+    for (int i = 0; i < 400; ++i)
+        ASSERT_EQ(A::update_matrix(&fixture.state, &zv, &hv, &rv, workspace.view()), LINEARS_OK);
+    EXPECT_EQ(fixture.x, before_x); EXPECT_EQ(fixture.p, before_p);
+    fixture.guards(); workspace.guards();
+}
+
 TYPED_TEST(KalmanMatrix, RandomizedRectangularModelsAgainstIndependentOracle) {
     using A = TypeParam;
     std::mt19937 random(0x4b4d4154u);
     for (int trial = 0; trial < 96; ++trial) {
         const std::size_t n = trial % 4 + 1, m = (trial / 4) % 4 + 1;
         SCOPED_TRACE(::testing::Message() << "trial=" << trial << " n=" << n << " m=" << m);
-        Matrix<A> x(random_dense(random, n, 1));
-        Matrix<A> p(random_spd(random, n)), q(Dense::identity(n, 0.01L));
-        Matrix<A> f(Dense::identity(n) + random_dense(random, n, n, 0.05L));
-        Matrix<A> z(random_dense(random, m, 1));
-        Matrix<A> h(random_dense(random, m, n, 0.7L)), r(random_spd(random, m, 0.2L));
+        Matrix<A> x(random_dense(random, n, 1, A::bits ? 0.1L : 1));
+        Matrix<A> p(random_spd(random, n, A::bits ? 0.125L : 1, A::bits ? 0.08L : 0.4L));
+        Matrix<A> q(Dense::identity(n, A::bits ? 0.002L : 0.01L));
+        Matrix<A> f(Dense::identity(n, A::bits ? 0.7L : 1) + random_dense(random, n, n, A::bits ? 0.025L : 0.05L));
+        Matrix<A> z(random_dense(random, m, 1, A::bits ? 0.1L : 1));
+        Matrix<A> h(random_dense(random, m, n, A::bits ? 0.2L : 0.7L));
+        Matrix<A> r(random_spd(random, m, A::bits ? 0.125L : 0.2L, A::bits ? 0.08L : 0.4L));
         auto xv = x.view(), pv = p.view(), fv = f.view(), qv = q.view();
         auto zv = z.view(), hv = h.view(), rv = r.view();
         const auto f_before = f.data, q_before = q.data, h_before = h.data, r_before = r.data;
@@ -155,10 +208,10 @@ TYPED_TEST(KalmanMatrix, RandomizedRectangularModelsAgainstIndependentOracle) {
 
 TYPED_TEST(KalmanMatrix, LongTrackingSequenceResetAndReentrancy) {
     using A = TypeParam;
-    Matrix<A> x(Dense(2, 1, {0, 0})), p(Dense::identity(2));
-    Matrix<A> f(Dense(2, 2, {1, 0.05L, 0, 0.99L}));
-    Matrix<A> q(Dense(2, 2, {0.005L, 0, 0, 0.002L}));
-    Matrix<A> h(Dense(1, 2, {1, 0})), r(Dense(1, 1, {0.1L}));
+    Matrix<A> x(Dense(2, 1, {0, 0})), p(Dense::identity(2, A::bits ? 0.25L : 1));
+    Matrix<A> f(Dense(2, 2, {A::bits ? 0.95L : 1, A::bits ? 0.025L : 0.05L, 0, A::bits ? 0.9L : 0.99L}));
+    Matrix<A> q(Dense(2, 2, {A::bits ? 0.002L : 0.005L, 0, 0, A::bits ? 0.001L : 0.002L}));
+    Matrix<A> h(Dense(1, 2, {A::bits ? 0.75L : 1, 0})), r(Dense(1, 1, {A::bits ? 0.05L : 0.1L}));
     auto xv = x.view(), pv = p.view(), fv = f.view(), qv = q.view(), hv = h.view(), rv = r.view();
     MatrixState<A> first(2), solo(2), other(2);
     Workspace<A> pred(2), upd(2, 1), independent_pred(2), independent_upd(2, 1);
@@ -167,11 +220,11 @@ TYPED_TEST(KalmanMatrix, LongTrackingSequenceResetAndReentrancy) {
     ASSERT_EQ(A::reset_matrix(&other.state, &xv, &pv), LINEARS_OK);
     MatrixReference reference{decode<A>(xv), decode<A>(pv)};
     std::mt19937 random(0x4b534551u);
-    std::uniform_real_distribution<double> noise(-0.05, 0.05);
+    std::uniform_real_distribution<double> noise(A::bits ? -0.005 : -0.05, A::bits ? 0.005 : 0.05);
     for (int i = 0; i < 1200; ++i) {
         SCOPED_TRACE(i);
-        Matrix<A> measurement(Dense(1, 1, {std::sin(i * 0.01L) + noise(random)}));
-        Matrix<A> unrelated(Dense(1, 1, {4}));
+        Matrix<A> measurement(Dense(1, 1, {(A::bits ? 0.2L : 1) * std::sin(i * 0.01L) + noise(random)}));
+        Matrix<A> unrelated(Dense(1, 1, {A::bits ? 0.4L : 4}));
         auto zv = measurement.view(), unrelated_z = unrelated.view();
         ASSERT_EQ(A::predict_matrix(&first.state, &fv, &qv, pred.view()), LINEARS_OK);
         ASSERT_EQ(A::predict_matrix(&other.state, &fv, &qv, independent_pred.view()), LINEARS_OK);
@@ -184,8 +237,6 @@ TYPED_TEST(KalmanMatrix, LongTrackingSequenceResetAndReentrancy) {
         expect_matrix<A>(first.state.estimate, reference.x, 3);
         expect_matrix<A>(first.state.covariance, reference.p, 3);
         EXPECT_EQ(first.x, solo.x); EXPECT_EQ(first.p, solo.p);
-        EXPECT_EQ(first.state.estimate.exponent, solo.state.estimate.exponent);
-        EXPECT_EQ(first.state.covariance.exponent, solo.state.covariance.exponent);
     }
     ASSERT_EQ(A::reset_matrix(&first.state, &xv, &pv), LINEARS_OK);
     expect_matrix<A>(first.state.estimate, decode<A>(xv));
@@ -196,9 +247,10 @@ TYPED_TEST(KalmanMatrix, LongTrackingSequenceResetAndReentrancy) {
 
 TYPED_TEST(KalmanMatrix, StorageCapacityWorkspaceBoundsAndSentinels) {
     using A = TypeParam;
-    Matrix<A> x(Dense(2, 1, {1, 2})), p(Dense::identity(2));
-    Matrix<A> f(Dense::identity(2)), q(Dense::identity(2, 0.1L));
-    Matrix<A> z(Dense(1, 1, {1})), h(Dense(1, 2, {1, 0})), r(Dense(1, 1, {1}));
+    Matrix<A> x(Dense(2, 1, {A::bits ? 0.25L : 1, A::bits ? 0.5L : 2})), p(Dense::identity(2, A::bits ? 0.25L : 1));
+    Matrix<A> f(Dense::identity(2, A::bits ? 0.5L : 1)), q(Dense::identity(2, A::bits ? 0.01L : 0.1L));
+    Matrix<A> z(Dense(1, 1, {A::bits ? 0.25L : 1})), h(Dense(1, 2, {A::bits ? 0.5L : 1, 0}));
+    Matrix<A> r(Dense(1, 1, {A::bits ? 0.25L : 1}));
     auto xv = x.view(), pv = p.view(), fv = f.view(), qv = q.view();
     auto zv = z.view(), hv = h.view(), rv = r.view();
     MatrixState<A> fixture(2);
@@ -234,7 +286,7 @@ TYPED_TEST(KalmanMatrix, StorageCapacityWorkspaceBoundsAndSentinels) {
     auto update = correction.view(); update.decomposition.data = nullptr;
     EXPECT_EQ(A::update_matrix(&fixture.state, &zv, &hv, &rv, update), LINEARS_ERROR_WORKSPACE);
     w = prediction.view();
-    w.data = reinterpret_cast<typename A::Raw*>(reinterpret_cast<unsigned char*>(w.data) + 1);
+    w.data = reinterpret_cast<typename A::Intermediate*>(reinterpret_cast<unsigned char*>(w.data) + 1);
     EXPECT_EQ(A::predict_matrix(&fixture.state, &fv, &qv, w), LINEARS_ERROR_WORKSPACE);
     update = correction.view();
     update.basic = reinterpret_cast<linears_workspace_unit_t*>(reinterpret_cast<unsigned char*>(update.basic) + 1);
@@ -252,8 +304,10 @@ TYPED_TEST(KalmanMatrix, StorageCapacityWorkspaceBoundsAndSentinels) {
 
 TYPED_TEST(KalmanMatrix, AliasRulesIncludeExactResetAndReadOnlySharing) {
     using A = TypeParam;
-    Matrix<A> x(Dense(2, 1, {1, 2})), p(Dense::identity(2)), identity(Dense::identity(2));
-    Matrix<A> z(Dense(1, 1, {1})), h(Dense(1, 2, {1, 0})), r(Dense(1, 1, {1}));
+    Matrix<A> x(Dense(2, 1, {A::bits ? 0.25L : 1, A::bits ? 0.5L : 2}));
+    Matrix<A> p(Dense::identity(2, A::bits ? 0.25L : 1)), identity(Dense::identity(2, A::bits ? 0.25L : 1));
+    Matrix<A> z(Dense(1, 1, {A::bits ? 0.25L : 1})), h(Dense(1, 2, {A::bits ? 0.5L : 1, 0}));
+    Matrix<A> r(Dense(1, 1, {A::bits ? 0.25L : 1}));
     auto xv = x.view(), pv = p.view(), iv = identity.view();
     auto zv = z.view(), hv = h.view(), rv = r.view();
     MatrixState<A> fixture(2);
@@ -271,14 +325,15 @@ TYPED_TEST(KalmanMatrix, AliasRulesIncludeExactResetAndReadOnlySharing) {
     auto forbidden = own_x; forbidden.data = &fixture.state.estimate;
     EXPECT_EQ(A::reset_matrix(&fixture.state, &forbidden, &pv), LINEARS_ERROR_ALIAS);
     EXPECT_EQ(A::predict_matrix(&fixture.state, &own_p, &iv, prediction.view()), LINEARS_ERROR_ALIAS);
-    auto w = prediction.view(); w.data = static_cast<typename A::Raw*>(fixture.state.estimate.data);
+    auto w = prediction.view();
+    const auto previous_x = fixture.state.estimate.data;
+    fixture.state.estimate.data = w.data; /* Reject overlap before treating it as signal data. */
     EXPECT_EQ(A::predict_matrix(&fixture.state, &iv, &iv, w), LINEARS_ERROR_ALIAS);
-    w = prediction.view(); w.data = identity.data.data();
-    EXPECT_EQ(A::predict_matrix(&fixture.state, &iv, &iv, w), LINEARS_ERROR_ALIAS);
-    if constexpr (A::bits == 0) {
-        auto u = correction.view(); u.decomposition.data = u.data;
-        EXPECT_EQ(A::update_matrix(&fixture.state, &zv, &hv, &rv, u), LINEARS_ERROR_ALIAS);
-    }
+    fixture.state.estimate.data = previous_x;
+    auto aliased_input = iv; aliased_input.data = w.data;
+    EXPECT_EQ(A::predict_matrix(&fixture.state, &aliased_input, &iv, w), LINEARS_ERROR_ALIAS);
+    auto u = correction.view(); u.decomposition.data = u.data;
+    EXPECT_EQ(A::update_matrix(&fixture.state, &zv, &hv, &rv, u), LINEARS_ERROR_ALIAS);
     auto previous_p = fixture.state.covariance.data;
     fixture.state.covariance.data = fixture.state.estimate.data;
     EXPECT_EQ(A::reset_matrix(&fixture.state, &xv, &pv), LINEARS_ERROR_ALIAS);
@@ -287,18 +342,19 @@ TYPED_TEST(KalmanMatrix, AliasRulesIncludeExactResetAndReadOnlySharing) {
     EXPECT_EQ(bytes(fixture.state), context);
     /* Read-only inputs may be the same descriptor and array. */
     ASSERT_EQ(A::predict_matrix(&fixture.state, &iv, &iv, prediction.view()), LINEARS_OK);
-    expect_matrix<A>(fixture.state.covariance, Dense::identity(2, 2));
+    expect_matrix<A>(fixture.state.covariance, Dense::identity(2, A::bits ? 0.265625L : 2));
     fixture.guards(); prediction.guards(); correction.guards();
 }
 
 TYPED_TEST(KalmanMatrix, DimensionsNoiseAndFailureAtomicity) {
     using A = TypeParam;
-    Matrix<A> x(Dense(2, 1, {1, 2})), p(Dense::identity(2, 10));
+    Matrix<A> x(Dense(2, 1, {A::bits ? 0.25L : 1, A::bits ? 0.5L : 2})), p(Dense::identity(2, A::bits ? 0.75L : 10));
     Matrix<A> f(Dense::identity(2)), q(Dense::identity(2, 0));
-    Matrix<A> z(Dense(2, 1, {1, 2})), h(Dense::identity(2)), r(Dense::identity(2));
-    Matrix<A> bad_r(Dense(2, 2, {1, 2, 2, 1}));
+    Matrix<A> z(Dense(2, 1, {A::bits ? 0.25L : 1, A::bits ? 0.5L : 2}));
+    Matrix<A> h(Dense::identity(2, A::bits ? 0.875L : 1)), r(Dense::identity(2, A::bits ? 0.25L : 1));
+    Matrix<A> bad_r(Dense(2, 2, {A::bits ? 0.25L : 1, A::bits ? 0.5L : 2, A::bits ? 0.5L : 2, A::bits ? 0.25L : 1}));
     Matrix<A> zero_r(Dense::identity(2, 0)), negative_q(Dense::identity(2, -1));
-    Matrix<A> asymmetric(Dense(2, 2, {1, 0.5L, 0, 1}));
+    Matrix<A> asymmetric(Dense(2, 2, {0.25L, 0.125L, 0, 0.25L}));
     auto xv = x.view(), pv = p.view(), fv = f.view(), qv = q.view();
     auto zv = z.view(), hv = h.view(), rv = r.view(), bad_rv = bad_r.view();
     auto zero_rv = zero_r.view(), negative_qv = negative_q.view(), asymmetric_v = asymmetric.view();
@@ -337,9 +393,10 @@ TYPED_TEST(KalmanMatrix, DimensionsNoiseAndFailureAtomicity) {
 
 TYPED_TEST(KalmanMatrix, NumericRangesAndAtomicLatePredictionFailure) {
     using A = TypeParam;
-    Matrix<A> x(Dense(1, 1, {1})), p(Dense(1, 1, {1}));
-    Matrix<A> f(Dense(1, 1, {2})), q(Dense(1, 1, {0}));
-    Matrix<A> z(Dense(1, 1, {1})), h(Dense(1, 1, {1})), r(Dense(1, 1, {1}));
+    Matrix<A> x(Dense(1, 1, {A::bits ? 0.125L : 1})), p(Dense(1, 1, {A::bits ? 0.25L : 1}));
+    Matrix<A> f(Dense(1, 1, {A::bits ? -1 : 2})), q(Dense(1, 1, {0}));
+    Matrix<A> z(Dense(1, 1, {A::bits ? 0.75L : 1})), h(Dense(1, 1, {A::bits ? 0.125L : 1}));
+    Matrix<A> r(Dense(1, 1, {A::bits ? 0.015625L : 1}));
     auto xv = x.view(), pv = p.view(), fv = f.view(), qv = q.view();
     auto zv = z.view(), hv = h.view(), rv = r.view();
     MatrixState<A> fixture(1);
@@ -352,7 +409,7 @@ TYPED_TEST(KalmanMatrix, NumericRangesAndAtomicLatePredictionFailure) {
                              std::numeric_limits<typename A::Raw>::infinity(),
                              -std::numeric_limits<typename A::Raw>::infinity()}) {
             typename A::Raw bad_value = invalid;
-            linears_matrix_t bad{&bad_value, 1, 1, 0};
+            linears_matrix_t bad{&bad_value, 1, 1};
             EXPECT_EQ(A::reset_matrix(&fixture.state, &bad, &pv), LINEARS_ERROR_RANGE);
             EXPECT_EQ(A::reset_matrix(&fixture.state, &xv, &bad), LINEARS_ERROR_RANGE);
             EXPECT_EQ(A::predict_matrix(&fixture.state, &bad, &qv, prediction.view()), LINEARS_ERROR_RANGE);
@@ -362,24 +419,20 @@ TYPED_TEST(KalmanMatrix, NumericRangesAndAtomicLatePredictionFailure) {
             EXPECT_EQ(A::update_matrix(&fixture.state, &zv, &hv, &bad, correction.view()), LINEARS_ERROR_RANGE);
         }
     } else {
-        for (int exponent : {LINEARS_EXPONENT_MIN - 1, LINEARS_EXPONENT_MAX + 1}) {
-            auto bad = xv; bad.exponent = exponent;
-            EXPECT_EQ(A::reset_matrix(&fixture.state, &bad, &pv), LINEARS_ERROR_RANGE);
-            EXPECT_EQ(A::reset_matrix(&fixture.state, &xv, &bad), LINEARS_ERROR_RANGE);
-            EXPECT_EQ(A::predict_matrix(&fixture.state, &bad, &qv, prediction.view()), LINEARS_ERROR_RANGE);
-            EXPECT_EQ(A::predict_matrix(&fixture.state, &fv, &bad, prediction.view()), LINEARS_ERROR_RANGE);
-            EXPECT_EQ(A::update_matrix(&fixture.state, &bad, &hv, &rv, correction.view()), LINEARS_ERROR_RANGE);
-            EXPECT_EQ(A::update_matrix(&fixture.state, &zv, &bad, &rv, correction.view()), LINEARS_ERROR_RANGE);
-            EXPECT_EQ(A::update_matrix(&fixture.state, &zv, &hv, &bad, correction.view()), LINEARS_ERROR_RANGE);
-        }
-        typename A::Raw raw = 1;
-        linears_matrix_t tiny{&raw, 1, 1, LINEARS_EXPONENT_MIN};
-        EXPECT_EQ(A::reset_matrix(&fixture.state, &tiny, &pv), LINEARS_ERROR_RANGE);
+        MatrixReference reference{decode<A>(xv), decode<A>(pv)};
+        reference.update(decode<A>(zv), decode<A>(hv), decode<A>(rv));
+        ASSERT_GT(reference.x.values[0], 1);
+        EXPECT_EQ(A::update_matrix(&fixture.state, &zv, &hv, &rv, correction.view()), LINEARS_ERROR_RANGE);
+        z.data[0] = A::encode(-0.75L);
+        MatrixReference negative{decode<A>(xv), decode<A>(pv)};
+        negative.update(decode<A>(zv), decode<A>(hv), decode<A>(rv));
+        ASSERT_LT(negative.x.values[0], -1);
+        EXPECT_EQ(A::update_matrix(&fixture.state, &zv, &hv, &rv, correction.view()), LINEARS_ERROR_RANGE);
     }
     EXPECT_EQ(bytes(fixture.state), before); EXPECT_EQ(fixture.x, data_x); EXPECT_EQ(fixture.p, data_p);
-    /* nx=2 succeeds in scratch, then covariance multiplication overflows. */
+    /* x is valid in scratch; floating P overflows or fixed P reaches +1.5. */
     if constexpr (A::bits == 0) p.data[0] = std::numeric_limits<typename A::Raw>::max();
-    else p.exponent = LINEARS_EXPONENT_MAX;
+    else { p.data[0] = A::encode(0.75L); q.data[0] = A::encode(0.75L); }
     pv = p.view();
     ASSERT_EQ(A::reset_matrix(&fixture.state, &xv, &pv), LINEARS_OK);
     const auto large_before = bytes(fixture.state);
@@ -390,16 +443,77 @@ TYPED_TEST(KalmanMatrix, NumericRangesAndAtomicLatePredictionFailure) {
     fixture.guards(); prediction.guards(); correction.guards();
 }
 
+TEST(KalmanMatrixQ31, WorkingRoundingBoundaryDiffersFromDirectSignalContract) {
+    using A = q31;
+    Matrix<A> x(Dense(5, 1, {0.25L, 0.25L, 0.25L, 0.25L, 0.25L}));
+    Matrix<A> p(Dense(5, 5)), f(Dense(5, 5)), q(Dense(5, 5));
+    for (std::size_t i = 0; i < 4; ++i) f.data[i] = INT32_MAX;
+    f.data[4] = 5;
+    auto xv = x.view(), pv = p.view(), fv = f.view(), qv = q.view();
+
+    /* Independent exact integer dot: F62 raw = 2^62 + 2^29, i.e. 1 + 2^-33. */
+    int64_t exact_dot = 0;
+    for (std::size_t i = 0; i < 5; ++i)
+        exact_dot += static_cast<int64_t>(f.data[i]) * static_cast<int64_t>(x.data[i]);
+    const int64_t exact_one_f62 = INT64_C(1) << 62;
+    ASSERT_EQ(exact_dot, exact_one_f62 + (INT64_C(1) << 29));
+    ASSERT_GT(exact_dot, exact_one_f62);
+    ASSERT_EQ(exact_dot % LINEARS_FIXED_ONE, INT64_C(1) << 29);
+    const int64_t independently_rounded = (exact_dot + LINEARS_FIXED_ONE / 2) / LINEARS_FIXED_ONE;
+    ASSERT_EQ(independently_rounded, LINEARS_FIXED_ONE);
+
+    std::array<linears_fixed_t, 25> working_f{};
+    std::array<linears_fixed_t, 5> working_x{}, working_result{};
+    for (std::size_t i = 0; i < working_f.size(); ++i) working_f[i] = f.data[i];
+    for (std::size_t i = 0; i < working_x.size(); ++i) working_x[i] = x.data[i];
+    linears_matrix_t wf{working_f.data(), 5, 5}, wx{working_x.data(), 5, 1};
+    linears_matrix_t wr{working_result.data(), 5, 1};
+    linears_workspace_unit_t basic[LINEARS_WORKSPACE_UNITS(LINEARS_BASIC_WORKSPACE_BYTES(5, 1))];
+    ASSERT_EQ(linears_mul_fixed(&wf, &wx, &wr, basic, sizeof basic), LINEARS_OK);
+    EXPECT_EQ(working_result[0], independently_rounded);
+    for (std::size_t i = 1; i < working_result.size(); ++i) EXPECT_EQ(working_result[i], 0);
+
+    int32_t narrowed = 123;
+    ASSERT_EQ(linears_fixed_to_q31(working_result[0], &narrowed), LINEARS_OK);
+    EXPECT_EQ(narrowed, INT32_MAX);
+    linears_accum_t exact_accumulator{static_cast<uint64_t>(exact_dot), 0};
+    int32_t exact_output = 123;
+    EXPECT_EQ(linears_accum_to_q31(exact_accumulator, &exact_output), LINEARS_ERROR_RANGE);
+    EXPECT_EQ(exact_output, 123);
+    std::array<int32_t, 5> direct_output{{123, 123, 123, 123, 123}};
+    const auto direct_before = direct_output;
+    linears_matrix_t direct{direct_output.data(), 5, 1};
+    EXPECT_EQ(linears_mul_q31(&fv, &xv, &direct, basic, sizeof basic), LINEARS_ERROR_RANGE);
+    EXPECT_EQ(direct_output, direct_before);
+
+    MatrixState<A> fixture(5);
+    Workspace<A> workspace(5);
+    ASSERT_EQ(A::reset_matrix(&fixture.state, &xv, &pv), LINEARS_OK);
+    ASSERT_EQ(A::predict_matrix(&fixture.state, &fv, &qv, workspace.view()), LINEARS_OK);
+    EXPECT_EQ(fixture.x[1], INT32_MAX); /* Exact result asserted; no tolerance masks the policy. */
+    for (std::size_t i = 2; i < 6; ++i) EXPECT_EQ(fixture.x[i], 0);
+    for (std::size_t i = 1; i < 26; ++i) EXPECT_EQ(fixture.p[i], 0);
+    fixture.guards(); workspace.guards();
+}
+
 TEST(KalmanWorkspace, ConstantExpressionsAndOverflowSentinels) {
     static_assert(FILTERS_KALMAN_PREDICT_STORAGE(2) == 18, "prediction raw count");
     static_assert(FILTERS_KALMAN_UPDATE_STORAGE(2, 3) == 68, "update raw count");
     static_assert(FILTERS_KALMAN_UPDATE_DECOMP_STORAGE(2, 3) == 15, "solve working count");
     static_assert(FILTERS_KALMAN_PREDICT_BASIC_BYTES(2) == 4 * sizeof(linears_workspace_unit_t), "basic bytes");
+    static_assert(FILTERS_KALMAN_Q_PREDICT_STORAGE(2) == 32, "Q F31 prediction count");
+    static_assert(FILTERS_KALMAN_Q_UPDATE_STORAGE(2, 3) == 92, "Q F31 update count");
+    static_assert(FILTERS_KALMAN_Q_PREDICT_BASIC_BYTES(2) == 6 * sizeof(linears_workspace_unit_t), "Q commit staging");
     EXPECT_EQ(FILTERS_KALMAN_PREDICT_STORAGE(SIZE_MAX), SIZE_MAX);
     EXPECT_EQ(FILTERS_KALMAN_UPDATE_STORAGE(SIZE_MAX, 2), SIZE_MAX);
     EXPECT_EQ(FILTERS_KALMAN_UPDATE_STORAGE(2, SIZE_MAX), SIZE_MAX);
     EXPECT_EQ(FILTERS_KALMAN_UPDATE_BASIC_BYTES(SIZE_MAX, 2), SIZE_MAX);
     EXPECT_EQ(FILTERS_KALMAN_UPDATE_DECOMP_STORAGE(2, SIZE_MAX), SIZE_MAX);
+    EXPECT_EQ(FILTERS_KALMAN_Q_PREDICT_STORAGE(SIZE_MAX), SIZE_MAX);
+    EXPECT_EQ(FILTERS_KALMAN_Q_UPDATE_STORAGE(SIZE_MAX, 2), SIZE_MAX);
+    EXPECT_EQ(FILTERS_KALMAN_Q_UPDATE_STORAGE(2, SIZE_MAX), SIZE_MAX);
+    EXPECT_EQ(FILTERS_KALMAN_Q_PREDICT_BASIC_BYTES(SIZE_MAX), SIZE_MAX);
+    EXPECT_EQ(FILTERS_KALMAN_Q_UPDATE_BASIC_BYTES(2, SIZE_MAX), SIZE_MAX);
 }
 
 } // namespace

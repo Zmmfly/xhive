@@ -7,9 +7,16 @@
  * Unless explicitly documented otherwise, every angle is an electrical turn
  * (one turn = 2*pi radians), positive from alpha toward beta, and is wrapped
  * into [0,1). Frequencies are electrical turns/second, not radians/second.
- * Physical units are SI or a consistent caller-selected per-unit system.
- * q15/q31 values retain the explicit binary exponent from linears.h; they are
- * not limited to [-1,1). Returned q scalars are independently normalized.
+ * Floating APIs use SI units unless a component explicitly permits per-unit
+ * quantities. Q APIs use raw int16_t/2^15 or int32_t/2^31 signals in [-1,1).
+ * The caller chooses Vbase, Ibase and Tbase; no base is stored by this library.
+ * Voltage is V/Vbase, current is I/Ibase, time is t/Tbase, frequency is f*Tbase,
+ * resistance is R*Ibase/Vbase and inductance is L*Ibase/(Vbase*Tbase).
+ * Flux is psi/(Vbase*Tbase); torque is T/(Vbase*Ibase*Tbase). Angles remain
+ * electrical turns, independent of these bases. Explicit wide coefficients,
+ * state and diagnostics are int64_t/2^31, with no dynamic binary point.
+ * Q outputs check the true [-1,+1] domain; +1 rounds to INT_MAX and -1 to
+ * INT_MIN. Raw INT_MAX is still 1 minus one signal LSB, not exactly one.
  */
 #ifndef FIELDCTRL_TYPES_H
 #define FIELDCTRL_TYPES_H
@@ -71,7 +78,7 @@ typedef struct {
 } fieldctrl_f64_dq_t;
 
 /**
- * @brief Three phase quantities with independently scaled q15 components.
+ * @brief Three phase Q1.15 per-unit signal components, raw int16_t/2^15.
  */
 typedef struct {
     linears_q15_t a; /**< Phase a value in caller-selected units. */
@@ -80,7 +87,7 @@ typedef struct {
 } fieldctrl_q15_abc_t;
 
 /**
- * @brief Stationary orthogonal quantities with independent q15 exponents.
+ * @brief Stationary orthogonal Q1.15 per-unit components.
  */
 typedef struct {
     linears_q15_t alpha; /**< Alpha component aligned with phase a. */
@@ -88,7 +95,7 @@ typedef struct {
 } fieldctrl_q15_ab_t;
 
 /**
- * @brief Rotor-aligned quantities with independently scaled q15 components.
+ * @brief Rotor-aligned Q1.15 per-unit components.
  */
 typedef struct {
     linears_q15_t d; /**< Direct component aligned with the rotor angle. */
@@ -96,7 +103,7 @@ typedef struct {
 } fieldctrl_q15_dq_t;
 
 /**
- * @brief Three phase quantities with independently scaled q31 components.
+ * @brief Three phase Q1.31 per-unit signal components, raw int32_t/2^31.
  */
 typedef struct {
     linears_q31_t a; /**< Phase a value in caller-selected units. */
@@ -105,7 +112,7 @@ typedef struct {
 } fieldctrl_q31_abc_t;
 
 /**
- * @brief Stationary orthogonal quantities with independent q31 exponents.
+ * @brief Stationary orthogonal Q1.31 per-unit components.
  */
 typedef struct {
     linears_q31_t alpha; /**< Alpha component aligned with phase a. */
@@ -113,12 +120,24 @@ typedef struct {
 } fieldctrl_q31_ab_t;
 
 /**
- * @brief Rotor-aligned quantities with independently scaled q31 components.
+ * @brief Rotor-aligned Q1.31 per-unit components.
  */
 typedef struct {
     linears_q31_t d; /**< Direct component aligned with the rotor angle. */
     linears_q31_t q; /**< Quadrature component, positive 90 electrical degrees. */
 } fieldctrl_q31_dq_t;
+
+/**
+ * @brief Wide rotor-frame state or diagnostic, each int64_t raw divided by 2^31.
+ *
+ * Used only where an unbounded PI request or internal integral needs headroom.
+ * The physical per-unit meaning follows the owning API; this is not Q signal
+ * storage and must not be implicitly narrowed to int16_t or int32_t.
+ */
+typedef struct {
+    linears_fixed_t d; /**< Direct component at the invariant F31 binary point. */
+    linears_fixed_t q; /**< Quadrature component at the invariant F31 binary point. */
+} fieldctrl_fixed_dq_t;
 
 #ifdef __cplusplus
 }

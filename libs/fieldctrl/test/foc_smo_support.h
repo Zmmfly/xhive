@@ -39,14 +39,19 @@ FC_LOOP_API(Q31, q31)
 
 template<class Tag> typename Tag::scalar invalid_scalar()
 {
-    if constexpr (Tag::fixed) return {1, LINEARS_EXPONENT_MAX + 1};
-    else return std::numeric_limits<typename Tag::scalar>::infinity();
+    static_assert(!Tag::fixed, "Every fixed signal bit pattern is valid");
+    return std::numeric_limits<typename Tag::scalar>::infinity();
 }
 
 template<class Tag> typename Tag::scalar angle_input(double x)
 {
-    auto result = Tag::make(fc_test::wrap(x));
-    return value(result) >= 1 ? Tag::make(0) : result;
+    const double wrapped=fc_test::wrap(x);
+    if constexpr (Tag::fixed) {
+        const double units=std::is_same_v<Tag,fc_test::Q15>?32768.0:2147483648.0;
+        if (std::round(wrapped*units)>=units) return Tag::make(0);
+    }
+    auto result=Tag::make(wrapped);
+    return value(result)>=1?Tag::make(0):result;
 }
 
 /* A bounded scalar/coordinate pipeline has at most twelve final-precision
@@ -55,22 +60,59 @@ template<class Tag> typename Tag::scalar angle_input(double x)
  * rotation. Reserve 4e-9 separately from public-scalar rounding. */
 template<class Tag> double numeric_budget(double scale)
 {
-    return (12 * Tag::unit + (Tag::fixed ? 4e-9 : 0)) *
-        std::max(1.0, std::abs(scale));
+    if constexpr (Tag::fixed)
+        return 12*Tag::unit+4e-9*std::max(1.0,std::abs(scale));
+    else
+        return 12*Tag::unit*std::max(1.0,std::abs(scale));
+}
+
+/* Host-only unit conversion for the independent physical plant. None of
+ * these bases, or a floating conversion, exists in a production Q context. */
+template<class Tag> struct Units {
+    double v=1, i=1, t=1;
+    typename Tag::scalar voltage(double x) const { return Tag::make(x/v); }
+    typename Tag::scalar current(double x) const { return Tag::make(x/i); }
+    typename Tag::scalar time(double x) const { return Tag::make(x/t); }
+    typename Tag::scalar frequency(double x) const { return Tag::make(x*t); }
+    template<class N> double volts(N x) const { return value(x)*v; }
+    template<class N> double amps(N x) const { return value(x)*i; }
+    template<class N> double seconds(N x) const { return value(x)*t; }
+    template<class N> double hertz(N x) const { return value(x)/t; }
+};
+
+template<class Tag> Units<Tag> current_units()
+{
+    if constexpr (Tag::fixed) return {128,32,0.005};
+    else return {};
+}
+
+template<class Tag> Units<Tag> observer_units()
+{
+    if constexpr (Tag::fixed) return {32,4,0.005};
+    else return {};
+}
+
+template<class Tag> Units<Tag> speed_units()
+{
+    if constexpr (Tag::fixed) return {64,8,0.005};
+    else return {};
 }
 
 template<class Tag> typename Api<Tag>::foc_config current_config(
-    double kp = 2, double ki = 400, double limit = 12)
+    double kp=2, double ki=400, double limit=12,
+    Units<Tag> u=current_units<Tag>())
 {
-    return {Tag::make(kp), Tag::make(ki), Tag::make(kp), Tag::make(ki), Tag::make(limit)};
+    return {Tag::gain(kp*u.i/u.v), Tag::gain(ki*u.i*u.t/u.v),
+        Tag::gain(kp*u.i/u.v), Tag::gain(ki*u.i*u.t/u.v),u.voltage(limit)};
 }
 
-template<class Tag> typename Api<Tag>::smo_config observer_config(int direction = 1)
+template<class Tag> typename Api<Tag>::smo_config observer_config(int direction=1,
+    Units<Tag> u=observer_units<Tag>())
 {
-    return {Tag::make(1), Tag::make(0.01), Tag::make(0.0001),
-        Tag::make(8), Tag::make(0.2), Tag::make(0.15), Tag::make(0.2),
-        Tag::make(0.15), Tag::make(2), Tag::make(100), 32,
-        direction > 0 ? FIELDCTRL_SMO_FORWARD : FIELDCTRL_SMO_REVERSE};
+    return {Tag::make(u.i/u.v),Tag::make(0.01*u.i/(u.v*u.t)),u.time(0.0001),
+        u.voltage(8),u.current(0.2),Tag::make(0.15),Tag::make(0.2),
+        u.voltage(0.15),u.frequency(2),u.frequency(100),32,
+        direction>0?FIELDCTRL_SMO_FORWARD:FIELDCTRL_SMO_REVERSE};
 }
 
 inline std::array<double, 2> rotate(double d, double q, double angle)
@@ -121,6 +163,31 @@ struct ObserverReference {
         ib += dt/l*(vb-r*ib-zb);
         ea = (1-alpha)*ea+alpha*za;
         eb = (1-alpha)*eb+alpha*zb;
+    }
+};
+
+/* Independent real-valued angle/difference/LP reference. It receives either
+ * quantized samples or an exact-sensor control sequence from the same plant. */
+struct MotionReference {
+    ObserverReference observer;
+    double previous_angle=0, speed=0;
+    bool has_angle=false;
+
+    void step(double ia,double ib,double va,double vb,double r,double l,double dt,
+        double k,double boundary,double alpha,double speed_alpha,double threshold,int direction)
+    {
+        observer.step(ia,ib,va,vb,r,l,dt,k,boundary,alpha);
+        if (std::hypot(observer.ea,observer.eb)<threshold) {
+            has_angle=false;
+            speed=0;
+            return;
+        }
+        const double angle=fc_test::wrap(std::atan2(-direction*observer.ea,
+            direction*observer.eb)/tau);
+        if (has_angle)
+            speed=(1-speed_alpha)*speed+speed_alpha*fc_test::turn_error(angle,previous_angle)/dt;
+        previous_angle=angle;
+        has_angle=true;
     }
 };
 } // namespace fc_loop_test

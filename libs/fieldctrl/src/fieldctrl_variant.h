@@ -54,13 +54,25 @@
 #define FC_SINCOS(a,s,c) FC_CAT(FC_A, _sincos)((a), (s), (c), &status)
 #define FC_ATAN2(y,x) FC_CAT(FC_A, _atan2)((y), (x), &status)
 #define FC_ACC_T FC_W
+#define FC_COEFF_T FC_W
 #if FC_VARIANT == 15 || FC_VARIANT == 31
-#define FC_ACC_LOAD(x) fcq31_load((x), &status)
-#define FC_ACC_STORE(x,p) fcq31_store((x), (p), &status)
+#define FC_ACC_LOAD(x) fcq_work_load((x), &status)
+#define FC_ACC_STORE(x,p) fcq_work_store((x), (p), &status)
 #else
 #define FC_ACC_LOAD(x) FC_LOAD(x)
 #define FC_ACC_STORE(x,p) FC_STORE((x),(p))
 #endif
+#define FC_COEFF_LOAD(x) FC_ACC_LOAD(x)
+#if FC_VARIANT == 15
+/* Circular nearest rounding: the upper half-cell is zero turns, not +MAX. */
+#define FC_ANGLE_STORE(x,p) do { \
+    FC_W fc_angle_work = FC_WRAP(x); \
+    if (status == LINEARS_OK) { \
+        if (fc_angle_work >= LINEARS_FIXED_ONE - INT64_C(32768)) *(p) = 0; \
+        else FC_STORE(fc_angle_work, (p)); \
+    } \
+} while (0)
+#else
 #define FC_ANGLE_STORE(x,p) do { \
     FC_T fc_angle_temp; \
     FC_W fc_angle_work = FC_WRAP(x); \
@@ -71,3 +83,4 @@
         if (status == LINEARS_OK) *(p) = fc_angle_temp; \
     } \
 } while (0)
+#endif

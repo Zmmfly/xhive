@@ -39,29 +39,30 @@ template<class T> std::array<unsigned char, sizeof(T)> bytes(const T& object) {
     return result;
 }
 
-/* Half an output unit is an exact rounding budget, not a generic tolerance. */
-inline long double half_unit(linears_q15_t x) {
-    return std::ldexp(0.5L, x.exponent - 15);
+/* The upper Q cell has one-LSB error because +1 maps to MAX. Everywhere
+ * else export has half-LSB error; the F31 context is not quantized on storage. */
+inline long double output_roundoff(linears_q15_t x) {
+    return x == INT16_MAX ? 0x1p-15L : 0x1p-16L;
 }
-inline long double half_unit(linears_q31_t x) {
-    return std::ldexp(0.5L, x.exponent - 31);
+inline long double output_roundoff(linears_q31_t x) {
+    return x == INT32_MAX ? 0x1p-31L : 0x1p-32L;
 }
-inline long double half_unit(float x) {
+inline long double output_roundoff(int64_t) { return 0; }
+inline long double output_roundoff(float x) {
     return 0.5L * (std::nextafter(std::fabs(x), INFINITY) - std::fabs(x));
 }
-inline long double half_unit(double x) {
+inline long double output_roundoff(double x) {
     return 0.5L * (std::nextafter(std::fabs(x), INFINITY) - std::fabs(x));
 }
 
 template<class Tag> constexpr long double work_roundoff() {
-    if constexpr (Tag::fixed) return 0x1p-31L;
-    else if constexpr (std::is_same_v<Tag, fc_test::F32>) return 0x1p-24L;
+    if constexpr (std::is_same_v<Tag, fc_test::F32>) return 0x1p-24L;
     else return 0x1p-53L;
 }
 
-/* Independent direct SI equations evaluated on already-quantized input data.
- * Budgets propagate |rounding| through products and sums. u/(1-u) bounds a
- * nearest-rounded working operation by its exact expression magnitude. */
+/* Independent SI/pu equations on already-quantized input data. Floating
+ * budgets propagate relative roundoff; Q products/divisions use absolute
+ * half-F31-LSB error, and Q addition/subtraction are exact. */
 struct Estimate {
     long double alpha, beta, magnitude, torque;
     long double alpha_error, beta_error, magnitude_error, torque_error;
@@ -76,36 +77,46 @@ Estimate reference(const typename Api<Tag>::context& ctx,
     const long double ia = value(current.alpha), ib = value(current.beta);
     const long double va = value(voltage.alpha), vb = value(voltage.beta);
     const long double a = value(ctx.flux_alpha), b = value(ctx.flux_beta);
-    const long double u = work_roundoff<Tag>();
-    const long double g = u / (1 - u);
     Estimate e{};
     e.alpha = a + t * (va - r * ia);
     e.beta = b + t * (vb - r * ib);
-    auto component_error = [g, r, t](long double old, long double i, long double v) {
-        const long double ri = r * i;
-        const long double ri_err = g * std::abs(ri);
-        const long double drop = v - ri;
-        const long double drop_err = ri_err + g * (std::abs(drop) + ri_err);
-        const long double increment = t * drop;
-        const long double increment_err = t * drop_err +
-            g * (std::abs(increment) + t * drop_err);
-        return increment_err + g * (std::abs(old + increment) + increment_err);
-    };
-    e.alpha_error = component_error(a, ia, va);
-    e.beta_error = component_error(b, ib, vb);
     e.magnitude = std::hypot(e.alpha, e.beta);
-    /* hypot is Lipschitz; fixed scaled-hypot adds div/mul/add/sqrt/mul errors. */
-    e.magnitude_error = std::hypot(e.alpha_error, e.beta_error) +
-        (Tag::fixed ? 5 : 1) * g * e.magnitude;
     const long double cross = e.alpha * ib - e.beta * ia;
     const long double p = (1.5L * ctx.config.pole_pairs);
-    const long double aerr = std::abs(ib) * e.alpha_error;
-    const long double berr = std::abs(ia) * e.beta_error;
-    const long double cross_err = aerr + berr +
-        g * (std::abs(e.alpha * ib) + aerr + std::abs(e.beta * ia) + berr) +
-        g * (std::abs(cross) + aerr + berr);
     e.torque = p * cross;
-    e.torque_error = p * cross_err + g * (std::abs(e.torque) + p * cross_err);
+    if constexpr (Tag::fixed) {
+        constexpr long double h = 0x1p-32L;
+        e.alpha_error = t * h + h;
+        e.beta_error = t * h + h;
+        const long double hi = std::max(std::abs(e.alpha), std::abs(e.beta));
+        // scaled hypot: ratio <=1, square, sqrt at argument >=1, final multiply.
+        e.magnitude_error = std::hypot(e.alpha_error, e.beta_error) +
+            h + (hi + e.alpha_error + e.beta_error) * (2.5L * h + h * h);
+        e.torque_error = p * (std::abs(ib) * e.alpha_error +
+                             std::abs(ia) * e.beta_error + 2 * h) + h;
+    } else {
+        const long double u = work_roundoff<Tag>();
+        const long double g = u / (1 - u);
+        auto component_error = [g, r, t](long double old, long double i, long double v) {
+            const long double ri = r * i;
+            const long double ri_err = g * std::abs(ri);
+            const long double drop = v - ri;
+            const long double drop_err = ri_err + g * (std::abs(drop) + ri_err);
+            const long double increment = t * drop;
+            const long double increment_err = t * drop_err +
+                g * (std::abs(increment) + t * drop_err);
+            return increment_err + g * (std::abs(old + increment) + increment_err);
+        };
+        e.alpha_error = component_error(a, ia, va);
+        e.beta_error = component_error(b, ib, vb);
+        e.magnitude_error = std::hypot(e.alpha_error, e.beta_error) + g * e.magnitude;
+        const long double aerr = std::abs(ib) * e.alpha_error;
+        const long double berr = std::abs(ia) * e.beta_error;
+        const long double cross_err = aerr + berr +
+            g * (std::abs(e.alpha * ib) + aerr + std::abs(e.beta * ia) + berr) +
+            g * (std::abs(cross) + aerr + berr);
+        e.torque_error = p * cross_err + g * (std::abs(e.torque) + p * cross_err);
+    }
     return e;
 }
 
@@ -114,7 +125,7 @@ template<class T> void near(long double expected, long double arithmetic_error, 
     /* Long-double oracle evaluation has <= a few double-rounding units here. */
     const long double oracle_error = 16 * std::numeric_limits<long double>::epsilon() *
         (std::abs(expected) + arithmetic_error);
-    EXPECT_LE(discrepancy, arithmetic_error + half_unit(actual) + oracle_error)
+    EXPECT_LE(discrepancy, arithmetic_error + output_roundoff(actual) + oracle_error)
         << "expected=" << static_cast<double>(expected)
         << " actual=" << value(actual)
         << " arithmetic budget=" << static_cast<double>(arithmetic_error);

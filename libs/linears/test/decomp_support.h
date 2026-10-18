@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <limits>
 #include <random>
+#include <stdexcept>
 #include <type_traits>
 #include <vector>
 
@@ -42,8 +43,8 @@ struct Name { \
 };
 LINEARS_DECOMP_TEST_FORMAT(F32, f32, float, float, 0, 0x1p-23, 0x1p-23)
 LINEARS_DECOMP_TEST_FORMAT(F64, f64, double, double, 0, 0x1p-52, 0x1p-52)
-LINEARS_DECOMP_TEST_FORMAT(Q15, q15, int16_t, linears_fixed_t, 15, 0x1p-14, 0x1p-30)
-LINEARS_DECOMP_TEST_FORMAT(Q31, q31, int32_t, linears_fixed_t, 31, 0x1p-30, 0x1p-30)
+LINEARS_DECOMP_TEST_FORMAT(Q15, q15, int16_t, linears_fixed_t, 15, 0x1p-15, 0x1p-31)
+LINEARS_DECOMP_TEST_FORMAT(Q31, q31, int32_t, linears_fixed_t, 31, 0x1p-31, 0x1p-31)
 #undef LINEARS_DECOMP_TEST_FORMAT
 
 using Formats = ::testing::Types<F32, F64, Q15, Q31>;
@@ -53,7 +54,8 @@ using Formats = ::testing::Types<F32, F64, Q15, Q31>;
  *
  * Construct from Eigen values before forming the Eigen reference: decoded()
  * returns the exact represented input, not the original unquantized samples.
- * The optional scale multiplies values by 2^scale without changing q mantissas.
+ * The optional scale multiplies the actual input values before quantization.
+ * Fixed fixtures outside [-1,+1] throw; no automatic normalization is applied.
  */
 template<class Format> class Matrix {
 public:
@@ -62,7 +64,7 @@ public:
     linears_matrix_t matrix;
 
     Matrix(size_t rows, size_t cols)
-        : data(rows * cols), matrix{data.empty() ? nullptr : data.data(), rows, cols, 0} {}
+        : data(rows * cols), matrix{data.empty() ? nullptr : data.data(), rows, cols} {}
 
     explicit Matrix(const Eigen::MatrixXd &values, int scale = 0)
         : Matrix(static_cast<size_t>(values.rows()), static_cast<size_t>(values.cols()))
@@ -73,18 +75,16 @@ public:
                     data[static_cast<size_t>(i * values.cols() + j)] =
                         static_cast<Raw>(std::scalbn(values(i, j), scale));
         } else {
-            const double maximum = values.size() == 0 ? 0.0 : values.cwiseAbs().maxCoeff();
-            int exponent = 0;
-            if (maximum != 0.0) {
-                (void)std::frexp(maximum, &exponent);
-                const double preview = std::round(std::scalbn(maximum, Format::bits - exponent));
-                if (preview > static_cast<double>(std::numeric_limits<Raw>::max())) ++exponent;
-            }
-            for (Eigen::Index i = 0; i < values.rows(); ++i)
-                for (Eigen::Index j = 0; j < values.cols(); ++j)
+            for (Eigen::Index i = 0; i < values.rows(); ++i) {
+                for (Eigen::Index j = 0; j < values.cols(); ++j) {
+                    const double value = std::scalbn(values(i, j), scale);
+                    if (!std::isfinite(value) || value < -1.0 || value > 1.0)
+                        throw std::out_of_range("fixed-Q test input is outside [-1,+1]");
+                    const double rounded = std::round(std::scalbn(value, Format::bits));
                     data[static_cast<size_t>(i * values.cols() + j)] = static_cast<Raw>(
-                        std::round(std::scalbn(values(i, j), Format::bits - exponent)));
-            matrix.exponent = maximum == 0.0 ? 0 : exponent + scale;
+                        std::min(rounded, static_cast<double>(std::numeric_limits<Raw>::max())));
+                }
+            }
         }
     }
 
@@ -99,7 +99,7 @@ public:
             for (size_t j = 0; j < matrix.cols; ++j) {
                 double value = static_cast<double>(data[i * matrix.cols + j]);
                 if constexpr (Format::bits != 0)
-                    value = std::scalbn(value, matrix.exponent - Format::bits);
+                    value = std::scalbn(value, -Format::bits);
                 result(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j)) = value;
             }
         return result;
@@ -108,7 +108,6 @@ public:
     void sentinel()
     {
         std::fill(data.begin(), data.end(), static_cast<Raw>(37));
-        matrix.exponent = 17;
     }
 };
 
@@ -124,8 +123,8 @@ public:
             data.front() = static_cast<Work>(123.25);
             data.back() = static_cast<Work>(-456.5);
         } else {
-            data.front() = {INT32_C(1431655765), 9};
-            data.back() = {-INT32_C(1431655765), 11};
+            data.front() = INT64_C(0x123456789abcdef);
+            data.back() = -INT64_C(0x123456789abcdef);
         }
     }
     void check() const
@@ -134,31 +133,44 @@ public:
             EXPECT_EQ(data.front(), static_cast<Work>(123.25));
             EXPECT_EQ(data.back(), static_cast<Work>(-456.5));
         } else {
-            EXPECT_EQ(data.front().mantissa, INT32_C(1431655765));
-            EXPECT_EQ(data.front().exponent, 9);
-            EXPECT_EQ(data.back().mantissa, -INT32_C(1431655765));
-            EXPECT_EQ(data.back().exponent, 11);
+            EXPECT_EQ(data.front(), INT64_C(0x123456789abcdef));
+            EXPECT_EQ(data.back(), -INT64_C(0x123456789abcdef));
         }
     }
 };
 
-/** @brief Frobenius bound for final fixed-point block rounding; native formats return zero. */
+/**
+ * @brief Frobenius export error bound: fixed output quantum, with a full LSB at MAX.
+ *
+ * q31 ordinary export is exact because the working format also has 31 fraction
+ * bits. q15 ordinary export rounds by at most half a signal LSB. A stored MAX
+ * may originate from logical +1 and is conservatively charged one signal LSB.
+ */
 template<class Format> double quantization_bound(const Matrix<Format> &matrix)
 {
     if constexpr (Format::bits == 0) return 0.0;
-    else return std::sqrt(static_cast<double>(matrix.data.size())) *
-                std::scalbn(0.5, matrix.matrix.exponent - Format::bits);
+    else {
+        double squares = 0.0;
+        for (const auto value : matrix.data) {
+            const double units = value == std::numeric_limits<typename Format::Raw>::max()
+                ? 1.0 : (Format::bits == 15 ? 0.5 : 0.0);
+            squares += units * units;
+        }
+        return std::sqrt(squares) * std::scalbn(1.0, -Format::bits);
+    }
 }
 
-/** @brief First-order operation-count bound plus the actual factors' block-rounding bounds. */
+/** @brief Operation-count bound plus fixed-quantum output rounding; native errors remain relative. */
 template<class Format> double product_bound(const Matrix<Format> &left,
                                             const Matrix<Format> &right,
                                             double input_norm, size_t inner_dimension)
 {
     const double el = quantization_bound(left), er = quantization_bound(right);
+    const double arithmetic_scale = Format::bits == 0 ? input_norm :
+        std::sqrt(static_cast<double>(left.matrix.rows * right.matrix.cols));
     return el * right.decoded().norm() + left.decoded().norm() * er + el * er +
            8.0 * static_cast<double>(std::max<size_t>(inner_dimension, 1)) *
-           Format::working_epsilon * input_norm;
+           Format::working_epsilon * arithmetic_scale;
 }
 
 /** @brief Deterministic finite input matrix with both signs. */
@@ -189,7 +201,8 @@ inline void expect_relative(const Eigen::MatrixXd &actual, const Eigen::MatrixXd
  *
  * Constants are chosen per algorithm at call sites. Input quantization is
  * already included in decoded() references; storage epsilon models each final
- * factor's block quantization and working epsilon models arithmetic roundoff.
+ * factor's fixed quantum; fixed working_epsilon is an absolute F31 quantum,
+ * whereas native working_epsilon is relative arithmetic precision.
  */
 template<class Format> constexpr double tolerance(size_t dimension, double operations = 16.0)
 {
