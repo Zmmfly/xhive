@@ -49,10 +49,16 @@ Use one consistent selection for connected controllers and observers:
 | Current-loop integral gain | `ki_SI * Ibase*Tbase / Vbase` |
 | Speed-loop proportional gain | `kp_SI / (Ibase*Tbase)` |
 | Speed-loop integral gain | `ki_SI / Ibase` |
+| Generic PID `kp` / `ki` / `kd` | `kp_SI*E/U` / `ki_SI*E*Tbase/U` / `kd_SI*E/(U*Tbase)` |
+| PID derivative filter time constant | `Tf / Tbase` |
+
+`E` and `U` are the bases of the PID error and output; the current and speed
+rows are this rule with `E=Ibase, U=Vbase` and `E=1/Tbase, U=Ibase`.
 
 All ordinary Q arguments must fit their fixed signal domain. In particular,
 encoded `dt/Tbase` must be positive, and positive frequencies cannot exceed the
-largest raw signal. Only PI/FOC gains are wide F31 coefficients; resistance,
+largest raw signal. Only PID/FOC gains, the PID derivative filter time constant
+and the PID setpoint weight are wide F31 coefficients; resistance,
 inductance, thresholds, actual voltages, currents, duty and angle remain bounded
 signals. Gain range errors are not silently saturated. Choose bases against the
 actual operating envelope and resolution, not merely to encode one nominal point.
@@ -61,9 +67,10 @@ The voltage-model equations remain `dpsi_pu = dt_pu*(v_pu-R_pu*i_pu)` and
 `torque_pu = 1.5*pole_pairs*cross(psi_pu,i_pu)`. Arbitrary independent torque/flux
 normalizations would change their coefficients and are not this API's contract.
 For the speed/current cascade, two valid speed signals can differ by more than
-one. Its private shared PI entry keeps that error in F31 until actuator limiting;
-it does not narrow or clip the intermediate error. The public generic PI error
-argument itself is still a Q1 signal.
+one. Its private shared PID entry keeps the unrounded mechanical speed and that
+error in F31 until actuator limiting; it does not narrow or clip the
+intermediate error. The public PID setpoint and measurement are Q1 signals;
+their difference is likewise formed in F31.
 
 Q conversion checks the actual closed domain `[-1,+1]` before rounding.
 Mathematical `+1`, or an in-domain Q15 value whose nearest rounding reaches
@@ -76,12 +83,13 @@ then store at the same F31 binary point.
 
 ## Control primitives
 
-`fieldctrl_base.h` provides coordinate transforms, trigonometry, conditional
-anti-windup PI, radial voltage limiting, SVPWM duty calculation and VVVF.
+`fieldctrl_base.h` provides coordinate transforms, trigonometry, a bounded PID
+with boundary anti-windup, radial voltage limiting, SVPWM duty calculation and
+VVVF.
 
 ### State precision and failures
 
-The q15 public values are quantized at the API boundary, but PI integrals and
+The q15 public values are quantized at the API boundary, but PID integrals and
 VVVF phase retain int64 F31 state. A sub-Q15-LSB update can therefore accumulate
 before the signal is rounded. Q31 already has 31 fraction bits: its wider state
 adds integer headroom, not hidden fractional bits. Both Q paths round products
@@ -96,7 +104,7 @@ The angle table is nearest-rounded `atan(2^-i)/(2*pi)` in Q62 turns.
 
 Invalid arguments, nonfinite floating inputs and actual work/output range
 errors leave every output and mutable context unchanged. Intentional
-voltage/PI clipping is successful calculation, not a range error. Outputs may
+voltage/PID clipping is successful calculation, not a range error. Outputs may
 not overlap mutable contexts; multi-output sine/cosine ranges must be disjoint.
 Initialize contexts through their init entry point and do not edit their fields.
 
@@ -111,14 +119,33 @@ precision: two sufficiently large finite components can have an unrepresentable
 norm. They report RANGE without committing, even if a clipped vector would fit.
 SVPWM avoids that particular magnitude overflow by normalizing before its norm.
 
-### PI and modulation
+### PID and modulation
 
-The PI forms `I_candidate=clamp(I+ki*dt*error,lower,upper)`. If
-`kp*error+I_candidate` exceeds a limit and the integration increment drives
-further into that limit, it rejects the increment and recomputes from old I.
-It then clamps the command. This is conditional integration, not back-calculation.
-The caller selects a stable sample period; the primitive enforces positive dt
-and representable arithmetic, not a plant-specific stability criterion.
+`fieldctrl_S_pid_init(&ctx, &config, integral)` copies a configuration and an
+initial integral (for a bumpless start); `fieldctrl_S_pid_step(&ctx, setpoint,
+measurement, dt, &output)` returns the bounded command together with the P, I
+and D terms and a `saturated` flag; `fieldctrl_S_pid_reset(&ctx, integral)`
+clears the derivative history and keeps the tuning. A zero-initialized
+configuration plus `kp`, `ki`, `lower` and `upper` is a plain PI; `kd`, the
+derivative source and filter, and the `FIELDCTRL_PID_OPT_*` options (setpoint
+weight, integral separation, independent integral limit) are opt-in. The
+equations are listed once in `fieldctrl_base.h`. Configuration is immutable:
+there are no setters or callbacks, reinitialize to retune.
+
+- Anti-windup advances a saturating integral at most to the value that puts
+  the unclamped command exactly on the crossed bound, never beyond it and
+  never back past its previous value. Rejecting the whole increment, the former
+  conditional integration, could leave the integral short of that boundary.
+- The first step after init or reset only records the error and measurement,
+  so a nonzero initial value causes no derivative kick.
+- `ki*dt`, `kd/dt` and `dt/(Tf+dt)` are cached and recomputed only when `dt`
+  changes, which keeps both divisions out of fixed-rate loops.
+- Non-positive `dt` returns DOMAIN; the primitive enforces representable
+  arithmetic, not a plant-specific stability criterion.
+
+This structure follows the generic `ezctrl` PID, adapted to fieldctrl's
+status codes, atomic failures and Q per-unit contract. The speed cascade uses
+the same PID with `kd=0`.
 
 SVPWM first applies the circular linear-modulation bound `Vdc/sqrt(3)`, converts
 to balanced phase voltages, subtracts `(maximum+minimum)/2` common mode, and
@@ -227,7 +254,8 @@ corrections or a claim that quantization has disappeared.
 - J. E. Volder, “The CORDIC Trigonometric Computing Technique,” IRE Transactions
   on Electronic Computers, EC-8, 1959, pp. 330–334: finite rotation/vectoring.
 - K. J. Åström and T. Hägglund, *PID Controllers: Theory, Design, and Tuning*,
-  2nd ed., ISA, 1995: conditional integration as anti-windup.
+  2nd ed., ISA, 1995: setpoint weighting, derivative filtering and integrator
+  anti-windup.
 - H. W. van der Broeck, H.-C. Skudelny and G. V. Stanke, “Analysis and
   Realization of a Pulsewidth Modulator Based on Voltage Space Vectors,” IEEE
   Transactions on Industry Applications, 24(1), 1988, pp. 142–150: space-vector
@@ -235,12 +263,16 @@ corrections or a claim that quantization has disappeared.
 
 ## Validation
 
-The category tests (`transforms`, `pi_pwm`, `vvvf`) instantiate f32, f64, q15
+The category tests (`transforms`, `pid_pwm`, `vvvf`) instantiate f32, f64, q15
 and q31. They use fixed-seed independent equations with quantized reference
 inputs, raw MIN/MAX/LSB and periodic endpoints, real output-domain failures,
 alias/failure atomicity checks, a 12,000-sample physical RL plant with caller-side
 per-unit conversion, saturation and direction changes, 20,000 integral updates,
-F31 halfway/sub-LSB behavior and a 16,000-sample frequency/amplitude ramp. Original
+F31 halfway/sub-LSB behavior and a 16,000-sample frequency/amplitude ramp. PID
+cases use exact binary fractions for derivative sources, the derivative filter,
+the dt cache, boundary anti-windup, setpoint weight, integral separation and
+limits, reset and configuration validation, plus a 16,384-sample saturated
+mass-position loop with derivative on measurement. Original
 floating subnormal and extreme-scale counterexamples remain tests. The VVVF
 voltage oracle uses long-double trigonometry so a rounded full-turn double
 argument does not dominate the f64 error budget. None are hardware-in-the-loop

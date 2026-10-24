@@ -6,7 +6,7 @@ permission to flash/run hardware. The separate top-level `host_benchmark.c` is
 a Linux host comparison tool; it is not included by the firmware's `src/*.c`
 rule. None of these `.c` files adds a `test/**.cc` GoogleTest entry.
 
-The firmware makes real calls in all four formats and uses 292
+The firmware makes real calls in all four formats and uses 296
 `--require-defined` roots to retain every public algorithm variant while
 collecting unused vendor code. It uses caller-owned fixed-size storage, SDK
 startup/linker templates, no RTOS, 256 KiB ROM and 96 KiB RAM. Empty `_init`/
@@ -15,7 +15,7 @@ implementation is stubbed.
 
 ## Fixed-Q inputs and storage
 
-Matrices have three fields; Q signals are raw Q1.15/Q1.31 values. PI/scalar
+Matrices have three fields; Q signals are raw Q1.15/Q1.31 values. PID/scalar
 Kalman coefficients use the documented wide F31 format. Q matrix Kalman uses
 actual `linears_fixed_t[]` intermediates and the `FILTERS_KALMAN_Q_*` capacity
 macros, not a cast of the former raw-signal workspace.
@@ -56,6 +56,14 @@ function symbols survived collection; no unresolved or matched allocator
 symbols were present. ELF identity was ELF32 ARM, EABI5 hard-float, VFPv4-D16.
 Compiler/layout changes can alter size; do not enlarge the memory region to
 turn an overflow into a pass.
+
+The PI-to-PID change replaced the `pi_init`/`pi_step` roots with
+`pid_init`/`pid_reset`/`pid_step` (292 to 296 roots). Re-linked with the same
+xHive Arm GNU 14.3.1 toolchain, the image used **246,300 ROM bytes** against
+238,732 for the preceding source in the same environment; data+bss stayed
+1,128 bytes and all 12 PID roots survived collection. The largest fieldctrl
+frame became `fieldctrl_f64_speed_foc_step` at 480 bytes (previously 320), as
+the speed cascade now embeds the larger PID context.
 
 `-fstack-usage`, VLA/alloca errors and a 4096-byte frame-warning threshold are
 enabled. The measured 392 library `.su` entries were static; largest individual
@@ -150,7 +158,9 @@ The six firmware inputs match the successful external run at
 `fixed-q-xhive-arm-9b2DGw` byte-for-byte. The host program matches the measured
 `fixed-q-xhive-comparison-ut5dAw/benchmark.c`. These hashes identify source inputs,
 not identical ELF debug/link layout across directories. No generated artifacts
-are checked in.
+are checked in. `xmake.lua` has since changed only in its PID root list; its
+current SHA-256 is
+`494ce203c5191a646e0f1bdb2020c7aebefa4e0b5413e3591d0b2e773ea1289c`.
 
 | Relative path | SHA-256 |
 | --- | --- |

@@ -72,14 +72,15 @@ v_limited = v_request * min(1, Vmax/|v_request|)
 ```text
 mechanical_feedback = electrical_speed / pole_pairs
 speed_error = mechanical_reference - mechanical_feedback
-iq_reference = PI_speed(speed_error, dt), limited to +/-current_limit
+iq_reference = PID_speed(mechanical_reference, mechanical_feedback, dt), kd = 0,
+               limited to +/-current_limit
 id_reference = 0
 FOC_current(..., reference, ..., dt)
 ```
 
-外环首先采用基础 PI 的条件积分抗饱和。如果内环的最终 q 电压饱和残差与速度误差非零且同号，还撤销本拍速度积分更新，避免电压不足时外环继续累积。该同号判断不做物理量相乘。本拍已经生成的 q 电流参考保留，撤销后的积分影响下一拍。
+外环使用基础 PID（`kd=0`）的边界抗饱和：积分最多推进到使未限幅 q 电流参考恰好落在限值上的位置，不越过该边界，也不回拉到上一拍积分以下。如果内环的最终 q 电压饱和残差与速度误差非零且同号，还撤销本拍速度积分更新，避免电压不足时外环继续累积。该同号判断不做物理量相乘。本拍已经生成的 q 电流参考保留，撤销后的积分影响下一拍。
 
-`speed_foc_step` 每调用一次同时运行两环，二者共用传入的 `dt`，没有隐藏降采样。若要不同环路频率，应由调用者分别调度基础 PI 与独立电流 `foc_step`，并管理参考值保持和相应的抗饱和反馈。
+`speed_foc_step` 每调用一次同时运行两环，二者共用传入的 `dt`，没有隐藏降采样。若要不同环路频率，应由调用者分别调度基础 PID 与独立电流 `foc_step`，并管理参考值保持和相应的抗饱和反馈。
 
 ## SMO：真实电流预测与反电势提取
 

@@ -1,6 +1,6 @@
 ---
 name: xhive-fieldctrl
-description: 使用 xhive fieldctrl 的四版 VVVF、FOC/速度环、SMO 与 DTC：核对坐标和采样时序，正确进行无指数 Q 格式与标幺换算，接入调用者状态、SDK 依赖及主机验证，明确硬件安全边界。
+description: 使用 xhive fieldctrl 的四版 PID、VVVF、FOC/速度环、SMO 与 DTC：核对坐标和采样时序，正确进行无指数 Q 格式与标幺换算，接入调用者状态、SDK 依赖及主机验证，明确硬件安全边界。
 ---
 
 # xhive fieldctrl 使用技能
@@ -17,7 +17,7 @@ description: 使用 xhive fieldctrl 的四版 VVVF、FOC/速度环、SMO 与 DTC
 | --- | --- |
 | [fieldctrl.h](../../../libs/fieldctrl/include/fieldctrl.h) | umbrella，包含下列全部组件 |
 | [fieldctrl_types.h](../../../libs/fieldctrl/include/fieldctrl_types.h) | `abc/ab/dq` 类型、坐标、单位、宽 F31 诊断类型 |
-| [fieldctrl_base.h](../../../libs/fieldctrl/include/fieldctrl_base.h) | wrap/sincos/atan2、Clarke/Park 及逆变换、PI、限压、SVPWM、VVVF |
+| [fieldctrl_base.h](../../../libs/fieldctrl/include/fieldctrl_base.h) | wrap/sincos/atan2、Clarke/Park 及逆变换、PID（`pid_init/reset/step`）、限压、SVPWM、VVVF |
 | [fieldctrl_foc.h](../../../libs/fieldctrl/include/fieldctrl_foc.h) | `foc_init/step`、`speed_foc_init/step` |
 | [fieldctrl_smo.h](../../../libs/fieldctrl/include/fieldctrl_smo.h) | `smo_init/step`、方向枚举及 observable/locked |
 | [fieldctrl_dtc.h](../../../libs/fieldctrl/include/fieldctrl_dtc.h) | `dtc_init/step`、磁链/转矩估计和离散逆变器请求 |
@@ -49,7 +49,7 @@ description: 使用 xhive fieldctrl 的四版 VVVF、FOC/速度环、SMO 与 DTC
 4. API 无动态分配、MMIO、阻塞等待或锁；ISR 中还需独占存储、正确采样时间戳与实际执行时间预算。
 5. 输出不得与可变 context 重叠；多输出接口如 sincos 的目的存储也须互不重叠。
 6. 错误不改变 context/output；**保留旧字节不等于旧命令仍安全**。失败后不得把旧输出当成本拍有效结果驱动硬件。
-7. `LINEARS_OK` 仅代表本次软件计算成功。主动限压/PI 饱和可正常返回 OK；SMO 的有效性另看标志。
+7. `LINEARS_OK` 仅代表本次软件计算成功。主动限压/PID 饱和可正常返回 OK；SMO 的有效性另看标志。
 
 ## 4. Q 格式与 per-unit：不能只把 f32 改名为 q15
 
@@ -73,9 +73,10 @@ description: 使用 xhive fieldctrl 的四版 VVVF、FOC/速度环、SMO 与 DTC
 | 转矩 | `torque/(Vbase*Ibase*Tbase)` |
 | 电流 PI 比例/积分系数 | `kp_SI*Ibase/Vbase` / `ki_SI*Ibase*Tbase/Vbase` |
 | 速度 PI 比例/积分系数 | `kp_SI/(Ibase*Tbase)` / `ki_SI/Ibase` |
+| 通用 PID `kd` / 微分滤波时间常数 | `kd_SI*E/(U*Tbase)` / `Tf/Tbase`；E、U 为误差和输出基值 |
 
 - 普通信号仍须 fit Q1：R/L、阈值、SMO sliding_gain、alpha、母线、电流、磁链/转矩输出都不能随意扩大到宽域。
-  只有头文件明确声明的 PI/FOC 系数、状态和诊断使用宽 F31；合法分量经过旋转或求模仍可能超域。
+  只有头文件明确声明的 PID/FOC 系数（含 PID 微分滤波时间常数和设定值权重）、状态和诊断使用宽 F31；合法分量经过旋转或求模仍可能超域。
 - 量化前检查实际物理量和中间值范围，再做最近舍入，中点远离零；不能先强转窄整数后检查。
   负数不能用 `(int)(x+0.5)` 实现此规则，也不能左移负的有符号数。
   精确的 -0.25 Q15 可直接写 `-8192`；提升到 F31 用 `linears_fixed_from_q15(raw)`，不要 `raw << 16`。
@@ -132,15 +133,21 @@ int main(void)
 对应回归见 [test/vvvf.cc](../../../libs/fieldctrl/test/vvvf.cc) 的 `VvvfPerUnit`。
 这只演示编码、状态复用和命令输出，电场命令频率不是已测转子速度。
 
-## 6. FOC 与机械速度外环
+## 6. 基础 PID、FOC 与机械速度外环
 
+- 基础 PID：`pid_init(&ctx,&config,integral)` 复制配置，`integral` 为初始积分（无扰切换）；
+  `pid_step(&ctx,setpoint,measurement,dt,&out)` 输出限幅命令、P/I/D 各项与 `saturated`。
+  `config` 零初始化即全部可选功能关闭；`kd`、微分源/滤波和 `FIELDCTRL_PID_OPT_*` 均需显式开启。
+  配置不可在线修改（无 setter/回调），整定变化需重新 init；`pid_reset` 只清微分历史并设定积分。
+- 首拍（init/reset 后）只记录误差和测量，D=0；积分最多推进到使未限幅命令恰好落在限值上，不越过也不回拉。
+  `ki*dt`、`kd/dt`、`dt/(Tf+dt)` 按 dt 缓存，dt 变化才重算；Q 版 `kd/dt` 超出 F31 宽域返回 RANGE。
 - `fieldctrl_S_foc_init(&ctx, &config)` 接收 **config 指针**并复制；`step` 的测量输入是 **ab**，参考输入是 **dq**。
   若采集到 abc，先用同版本 Clarke。输入电流、转子磁链角、母线和 dt 必须时间一致。
 - 电流 PI 的电压约束是 `min(config.voltage_limit,dc_bus/sqrt(3))` 的 d/q **联合圆形**边界，不是各轴单独裁剪。
   推向饱和的两轴积分增量一起拒绝；输出有未限幅请求、限幅电压和 duty，不能混用。
 - 速度级联 `speed_foc_step(ctx,current,mechanical_reference,electrical_speed,electrical_angle,dc_bus,dt,out)`：
   外环生成受 `current_limit` 约束的 iq 参考，id=0；内环电压饱和也参与速度积分抗饱和。
-- 每次调用两环都运行，**共用 dt、没有自动分频**。不同环频率需调用者分别调度基础 PI 与电流 FOC，保持参考并处理抗饱和反馈。
+- 每次调用两环都运行，**共用 dt、没有自动分频**。不同环频率需调用者分别调度基础 PID 与电流 FOC，保持参考并处理抗饱和反馈。
 - 不提供解耦/反电势前馈、MTPA、弱磁、无感启动或板级故障状态机。
 
 第二个完整 C99 consumer 使用 f32 接口和合成零电流，验证参数形状与状态生命周期。
@@ -245,7 +252,7 @@ xmake test -g xhive -v 'fieldctrl_test_*/*'
 当前精确类别选择器与 [test/](../../../libs/fieldctrl/test/) 文件对应：
 
 ```sh
-xmake test -g xhive -v 'fieldctrl_test_transforms/transforms' 'fieldctrl_test_pi_pwm/pi_pwm'
+xmake test -g xhive -v 'fieldctrl_test_transforms/transforms' 'fieldctrl_test_pid_pwm/pid_pwm'
 xmake test -g xhive -v 'fieldctrl_test_vvvf/vvvf'
 xmake test -g xhive -v 'fieldctrl_test_foc/foc' 'fieldctrl_test_smo/smo'
 xmake test -g xhive -v 'fieldctrl_test_dtc/dtc'
