@@ -119,7 +119,7 @@ TYPED_TEST(PidTest, InitRejectsAnEmptyOrNonFiniteLimit) {
     }
 }
 
-TYPED_TEST(PidTest, InitRejectsNegativeGains) {
+TYPED_TEST(PidTest, InitRejectsMixedGainSigns) {
     using api = ezc_test::pid_api<TypeParam>;
     using T = TypeParam;
 
@@ -135,6 +135,24 @@ TYPED_TEST(PidTest, InitRejectsNegativeGains) {
         EXPECT_EQ(ctx.cfg.kp, T(0));
         EXPECT_EQ(api::step(&ctx, T(1), T(0)), T(0));
     }
+}
+
+TYPED_TEST(PidTest, InitAcceptsUniformlyNegativeGainsForReverseAction) {
+    using api = ezc_test::pid_api<TypeParam>;
+    using T = TypeParam;
+    const T eps = ezc_test::pid_epsilon<T>();
+
+    typename api::context_type ctx{};
+    typename api::config_type cfg = api::make_config();
+    cfg.kp = T(-2);
+    cfg.ki = T(-1);
+    ASSERT_EQ(api::init(&ctx, &cfg), EZC_OK);
+    EXPECT_EQ(ctx.pid.config.kp, T(-2));
+    EXPECT_EQ(ctx.pid.config.ki, T(-1));
+
+    /* e = 1: P = -2, I = -1. */
+    EXPECT_NEAR(api::step(&ctx, T(1), T(0)), T(-3), eps);
+    EXPECT_EQ(ctx.pid.integral, T(-1));
 }
 
 TYPED_TEST(PidTest, InitStoresEveryConfigurationField) {
@@ -228,7 +246,7 @@ TYPED_TEST(PidTest, SetGainsKeepsTheIntegral) {
     EXPECT_EQ(ctx.pid.integral, T(3));
 }
 
-TYPED_TEST(PidTest, SetGainsRejectsNegativeOrNonFiniteGainsAndKeepsTheContext) {
+TYPED_TEST(PidTest, SetGainsRejectsMixedSignsOrNonFiniteGainsAndKeepsTheContext) {
     using api = ezc_test::pid_api<TypeParam>;
     using T = TypeParam;
     const T nan = std::numeric_limits<T>::quiet_NaN();
@@ -240,9 +258,9 @@ TYPED_TEST(PidTest, SetGainsRejectsNegativeOrNonFiniteGainsAndKeepsTheContext) {
     ASSERT_EQ(api::init(&ctx, &cfg), EZC_OK);
     ASSERT_EQ(api::step(&ctx, T(1), T(0)), T(2));
 
-    EXPECT_EQ(api::set_gains(&ctx, T(-1), T(0), T(0)), EZC_ERR_INVALID_ARG);
-    EXPECT_EQ(api::set_gains(&ctx, T(0), T(-1), T(0)), EZC_ERR_INVALID_ARG);
-    EXPECT_EQ(api::set_gains(&ctx, T(0), T(0), T(-1)), EZC_ERR_INVALID_ARG);
+    EXPECT_EQ(api::set_gains(&ctx, T(-1), T(1), T(0)), EZC_ERR_INVALID_ARG);
+    EXPECT_EQ(api::set_gains(&ctx, T(1), T(-1), T(0)), EZC_ERR_INVALID_ARG);
+    EXPECT_EQ(api::set_gains(&ctx, T(0), T(1), T(-1)), EZC_ERR_INVALID_ARG);
     EXPECT_EQ(api::set_gains(&ctx, nan, T(0), T(0)), EZC_ERR_INVALID_ARG);
 
     /* Nothing was rebuilt: tuning, integral and history are untouched. */

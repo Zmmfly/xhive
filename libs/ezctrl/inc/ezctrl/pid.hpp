@@ -103,9 +103,9 @@ struct pid_traits<float> {
      * @brief Change the gains; forwards to ezc_pid_f32_set_gains().
      *
      * @param[in,out] ctx Controller context. Must not be NULL.
-     * @param[in] kp Proportional gain; must not be negative.
-     * @param[in] ki Integral gain per second; must not be negative.
-     * @param[in] kd Derivative gain in seconds; must not be negative.
+     * @param[in] kp Proportional gain; same sign as @p ki and @p kd.
+     * @param[in] ki Integral gain per second; same sign as @p kp and @p kd.
+     * @param[in] kd Derivative gain in seconds; same sign as @p kp and @p ki.
      * @return ezc_status_t Result of ezc_pid_f32_set_gains(); the integral is
      *         kept.
      */
@@ -294,9 +294,9 @@ struct pid_traits<double> {
      * @brief Change the gains; forwards to ezc_pid_f64_set_gains().
      *
      * @param[in,out] ctx Controller context. Must not be NULL.
-     * @param[in] kp Proportional gain; must not be negative.
-     * @param[in] ki Integral gain per second; must not be negative.
-     * @param[in] kd Derivative gain in seconds; must not be negative.
+     * @param[in] kp Proportional gain; same sign as @p ki and @p kd.
+     * @param[in] ki Integral gain per second; same sign as @p kp and @p kd.
+     * @param[in] kd Derivative gain in seconds; same sign as @p kp and @p ki.
      * @return ezc_status_t Result of ezc_pid_f64_set_gains(); the integral is
      *         kept.
      */
@@ -511,11 +511,11 @@ public:
     /**
      * @brief Set the gains, see ezc_pid_*_set_gains().
      *
-     * @param[in] kp Proportional gain; must not be negative.
-     * @param[in] ki Integral gain per second; must not be negative.
-     * @param[in] kd Derivative gain in seconds; must not be negative.
-     * @return ezc_status_t EZC_OK on success, EZC_ERR_INVALID_ARG for a
-     *         negative or non-finite gain.
+     * @param[in] kp Proportional gain; same sign as @p ki and @p kd.
+     * @param[in] ki Integral gain per second; same sign as @p kp and @p kd.
+     * @param[in] kd Derivative gain in seconds; same sign as @p kp and @p ki.
+     * @return ezc_status_t EZC_OK on success, EZC_ERR_INVALID_ARG for mixed
+     *         signs or a non-finite gain.
      */
     ezc_status_t set_params(value_type kp, value_type ki, value_type kd) noexcept {
         return traits_type::set_gains(&ctx_, kp, ki, kd);

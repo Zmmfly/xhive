@@ -460,6 +460,12 @@ TYPED_TEST(Foc, FailureIsAtomicIncludingNestedSpeedStep)
         u.time(0.001),&speed_out),LINEARS_ERROR_DOMAIN);
     EXPECT_TRUE(fc_test::same_bytes(speed,speed_saved));
     EXPECT_TRUE(fc_test::same_bytes(speed_out,speed_out_saved));
+    // The generic PID accepts reverse action; the cascade anti-windup does not.
+    auto reverse=cascade;
+    reverse.kp=T::gain(-1);
+    reverse.ki=T::gain(-1);
+    EXPECT_EQ(A::speed_init(&speed,&reverse),LINEARS_ERROR_DOMAIN);
+    EXPECT_TRUE(fc_test::same_bytes(speed,speed_saved));
 }
 
 TYPED_TEST(Foc, InterleavedContextsMatchIndependentRuns)

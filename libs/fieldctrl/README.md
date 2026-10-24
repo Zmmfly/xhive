@@ -129,9 +129,20 @@ clears the derivative history and keeps the tuning. A zero-initialized
 configuration plus `kp`, `ki`, `lower` and `upper` is a plain PI; `kd`, the
 derivative source and filter, and the `FIELDCTRL_PID_OPT_*` options (setpoint
 weight, integral separation, independent integral limit) are opt-in. The
-equations are listed once in `fieldctrl_base.h`. Configuration is immutable:
-there are no setters or callbacks, reinitialize to retune.
+equations are listed once in `fieldctrl_base.h`. There are no setters or
+callbacks: `fieldctrl_S_pid_retune(&ctx, &config)` validates a complete new
+configuration and replaces it without restarting the controller.
 
+- `kp`, `ki` and `kd` share one sign: all nonnegative is direct action, all
+  nonpositive is reverse action (more output lowers the measurement). The step
+  equations are linear in the gains, so no input negation is needed; mixed
+  signs return DOMAIN. The speed cascade still requires nonnegative gains,
+  because its cross-loop anti-windup assumes a direct-acting speed loop.
+- Retuning keeps the state: the integral is clamped into the new integral
+  bounds and the derivative history continues, so a limit that follows the bus
+  voltage or a gain schedule may be applied every sample. Only a zero `kd`
+  clears the stored derivative term, and the `dt` cache is invalidated only
+  when `ki`, `kd` or the derivative filter change.
 - Anti-windup advances a saturating integral at most to the value that puts
   the unclamped command exactly on the crossed bound, never beyond it and
   never back past its previous value. Rejecting the whole increment, the former

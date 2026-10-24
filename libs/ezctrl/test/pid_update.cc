@@ -349,6 +349,42 @@ TYPED_TEST(PidTest, RejectedFirstStepReturnsZero) {
     EXPECT_EQ(api::update(&ctx, T(1), T(0), T(1)), T(1));
 }
 
+TYPED_TEST(PidTest, ReverseActingGainsDriveACoolingActuator) {
+    using api = ezc_test::pid_api<TypeParam>;
+    using T = TypeParam;
+    const T eps = ezc_test::pid_epsilon<T>();
+
+    typename api::context_type ctx{};
+    typename api::config_type cfg = api::make_config();
+    typename api::callback_sink sink;
+    /* More cooling lowers the temperature: all gains are negative. */
+    cfg.kp = T(-0.5);
+    cfg.ki = T(-0.25);
+    cfg.limit_enabled = true;
+    cfg.out_min = T(0);
+    cfg.out_max = T(1);
+    cfg.callback = &api::callback;
+    cfg.callback_ctx = &sink;
+    ASSERT_EQ(api::init(&ctx, &cfg), EZC_OK);
+
+    /* 2 K too warm: P = 1 alone saturates, so anti-windup holds I at 0. */
+    EXPECT_NEAR(api::step(&ctx, T(20), T(22)), T(1), eps);
+    EXPECT_TRUE(sink.limited);
+    EXPECT_EQ(ctx.pid.integral, T(0));
+
+    /* 0.5 K too warm: P = 0.25, I = 0.125. The callback reports real inputs. */
+    EXPECT_NEAR(api::step(&ctx, T(20), T(20.5)), T(0.375), eps);
+    EXPECT_FALSE(sink.limited);
+    EXPECT_EQ(sink.setpoint, T(20));
+    EXPECT_EQ(sink.measure, T(20.5));
+    EXPECT_EQ(sink.error, T(-0.5));
+    EXPECT_NEAR(sink.p_term, T(0.25), eps);
+    EXPECT_NEAR(sink.i_term, T(0.125), eps);
+
+    /* Too cold: the cooler switches off at the lower limit. */
+    EXPECT_EQ(api::step(&ctx, T(20), T(18)), T(0));
+}
+
 TYPED_TEST(PidTest, SamplePeriodScalesIntegralAndDerivative) {
     using api = ezc_test::pid_api<TypeParam>;
     using T = TypeParam;

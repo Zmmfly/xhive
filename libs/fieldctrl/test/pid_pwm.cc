@@ -556,6 +556,154 @@ TYPED_TEST(Pid, InitValidatesEnabledOptionsAtomically) {
     }
 }
 
+/* Field-wise equality of two step results; padding bytes are not compared. */
+template<class A> void expect_same_result(const typename A::pid_output &a,
+                                          const typename A::pid_output &b) {
+    EXPECT_EQ(a.output,b.output);
+    EXPECT_EQ(a.proportional,b.proportional);
+    EXPECT_EQ(a.integral,b.integral);
+    EXPECT_EQ(a.derivative,b.derivative);
+    EXPECT_EQ(a.saturated,b.saturated);
+}
+
+/* A setpoint square wave that saturates the tuning below, with a moving measurement. */
+inline double square_setpoint(int n) { return n%16<8?0.375:-0.25; }
+inline double ramp_measurement(int n) { return 0.0078125*(n%8); }
+
+TYPED_TEST(Pid, ReverseActionMirrorsDirectActionOnNegatedInputs) {
+    using A=fc_test::Api<TypeParam>;
+    auto direct=pid_tuning<A>(0.5,2,0.0625,-0.5,0.5);
+    auto reverse=pid_tuning<A>(-0.5,-2,-0.0625,-0.5,0.5);
+    direct.derivative_filter=reverse.derivative_filter=A::gain(0.125);
+    typename A::pid a{},b{};
+    ASSERT_EQ(A::pid_init(&a,&direct,A::make(0)),LINEARS_OK);
+    ASSERT_EQ(A::pid_init(&b,&reverse,A::make(0)),LINEARS_OK);
+    int saturated=0;
+    for(int n=0;n<64;++n) {
+        const double setpoint=square_setpoint(n),measurement=ramp_measurement(n);
+        const auto ra=pid_run<A>(&a,-setpoint,-measurement,0.125);
+        const auto rb=pid_run<A>(&b,setpoint,measurement,0.125);
+        expect_same_result<A>(ra,rb);
+        saturated+=rb.saturated!=0;
+    }
+    EXPECT_GT(saturated,0);
+    // Mixed signs would make the terms fight each other.
+    auto mixed=direct;mixed.kd=A::gain(-0.0625);
+    const auto saved=b;
+    EXPECT_EQ(A::pid_init(&b,&mixed,A::make(0)),LINEARS_ERROR_DOMAIN);
+    EXPECT_TRUE(fc_test::same_bytes(b,saved));
+}
+
+TYPED_TEST(Pid, RetuningEveryStepWithTheSameTuningChangesNothing) {
+    using A=fc_test::Api<TypeParam>;
+    auto config=pid_tuning<A>(0.5,2,0.0625,-0.5,0.5);
+    config.derivative_filter=A::gain(0.125);
+    typename A::pid untouched{},retuned{};
+    ASSERT_EQ(A::pid_init(&untouched,&config,A::make(0)),LINEARS_OK);
+    ASSERT_EQ(A::pid_init(&retuned,&config,A::make(0)),LINEARS_OK);
+    for(int n=0;n<64;++n) {
+        ASSERT_EQ(A::pid_retune(&retuned,&config),LINEARS_OK);
+        const double setpoint=square_setpoint(n),measurement=ramp_measurement(n);
+        expect_same_result<A>(pid_run<A>(&untouched,setpoint,measurement,0.125),
+                              pid_run<A>(&retuned,setpoint,measurement,0.125));
+    }
+}
+
+TYPED_TEST(Pid, RetuneKeepsTheHistoryAndClampsTheIntegral) {
+    using A=fc_test::Api<TypeParam>;
+    typename A::pid state{};
+    auto config=pid_tuning<A>(0,1,0.0625,-0.5,0.5); // ki*dt = 0.125, kd/dt = 0.5
+    ASSERT_EQ(A::pid_init(&state,&config,A::make(0)),LINEARS_OK);
+    pid_run<A>(&state,0.5,0,0.125);
+    pid_run<A>(&state,0.5,0,0.125);
+    ASSERT_DOUBLE_EQ(fc_test::value(state.integral),0.125);
+    // A narrower output range pulls the integral in; nothing else restarts.
+    config.lower=A::make(-0.0625);config.upper=A::make(0.0625);
+    ASSERT_EQ(A::pid_retune(&state,&config),LINEARS_OK);
+    EXPECT_DOUBLE_EQ(fc_test::value(state.integral),0.0625);
+    EXPECT_EQ(state.config.lower,config.lower);
+    EXPECT_EQ(state.config.upper,config.upper);
+    EXPECT_NE(state.history,0);
+    EXPECT_DOUBLE_EQ(fc_test::value(state.previous_error),0.5);
+    EXPECT_DOUBLE_EQ(fc_test::value(state.cached_dt),0.125);
+    // The error change 0.5 -> 0.25 is differentiated across the retune.
+    const auto r=pid_run<A>(&state,0.25,0,0.125);
+    EXPECT_DOUBLE_EQ(fc_test::value(r.derivative),-0.125);
+    EXPECT_DOUBLE_EQ(fc_test::value(r.integral),0.0625);
+    EXPECT_DOUBLE_EQ(fc_test::value(r.output),-0.0625);
+}
+
+TYPED_TEST(Pid, RetuneRecomputesCachedCoefficientsOnlyWhenTheyChange) {
+    using A=fc_test::Api<TypeParam>;
+    typename A::pid state{};
+    auto config=pid_tuning<A>(0,0.5,0,-1,1);
+    ASSERT_EQ(A::pid_init(&state,&config,A::make(0)),LINEARS_OK);
+    pid_run<A>(&state,0,0,0.125);
+    ASSERT_DOUBLE_EQ(fc_test::value(state.cached_dt),0.125);
+    ASSERT_DOUBLE_EQ(fc_test::value(state.derivative_gain),0);
+    // Bounds do not enter the cache.
+    config.lower=A::make(-0.75);config.upper=A::make(0.75);
+    ASSERT_EQ(A::pid_retune(&state,&config),LINEARS_OK);
+    EXPECT_DOUBLE_EQ(fc_test::value(state.cached_dt),0.125);
+    // Enabling kd at the same dt must not reuse the never-computed kd/dt.
+    config.kd=A::gain(0.0625);
+    ASSERT_EQ(A::pid_retune(&state,&config),LINEARS_OK);
+    EXPECT_DOUBLE_EQ(fc_test::value(state.cached_dt),0);
+    const auto r=pid_run<A>(&state,0.25,0,0.125);
+    EXPECT_DOUBLE_EQ(fc_test::value(state.derivative_gain),0.5);
+    EXPECT_DOUBLE_EQ(fc_test::value(r.derivative),0.125);
+    EXPECT_DOUBLE_EQ(fc_test::value(r.integral),0.015625);
+}
+
+TYPED_TEST(Pid, RetuneKeepsTheFilterStateUnlessKdIsZero) {
+    using A=fc_test::Api<TypeParam>;
+    typename A::pid state{};
+    auto config=pid_tuning<A>(0,0,0.0625,-1,1);
+    config.derivative_filter=A::gain(0.125); // dt/(Tf+dt) = 1/2
+    ASSERT_EQ(A::pid_init(&state,&config,A::make(0)),LINEARS_OK);
+    pid_run<A>(&state,0,0,0.125);
+    ASSERT_DOUBLE_EQ(fc_test::value(pid_run<A>(&state,0.5,0,0.125).derivative),0.125);
+    // Without the filter the next step applies the raw derivative 0.5*0.25.
+    config.derivative_filter=A::gain(0);
+    ASSERT_EQ(A::pid_retune(&state,&config),LINEARS_OK);
+    EXPECT_DOUBLE_EQ(fc_test::value(state.derivative),0.125);
+    EXPECT_DOUBLE_EQ(fc_test::value(pid_run<A>(&state,0.75,0,0.125).derivative),0.125);
+    // A zero kd holds D(n-1) in the step, so retune must clear it.
+    config.kd=A::gain(0);
+    ASSERT_EQ(A::pid_retune(&state,&config),LINEARS_OK);
+    EXPECT_DOUBLE_EQ(fc_test::value(state.derivative),0);
+    const auto r=pid_run<A>(&state,0.25,0,0.125);
+    EXPECT_DOUBLE_EQ(fc_test::value(r.derivative),0);
+    EXPECT_DOUBLE_EQ(fc_test::value(r.output),0);
+}
+
+TYPED_TEST(Pid, RetuneValidatesLikeInitAndFailsAtomically) {
+    using A=fc_test::Api<TypeParam>;
+    typename A::pid state{};
+    const auto base=pid_tuning<A>(0.5,0.5,0.0625,-0.5,0.5);
+    ASSERT_EQ(A::pid_init(&state,&base,A::make(0)),LINEARS_OK);
+    pid_run<A>(&state,0.25,0,0.125);
+    const auto saved=state;
+    auto rejected=[&](const typename A::pid_config &config) {
+        EXPECT_EQ(A::pid_retune(&state,&config),LINEARS_ERROR_DOMAIN);
+        EXPECT_TRUE(fc_test::same_bytes(state,saved));
+    };
+    auto config=base;config.ki=A::gain(-0.5);rejected(config);
+    config=base;config.lower=A::make(0.5);rejected(config);
+    config=base;config.derivative_filter=A::gain(-0.125);rejected(config);
+    config=base;config.options=1u<<3;rejected(config);
+    config=base;config.options=FIELDCTRL_PID_OPT_INTEGRAL_LIMIT;
+    config.integral_lower=A::make(0.25);config.integral_upper=A::make(-0.25);rejected(config);
+    EXPECT_EQ(A::pid_retune(nullptr,&base),LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(A::pid_retune(&state,nullptr),LINEARS_ERROR_ARGUMENT);
+    EXPECT_TRUE(fc_test::same_bytes(state,saved));
+    if constexpr(!A::fixed) {
+        config=base;config.kp=std::numeric_limits<typename A::scalar>::quiet_NaN();
+        EXPECT_EQ(A::pid_retune(&state,&config),LINEARS_ERROR_RANGE);
+        EXPECT_TRUE(fc_test::same_bytes(state,saved));
+    }
+}
+
 TYPED_TEST(Pid, CoefficientCacheOverflowDoesNotCommit) {
     using A=fc_test::Api<TypeParam>;
     typename A::pid state{};

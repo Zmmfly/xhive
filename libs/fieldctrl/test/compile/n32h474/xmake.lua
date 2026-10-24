@@ -42,7 +42,7 @@ namespace("app", function()
             end
             for _, operation in ipairs({"wrap", "sincos", "atan2", "clarke",
                 "inverse_clarke", "park", "inverse_park", "limit_voltage", "svpwm",
-                "pid_init", "pid_reset", "pid_step", "vvvf_init", "vvvf_step", "foc_init", "foc_step",
+                "pid_init", "pid_reset", "pid_retune", "pid_step", "vvvf_init", "vvvf_step", "foc_init", "foc_step",
                 "speed_foc_init", "speed_foc_step", "smo_init", "smo_step", "dtc_init",
                 "dtc_step"}) do
                 add_ldflags("-Wl,--require-defined=fieldctrl_" .. variant .. "_" .. operation,

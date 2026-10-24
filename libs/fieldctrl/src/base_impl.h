@@ -182,14 +182,14 @@ static void FC_N(pid_integral_bounds)(const FC_TYPE(pid_config) *config, FC_W *l
     }
 }
 
-linears_status_t FC_N(pid_init)(FC_TYPE(pid) *ctx, const FC_TYPE(pid_config) *config,
-                               FC_T integral) {
+/* Validate a complete tuning and return its integral bounds in working format.
+ * Shared by init and retune, so both accept exactly the same configurations. */
+static linears_status_t FC_N(pid_check)(const FC_TYPE(pid_config) *config, FC_W *integral_lo,
+                                        FC_W *integral_hi) {
     linears_status_t status = LINEARS_OK;
-    FC_W zero, kp, ki, kd, lo, hi, filter, weight, ilo, ihi, separation, initial;
-    uint32_t options;
-    FC_TYPE(pid) next;
-    if (ctx == NULL || config == NULL) return LINEARS_ERROR_ARGUMENT;
-    options = config->options;
+    FC_W zero, kp, ki, kd, lo, hi, filter, weight, ilo, ihi, separation;
+    uint32_t options = config->options;
+    int positive, negative;
     zero = FC_I(0);
     /* Every field is loaded, so nonfinite floating values are rejected even
      * when the option that reads them is disabled. */
@@ -199,9 +199,13 @@ linears_status_t FC_N(pid_init)(FC_TYPE(pid) *ctx, const FC_TYPE(pid_config) *co
     weight = FC_COEFF_LOAD(config->setpoint_weight);
     ilo = FC_LOAD(config->integral_lower); ihi = FC_LOAD(config->integral_upper);
     separation = FC_LOAD(config->separation);
-    initial = FC_LOAD(integral);
     if (status != LINEARS_OK) return status;
-    if (FC_CMP(kp, zero) < 0 || FC_CMP(ki, zero) < 0 || FC_CMP(kd, zero) < 0 ||
+    /* All gains nonnegative is direct action, all nonpositive reverse action.
+     * The step equations are linear in the gains, so both are well defined;
+     * mixed signs would make the terms fight each other. */
+    positive = FC_CMP(kp, zero) > 0 || FC_CMP(ki, zero) > 0 || FC_CMP(kd, zero) > 0;
+    negative = FC_CMP(kp, zero) < 0 || FC_CMP(ki, zero) < 0 || FC_CMP(kd, zero) < 0;
+    if ((positive && negative) ||
         FC_CMP(lo, hi) >= 0 || FC_CMP(filter, zero) < 0 ||
         (options & ~(uint32_t)FIELDCTRL_PID_OPTIONS) != 0u ||
         (config->derivative != FIELDCTRL_PID_DERIVATIVE_ON_ERROR &&
@@ -216,6 +220,22 @@ linears_status_t FC_N(pid_init)(FC_TYPE(pid) *ctx, const FC_TYPE(pid_config) *co
         if (FC_CMP(ilo, ihi) > 0) return LINEARS_ERROR_DOMAIN;
         lo = ilo; hi = ihi;
     }
+    *integral_lo = lo;
+    *integral_hi = hi;
+    return LINEARS_OK;
+}
+
+linears_status_t FC_N(pid_init)(FC_TYPE(pid) *ctx, const FC_TYPE(pid_config) *config,
+                               FC_T integral) {
+    linears_status_t status = LINEARS_OK;
+    FC_W zero, lo, hi, initial;
+    FC_TYPE(pid) next;
+    if (ctx == NULL || config == NULL) return LINEARS_ERROR_ARGUMENT;
+    zero = FC_I(0);
+    initial = FC_LOAD(integral);
+    if (status != LINEARS_OK) return status;
+    status = FC_N(pid_check)(config, &lo, &hi);
+    if (status != LINEARS_OK) return status;
     if (FC_CMP(initial, lo) < 0 || FC_CMP(initial, hi) > 0) return LINEARS_ERROR_DOMAIN;
     next.config = *config;
     next.integral = initial;
@@ -231,6 +251,28 @@ linears_status_t FC_N(pid_init)(FC_TYPE(pid) *ctx, const FC_TYPE(pid_config) *co
     return LINEARS_OK;
 }
 
+linears_status_t FC_N(pid_retune)(FC_TYPE(pid) *ctx, const FC_TYPE(pid_config) *config) {
+    linears_status_t status = LINEARS_OK;
+    FC_W zero, lo, hi;
+    if (ctx == NULL || config == NULL) return LINEARS_ERROR_ARGUMENT;
+    zero = FC_I(0);
+    status = FC_N(pid_check)(config, &lo, &hi);
+    if (status != LINEARS_OK) return status;
+    /* The cached period coefficients are ki*dt, kd/dt and dt/(Tf+dt); a zero
+     * cached period forces the next step to recompute them. Bounds, options
+     * and kp do not enter the cache, so a pure limit change keeps it. */
+    if (FC_CMP(FC_COEFF_FIELD(config->ki), FC_COEFF_FIELD(ctx->config.ki)) != 0 ||
+        FC_CMP(FC_COEFF_FIELD(config->kd), FC_COEFF_FIELD(ctx->config.kd)) != 0 ||
+        FC_CMP(FC_COEFF_FIELD(config->derivative_filter),
+               FC_COEFF_FIELD(ctx->config.derivative_filter)) != 0)
+        ctx->cached_dt = zero;
+    /* The step holds D(n-1) while kd is zero, so a stale term must not survive. */
+    if (FC_CMP(FC_COEFF_FIELD(config->kd), zero) == 0) ctx->derivative = zero;
+    ctx->integral = FC_N(base_clamp)(ctx->integral, lo, hi);
+    ctx->config = *config;
+    return LINEARS_OK;
+}
+
 linears_status_t FC_N(pid_reset)(FC_TYPE(pid) *ctx, FC_T integral) {
     linears_status_t status = LINEARS_OK;
     FC_W zero, lo, hi, initial;
@@ -240,7 +282,7 @@ linears_status_t FC_N(pid_reset)(FC_TYPE(pid) *ctx, FC_T integral) {
     if (status != LINEARS_OK) return status;
     FC_N(pid_integral_bounds)(&ctx->config, &lo, &hi);
     if (FC_CMP(initial, lo) < 0 || FC_CMP(initial, hi) > 0) return LINEARS_ERROR_DOMAIN;
-    /* The dt cache depends only on the immutable tuning and stays valid. */
+    /* The dt cache depends only on the unchanged tuning and stays valid. */
     ctx->integral = initial;
     ctx->previous_error = zero;
     ctx->previous_measurement = zero;
@@ -281,7 +323,7 @@ linears_status_t FC_N(pid_step_work)(FC_TYPE(pid) *ctx, FC_W setpoint, FC_W meas
     filter_weight = ctx->filter_weight;
     if (FC_CMP(period, ctx->cached_dt) != 0) {
         integral_step = FC_MUL(FC_COEFF_FIELD(config->ki), period);
-        if (FC_CMP(kd, zero) > 0) derivative_gain = FC_DIV(kd, period);
+        if (FC_CMP(kd, zero) != 0) derivative_gain = FC_DIV(kd, period);
         if (FC_CMP(filter, zero) > 0) filter_weight = FC_DIV(period, FC_ADD(filter, period));
     }
     old = ctx->integral;
@@ -291,7 +333,7 @@ linears_status_t FC_N(pid_step_work)(FC_TYPE(pid) *ctx, FC_W setpoint, FC_W meas
         i = FC_N(base_clamp)(FC_ADD(old, FC_MUL(integral_step, error)), ilo, ihi);
     /* The first step after init/reset has no previous sample to differentiate. */
     d = ctx->derivative;
-    if (ctx->history && FC_CMP(kd, zero) > 0) {
+    if (ctx->history && FC_CMP(kd, zero) != 0) {
         delta = config->derivative == FIELDCTRL_PID_DERIVATIVE_ON_MEASUREMENT
             ? FC_SUB(ctx->previous_measurement, measurement)
             : FC_SUB(error, ctx->previous_error);

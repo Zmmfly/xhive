@@ -92,7 +92,7 @@ void check_configured_flow() {
     /* The setters report rejected values without changing the context. */
     ASSERT_EQ(pid.limit(T(-1), T(1)), EZC_OK);
     EXPECT_EQ(pid.limit(T(1), T(-1)), EZC_ERR_INVALID_ARG);
-    EXPECT_EQ(pid.set_params(T(-1), T(0), T(0)), EZC_ERR_INVALID_ARG);
+    EXPECT_EQ(pid.set_params(T(-1), T(1), T(0)), EZC_ERR_INVALID_ARG);
     EXPECT_TRUE(as_const(pid).cfg.limit_enabled);
     EXPECT_EQ(as_const(pid).cfg.out_max, T(1));
     EXPECT_EQ(as_const(pid).cfg.kp, T(0));

@@ -17,7 +17,7 @@ description: 使用 xhive fieldctrl 的四版 PID、VVVF、FOC/速度环、SMO �
 | --- | --- |
 | [fieldctrl.h](../../../libs/fieldctrl/include/fieldctrl.h) | umbrella，包含下列全部组件 |
 | [fieldctrl_types.h](../../../libs/fieldctrl/include/fieldctrl_types.h) | `abc/ab/dq` 类型、坐标、单位、宽 F31 诊断类型 |
-| [fieldctrl_base.h](../../../libs/fieldctrl/include/fieldctrl_base.h) | wrap/sincos/atan2、Clarke/Park 及逆变换、PID（`pid_init/reset/step`）、限压、SVPWM、VVVF |
+| [fieldctrl_base.h](../../../libs/fieldctrl/include/fieldctrl_base.h) | wrap/sincos/atan2、Clarke/Park 及逆变换、PID（`pid_init/reset/retune/step`）、限压、SVPWM、VVVF |
 | [fieldctrl_foc.h](../../../libs/fieldctrl/include/fieldctrl_foc.h) | `foc_init/step`、`speed_foc_init/step` |
 | [fieldctrl_smo.h](../../../libs/fieldctrl/include/fieldctrl_smo.h) | `smo_init/step`、方向枚举及 observable/locked |
 | [fieldctrl_dtc.h](../../../libs/fieldctrl/include/fieldctrl_dtc.h) | `dtc_init/step`、磁链/转矩估计和离散逆变器请求 |
@@ -138,7 +138,10 @@ int main(void)
 - 基础 PID：`pid_init(&ctx,&config,integral)` 复制配置，`integral` 为初始积分（无扰切换）；
   `pid_step(&ctx,setpoint,measurement,dt,&out)` 输出限幅命令、P/I/D 各项与 `saturated`。
   `config` 零初始化即全部可选功能关闭；`kd`、微分源/滤波和 `FIELDCTRL_PID_OPT_*` 均需显式开启。
-  配置不可在线修改（无 setter/回调），整定变化需重新 init；`pid_reset` 只清微分历史并设定积分。
+  配置无 setter/回调：`pid_retune(&ctx,&config)` 校验完整新配置后在线替换，保留积分（收进新积分范围）与微分历史，
+  可每拍调用（随母线变化的限幅、增益调度）；仅 `kd=0` 清除已存 D 项，`ki`/`kd`/滤波时间常数变化才使 dt 缓存失效。
+  `kp`/`ki`/`kd` 须同号：全非负为正作用，全非正为反作用（输出增大使测量减小），异号返回 DOMAIN；速度级联仍要求非负。
+  `pid_reset` 只清微分历史并设定积分。
 - 首拍（init/reset 后）只记录误差和测量，D=0；积分最多推进到使未限幅命令恰好落在限值上，不越过也不回拉。
   `ki*dt`、`kd/dt`、`dt/(Tf+dt)` 按 dt 缓存，dt 变化才重算；Q 版 `kd/dt` 超出 F31 宽域返回 RANGE。
 - `fieldctrl_S_foc_init(&ctx, &config)` 接收 **config 指针**并复制；`step` 的测量输入是 **ab**，参考输入是 **dq**。

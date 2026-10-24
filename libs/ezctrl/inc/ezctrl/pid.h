@@ -36,9 +36,11 @@
  *     D(n) = kd * (measure(n-1) - measure(n)) / dt  (derivative on measurement)
  *     u(n) = P(n) + I(n) + D(n), clamped to the output range
  *
- * - Gains must not be negative. For a reverse-acting loop pass the negated
- *   setpoint and the negated measurement, which negates every term while the
- *   output range stays as configured.
+ * - `kp`, `ki` and `kd` share one sign: all nonnegative for a direct-acting
+ *   loop (more output raises the measurement, for example heating), all
+ *   nonpositive for a reverse-acting loop (more output lowers it, for example
+ *   cooling). Mixed signs are rejected, because the terms would then work
+ *   against each other.
  * - `dt` is the elapsed time in seconds since the previous step and is passed
  *   to every step, so one configuration serves constant, jittering and
  *   event-driven sample rates. `ki` is the integral gain per second and `kd`
@@ -208,9 +210,9 @@ typedef void (*ezc_pid_f32_cb_t)(void *user_ctx, const ezc_pid_f32_result_t *res
  * `out_min` and `out_max` are passed only while `limit_enabled` is set.
  */
 typedef struct ezc_pid_f32_cfg_s {
-    float kp;                   /**< Proportional gain; must not be negative. */
-    float ki;                   /**< Integral gain per second; must not be negative. */
-    float kd;                   /**< Derivative gain in seconds; must not be negative. */
+    float kp;                   /**< Proportional gain; same sign as ki and kd. */
+    float ki;                   /**< Integral gain per second; same sign as kp and kd. */
+    float kd;                   /**< Derivative gain in seconds; same sign as kp and ki. */
     bool limit_enabled;         /**< Clamp the output to `[out_min, out_max]`. */
     float out_min;              /**< Lower output limit; must be below out_max while limit_enabled. */
     float out_max;              /**< Upper output limit; must be above out_min while limit_enabled. */
@@ -249,8 +251,9 @@ typedef struct ezc_pid_f32_s {
  *
  * @param[out] ctx Controller context to initialize. Must not be NULL.
  * @param[in]  cfg Configuration. Must not be NULL. fieldctrl_f32_pid_init()
- *                 validates it: gains and `deriv_filter_t` must not be
- *                 negative, `out_min` must be below `out_max` while
+ *                 validates it: `kp`, `ki` and `kd` must not have mixed
+ *                 signs, `deriv_filter_t` must not be negative, `out_min`
+ *                 must be below `out_max` while
  *                 `limit_enabled` is set, `options` must contain only
  *                 `EZC_PID_OPT_*` bits, `deriv_source` must be a known value,
  *                 enabled options need `integral_min <= integral_max`,
@@ -275,13 +278,13 @@ ezc_status_t ezc_pid_f32_init(ezc_pid_f32_t *ctx, const ezc_pid_f32_cfg_t *cfg);
  * @brief Change the float PID gains.
  *
  * @param[in,out] ctx Controller context. Must not be NULL.
- * @param[in] kp Proportional gain; must be finite and not negative.
- * @param[in] ki Integral gain per second; must be finite and not negative.
- * @param[in] kd Derivative gain in seconds; must be finite and not negative.
+ * @param[in] kp Proportional gain; finite, with the sign of @p ki and @p kd.
+ * @param[in] ki Integral gain per second; finite, with the sign of @p kp and @p kd.
+ * @param[in] kd Derivative gain in seconds; finite, with the sign of @p kp and @p ki.
  * @return ezc_status_t Operation status.
  * @retval EZC_OK The gains are in effect.
- * @retval EZC_ERR_INVALID_ARG ctx is NULL or a gain was rejected; the context is
- *                             left unchanged.
+ * @retval EZC_ERR_INVALID_ARG ctx is NULL, a gain is not finite or the gains have
+ *                             mixed signs; the context is left unchanged.
  *
  * @note Rebuilds the fieldctrl controller: the integral is kept, and the next
  *       update step has no derivative term.
@@ -530,9 +533,9 @@ typedef void (*ezc_pid_f64_cb_t)(void *user_ctx, const ezc_pid_f64_result_t *res
  * `out_min` and `out_max` are passed only while `limit_enabled` is set.
  */
 typedef struct ezc_pid_f64_cfg_s {
-    double kp;                 /**< Proportional gain; must not be negative. */
-    double ki;                 /**< Integral gain per second; must not be negative. */
-    double kd;                 /**< Derivative gain in seconds; must not be negative. */
+    double kp;                 /**< Proportional gain; same sign as ki and kd. */
+    double ki;                 /**< Integral gain per second; same sign as kp and kd. */
+    double kd;                 /**< Derivative gain in seconds; same sign as kp and ki. */
     bool limit_enabled;        /**< Clamp the output to `[out_min, out_max]`. */
     double out_min;            /**< Lower output limit; must be below out_max while limit_enabled. */
     double out_max;            /**< Upper output limit; must be above out_min while limit_enabled. */
@@ -571,8 +574,9 @@ typedef struct ezc_pid_f64_s {
  *
  * @param[out] ctx Controller context to initialize. Must not be NULL.
  * @param[in]  cfg Configuration. Must not be NULL. fieldctrl_f64_pid_init()
- *                 validates it: gains and `deriv_filter_t` must not be
- *                 negative, `out_min` must be below `out_max` while
+ *                 validates it: `kp`, `ki` and `kd` must not have mixed
+ *                 signs, `deriv_filter_t` must not be negative, `out_min`
+ *                 must be below `out_max` while
  *                 `limit_enabled` is set, `options` must contain only
  *                 `EZC_PID_OPT_*` bits, `deriv_source` must be a known value,
  *                 enabled options need `integral_min <= integral_max`,
@@ -597,13 +601,13 @@ ezc_status_t ezc_pid_f64_init(ezc_pid_f64_t *ctx, const ezc_pid_f64_cfg_t *cfg);
  * @brief Change the double PID gains.
  *
  * @param[in,out] ctx Controller context. Must not be NULL.
- * @param[in] kp Proportional gain; must be finite and not negative.
- * @param[in] ki Integral gain per second; must be finite and not negative.
- * @param[in] kd Derivative gain in seconds; must be finite and not negative.
+ * @param[in] kp Proportional gain; finite, with the sign of @p ki and @p kd.
+ * @param[in] ki Integral gain per second; finite, with the sign of @p kp and @p kd.
+ * @param[in] kd Derivative gain in seconds; finite, with the sign of @p kp and @p ki.
  * @return ezc_status_t Operation status.
  * @retval EZC_OK The gains are in effect.
- * @retval EZC_ERR_INVALID_ARG ctx is NULL or a gain was rejected; the context is
- *                             left unchanged.
+ * @retval EZC_ERR_INVALID_ARG ctx is NULL, a gain is not finite or the gains have
+ *                             mixed signs; the context is left unchanged.
  *
  * @note Rebuilds the fieldctrl controller: the integral is kept, and the next
  *       update step has no derivative term.

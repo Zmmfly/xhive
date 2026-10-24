@@ -30,9 +30,15 @@
  *   and never back past I(n-1). Otherwise I(n) = I'(n).
  * - The first step after init or reset only records e and m: D stays zero, so
  *   a nonzero initial measurement or setpoint causes no derivative kick.
+ * - kp, ki and kd share one sign: all nonnegative for direct action (more
+ *   output raises the measurement), all nonpositive for reverse action.
  * - ki*dt, kd/dt and dt/(Tf+dt) are cached in the context and recomputed only
  *   when dt differs from the cached period, so fixed-rate loops avoid the
- *   divisions. Configuration is immutable; reinitialize to change it.
+ *   divisions.
+ * - pid_retune replaces the tuning of a running controller and keeps its
+ *   state: the integral is clamped into the new integral bounds and the
+ *   derivative history continues, so limits and gains may change every
+ *   sample. pid_init and pid_reset restart the controller instead.
  */
 #ifndef FIELDCTRL_BASE_H
 #define FIELDCTRL_BASE_H
@@ -67,9 +73,9 @@ typedef enum {
  * raw derivative. Parameters of disabled options are ignored but must be finite.
  */
 typedef struct {
-    float kp; /**< Nonnegative proportional gain, output units per error unit. */
-    float ki; /**< Nonnegative integral gain, output/(error*second). */
-    float kd; /**< Nonnegative derivative gain, output*second/error. */
+    float kp; /**< Proportional gain, output units per error unit; sign shared with ki, kd. */
+    float ki; /**< Integral gain, output/(error*second); sign shared with kp, kd. */
+    float kd; /**< Derivative gain, output*second/error; sign shared with kp, ki. */
     float lower; /**< Inclusive lower output bound. */
     float upper; /**< Inclusive upper output bound, strictly greater than lower. */
     uint32_t options; /**< Bitwise OR of FIELDCTRL_PID_OPT_* flags. */
@@ -89,14 +95,14 @@ typedef struct {
  * the most recent sample period. Saturation is intentional and returns OK.
  */
 typedef struct {
-    fieldctrl_f32_pid_config_t config; /**< Immutable copied tuning. */
+    fieldctrl_f32_pid_config_t config; /**< Copied tuning; replaced only by pid_retune. */
     float integral; /**< Integral contribution I(n-1), output units. */
     float previous_error; /**< Error e(n-1); meaningful while history is nonzero. */
     float previous_measurement; /**< Measurement m(n-1); meaningful while history is nonzero. */
     float derivative; /**< Applied derivative term D(n-1), output units. */
     float cached_dt; /**< Period of the cached coefficients, s; zero before the first step. */
     float integral_step; /**< Cached ki*cached_dt. */
-    float derivative_gain; /**< Cached kd/cached_dt; computed only for positive kd. */
+    float derivative_gain; /**< Cached kd/cached_dt; computed only for nonzero kd. */
     float filter_weight; /**< Cached cached_dt/(derivative_filter+cached_dt); filter on only. */
     int history; /**< Nonzero once a step has recorded previous_error/previous_measurement. */
 } fieldctrl_f32_pid_t;
@@ -255,9 +261,10 @@ linears_status_t fieldctrl_f32_svpwm(fieldctrl_f32_ab_t voltage, float dc_bus,
  * @return linears_status_t Initialization status.
  * @retval LINEARS_OK ctx holds the tuning, the integral and no derivative history.
  * @retval LINEARS_ERROR_ARGUMENT ctx or config is NULL.
- * @retval LINEARS_ERROR_DOMAIN A gain or derivative_filter is negative, lower is not
- *         below upper, options has an unknown bit, derivative is unknown, an enabled
- *         option parameter is out of range, or integral is outside the integral bounds.
+ * @retval LINEARS_ERROR_DOMAIN kp, ki and kd have mixed signs, derivative_filter is
+ *         negative, lower is not below upper, options has an unknown bit, derivative
+ *         is unknown, an enabled option parameter is out of range, or integral is
+ *         outside the integral bounds.
  * @retval LINEARS_ERROR_RANGE A configuration field or integral is nonfinite.
  * @note Serialize calls sharing ctx; separate contexts are reentrant.
  */
@@ -279,6 +286,28 @@ linears_status_t fieldctrl_f32_pid_init(fieldctrl_f32_pid_t *ctx,
  * @note Use it when a held loop is re-enabled. Failure preserves ctx.
  */
 linears_status_t fieldctrl_f32_pid_reset(fieldctrl_f32_pid_t *ctx, float integral);
+
+/**
+ * @brief Replace the tuning of a running single-precision PID without restarting it.
+ *
+ * Validates config exactly like fieldctrl_f32_pid_init() and keeps the
+ * controller state, so output limits and gains may change every sample, for
+ * example a limit that follows the bus voltage or a gain schedule.
+ *
+ * @param[in,out] ctx Non-NULL successfully initialized context.
+ * @param[in] config Non-NULL new tuning, copied into ctx.
+ * @return linears_status_t Retune status.
+ * @retval LINEARS_OK The tuning is replaced. The integral is clamped into the new
+ *         integral bounds; the derivative history and D(n-1) are kept, except that
+ *         a zero kd clears D(n-1). The dt cache is kept unless ki, kd or
+ *         derivative_filter changed.
+ * @retval LINEARS_ERROR_ARGUMENT ctx or config is NULL.
+ * @retval LINEARS_ERROR_DOMAIN config breaks a rule of fieldctrl_f32_pid_init().
+ * @retval LINEARS_ERROR_RANGE A configuration field is nonfinite.
+ * @note Failure preserves ctx. Serialize calls sharing ctx.
+ */
+linears_status_t fieldctrl_f32_pid_retune(fieldctrl_f32_pid_t *ctx,
+                                         const fieldctrl_f32_pid_config_t *config);
 
 /**
  * @brief Advance a single-precision PID by one sample.
@@ -345,9 +374,9 @@ linears_status_t fieldctrl_f32_vvvf_step(fieldctrl_f32_vvvf_t *ctx,
  * raw derivative. Parameters of disabled options are ignored but must be finite.
  */
 typedef struct {
-    double kp; /**< Nonnegative proportional gain, output units per error unit. */
-    double ki; /**< Nonnegative integral gain, output/(error*second). */
-    double kd; /**< Nonnegative derivative gain, output*second/error. */
+    double kp; /**< Proportional gain, output units per error unit; sign shared with ki, kd. */
+    double ki; /**< Integral gain, output/(error*second); sign shared with kp, kd. */
+    double kd; /**< Derivative gain, output*second/error; sign shared with kp, ki. */
     double lower; /**< Inclusive lower output bound. */
     double upper; /**< Inclusive upper output bound, strictly greater than lower. */
     uint32_t options; /**< Bitwise OR of FIELDCTRL_PID_OPT_* flags. */
@@ -367,14 +396,14 @@ typedef struct {
  * the most recent sample period. Saturation is intentional and returns OK.
  */
 typedef struct {
-    fieldctrl_f64_pid_config_t config; /**< Immutable copied tuning. */
+    fieldctrl_f64_pid_config_t config; /**< Copied tuning; replaced only by pid_retune. */
     double integral; /**< Integral contribution I(n-1), output units. */
     double previous_error; /**< Error e(n-1); meaningful while history is nonzero. */
     double previous_measurement; /**< Measurement m(n-1); meaningful while history is nonzero. */
     double derivative; /**< Applied derivative term D(n-1), output units. */
     double cached_dt; /**< Period of the cached coefficients, s; zero before the first step. */
     double integral_step; /**< Cached ki*cached_dt. */
-    double derivative_gain; /**< Cached kd/cached_dt; computed only for positive kd. */
+    double derivative_gain; /**< Cached kd/cached_dt; computed only for nonzero kd. */
     double filter_weight; /**< Cached cached_dt/(derivative_filter+cached_dt); filter on only. */
     int history; /**< Nonzero once a step has recorded previous_error/previous_measurement. */
 } fieldctrl_f64_pid_t;
@@ -533,9 +562,10 @@ linears_status_t fieldctrl_f64_svpwm(fieldctrl_f64_ab_t voltage, double dc_bus,
  * @return linears_status_t Initialization status.
  * @retval LINEARS_OK ctx holds the tuning, the integral and no derivative history.
  * @retval LINEARS_ERROR_ARGUMENT ctx or config is NULL.
- * @retval LINEARS_ERROR_DOMAIN A gain or derivative_filter is negative, lower is not
- *         below upper, options has an unknown bit, derivative is unknown, an enabled
- *         option parameter is out of range, or integral is outside the integral bounds.
+ * @retval LINEARS_ERROR_DOMAIN kp, ki and kd have mixed signs, derivative_filter is
+ *         negative, lower is not below upper, options has an unknown bit, derivative
+ *         is unknown, an enabled option parameter is out of range, or integral is
+ *         outside the integral bounds.
  * @retval LINEARS_ERROR_RANGE A configuration field or integral is nonfinite.
  * @note Serialize calls sharing ctx; separate contexts are reentrant.
  */
@@ -557,6 +587,28 @@ linears_status_t fieldctrl_f64_pid_init(fieldctrl_f64_pid_t *ctx,
  * @note Use it when a held loop is re-enabled. Failure preserves ctx.
  */
 linears_status_t fieldctrl_f64_pid_reset(fieldctrl_f64_pid_t *ctx, double integral);
+
+/**
+ * @brief Replace the tuning of a running double-precision PID without restarting it.
+ *
+ * Validates config exactly like fieldctrl_f64_pid_init() and keeps the
+ * controller state, so output limits and gains may change every sample, for
+ * example a limit that follows the bus voltage or a gain schedule.
+ *
+ * @param[in,out] ctx Non-NULL successfully initialized context.
+ * @param[in] config Non-NULL new tuning, copied into ctx.
+ * @return linears_status_t Retune status.
+ * @retval LINEARS_OK The tuning is replaced. The integral is clamped into the new
+ *         integral bounds; the derivative history and D(n-1) are kept, except that
+ *         a zero kd clears D(n-1). The dt cache is kept unless ki, kd or
+ *         derivative_filter changed.
+ * @retval LINEARS_ERROR_ARGUMENT ctx or config is NULL.
+ * @retval LINEARS_ERROR_DOMAIN config breaks a rule of fieldctrl_f64_pid_init().
+ * @retval LINEARS_ERROR_RANGE A configuration field is nonfinite.
+ * @note Failure preserves ctx. Serialize calls sharing ctx.
+ */
+linears_status_t fieldctrl_f64_pid_retune(fieldctrl_f64_pid_t *ctx,
+                                         const fieldctrl_f64_pid_config_t *config);
 
 /**
  * @brief Advance a double-precision PID by one sample.
@@ -624,9 +676,9 @@ linears_status_t fieldctrl_f64_vvvf_step(fieldctrl_f64_vvvf_t *ctx,
  * no derivative term and no derivative filter. Disabled option fields are ignored.
  */
 typedef struct {
-    linears_fixed_t kp; /**< Nonnegative F31 output-pu/error-pu gain. */
-    linears_fixed_t ki; /**< Nonnegative F31 output-pu/(error-pu*time-pu) gain. */
-    linears_fixed_t kd; /**< Nonnegative F31 output-pu*time-pu/error-pu gain. */
+    linears_fixed_t kp; /**< F31 output-pu/error-pu gain; sign shared with ki, kd. */
+    linears_fixed_t ki; /**< F31 output-pu/(error-pu*time-pu) gain; sign shared with kp, kd. */
+    linears_fixed_t kd; /**< F31 output-pu*time-pu/error-pu gain; sign shared with kp, ki. */
     linears_q15_t lower; /**< Inclusive Q1 lower output bound. */
     linears_q15_t upper; /**< Inclusive Q1 upper output bound, greater than lower. */
     uint32_t options; /**< Bitwise OR of FIELDCTRL_PID_OPT_* flags. */
@@ -646,14 +698,14 @@ typedef struct {
  * memoize the most recent sample period. Serialize calls sharing a context.
  */
 typedef struct {
-    fieldctrl_q15_pid_config_t config; /**< Immutable copied tuning; no base metadata. */
+    fieldctrl_q15_pid_config_t config; /**< Copied tuning, no base metadata; replaced only by pid_retune. */
     linears_fixed_t integral; /**< Output-pu I(n-1), int64 raw/2^31. */
     linears_fixed_t previous_error; /**< F31 e(n-1), may lie outside Q1. */
     linears_fixed_t previous_measurement; /**< F31 m(n-1). */
     linears_fixed_t derivative; /**< F31 output-pu D(n-1). */
     linears_fixed_t cached_dt; /**< F31 t/Tbase of the cached coefficients; zero before a step. */
     linears_fixed_t integral_step; /**< Cached F31 ki*cached_dt. */
-    linears_fixed_t derivative_gain; /**< Cached F31 kd/cached_dt; positive kd only. */
+    linears_fixed_t derivative_gain; /**< Cached F31 kd/cached_dt; nonzero kd only. */
     linears_fixed_t filter_weight; /**< Cached F31 cached_dt/(derivative_filter+cached_dt). */
     int history; /**< Nonzero once a step has recorded previous_error/previous_measurement. */
 } fieldctrl_q15_pid_t;
@@ -796,9 +848,10 @@ linears_status_t fieldctrl_q15_svpwm(fieldctrl_q15_ab_t voltage, linears_q15_t d
  * @return linears_status_t Initialization status.
  * @retval LINEARS_OK ctx holds the tuning, the integral and no derivative history.
  * @retval LINEARS_ERROR_ARGUMENT ctx or config is NULL.
- * @retval LINEARS_ERROR_DOMAIN A coefficient is negative, lower is not below upper,
- *         options has an unknown bit, derivative is unknown, an enabled option
- *         parameter is out of range, or integral is outside the integral bounds.
+ * @retval LINEARS_ERROR_DOMAIN kp, ki and kd have mixed signs, derivative_filter is
+ *         negative, lower is not below upper, options has an unknown bit, derivative
+ *         is unknown, an enabled option parameter is out of range, or integral is
+ *         outside the integral bounds.
  * @note Fields are library-owned after init; serialize calls sharing ctx.
  */
 linears_status_t fieldctrl_q15_pid_init(fieldctrl_q15_pid_t *ctx,
@@ -817,6 +870,27 @@ linears_status_t fieldctrl_q15_pid_init(fieldctrl_q15_pid_t *ctx,
  * @note Use it when a held loop is re-enabled. Failure preserves ctx.
  */
 linears_status_t fieldctrl_q15_pid_reset(fieldctrl_q15_pid_t *ctx, linears_q15_t integral);
+
+/**
+ * @brief Replace the tuning of a running Q15 PID without restarting it.
+ *
+ * Validates config exactly like fieldctrl_q15_pid_init() and keeps the
+ * controller state, so output limits and gains may change every sample, for
+ * example a limit that follows the bus voltage or a gain schedule.
+ *
+ * @param[in,out] ctx Non-NULL successfully initialized context.
+ * @param[in] config Non-NULL new tuning with F31 coefficients, copied into ctx.
+ * @return linears_status_t Retune status.
+ * @retval LINEARS_OK The tuning is replaced. The F31 integral is clamped into the
+ *         new integral bounds; the derivative history and D(n-1) are kept, except
+ *         that a zero kd clears D(n-1). The dt cache is kept unless ki, kd or
+ *         derivative_filter changed.
+ * @retval LINEARS_ERROR_ARGUMENT ctx or config is NULL.
+ * @retval LINEARS_ERROR_DOMAIN config breaks a rule of fieldctrl_q15_pid_init().
+ * @note Failure preserves ctx. Serialize calls sharing ctx.
+ */
+linears_status_t fieldctrl_q15_pid_retune(fieldctrl_q15_pid_t *ctx,
+                                         const fieldctrl_q15_pid_config_t *config);
 
 /**
  * @brief Advance a Q15 PID by one per-unit sample.
@@ -886,9 +960,9 @@ linears_status_t fieldctrl_q15_vvvf_step(fieldctrl_q15_vvvf_t *ctx,
  * term and no derivative filter. Disabled option fields are ignored.
  */
 typedef struct {
-    linears_fixed_t kp; /**< Nonnegative F31 output-pu/error-pu gain. */
-    linears_fixed_t ki; /**< Nonnegative F31 output-pu/(error-pu*time-pu) gain. */
-    linears_fixed_t kd; /**< Nonnegative F31 output-pu*time-pu/error-pu gain. */
+    linears_fixed_t kp; /**< F31 output-pu/error-pu gain; sign shared with ki, kd. */
+    linears_fixed_t ki; /**< F31 output-pu/(error-pu*time-pu) gain; sign shared with kp, kd. */
+    linears_fixed_t kd; /**< F31 output-pu*time-pu/error-pu gain; sign shared with kp, ki. */
     linears_q31_t lower; /**< Inclusive Q1 lower output bound. */
     linears_q31_t upper; /**< Inclusive Q1 upper output bound, greater than lower. */
     uint32_t options; /**< Bitwise OR of FIELDCTRL_PID_OPT_* flags. */
@@ -908,14 +982,14 @@ typedef struct {
  * sample period. Serialize calls sharing a context.
  */
 typedef struct {
-    fieldctrl_q31_pid_config_t config; /**< Immutable copied tuning; no base metadata. */
+    fieldctrl_q31_pid_config_t config; /**< Copied tuning, no base metadata; replaced only by pid_retune. */
     linears_fixed_t integral; /**< Output-pu I(n-1), int64 raw/2^31. */
     linears_fixed_t previous_error; /**< F31 e(n-1), may lie outside Q1. */
     linears_fixed_t previous_measurement; /**< F31 m(n-1). */
     linears_fixed_t derivative; /**< F31 output-pu D(n-1). */
     linears_fixed_t cached_dt; /**< F31 t/Tbase of the cached coefficients; zero before a step. */
     linears_fixed_t integral_step; /**< Cached F31 ki*cached_dt. */
-    linears_fixed_t derivative_gain; /**< Cached F31 kd/cached_dt; positive kd only. */
+    linears_fixed_t derivative_gain; /**< Cached F31 kd/cached_dt; nonzero kd only. */
     linears_fixed_t filter_weight; /**< Cached F31 cached_dt/(derivative_filter+cached_dt). */
     int history; /**< Nonzero once a step has recorded previous_error/previous_measurement. */
 } fieldctrl_q31_pid_t;
@@ -1058,9 +1132,10 @@ linears_status_t fieldctrl_q31_svpwm(fieldctrl_q31_ab_t voltage, linears_q31_t d
  * @return linears_status_t Initialization status.
  * @retval LINEARS_OK ctx holds the tuning, the integral and no derivative history.
  * @retval LINEARS_ERROR_ARGUMENT ctx or config is NULL.
- * @retval LINEARS_ERROR_DOMAIN A coefficient is negative, lower is not below upper,
- *         options has an unknown bit, derivative is unknown, an enabled option
- *         parameter is out of range, or integral is outside the integral bounds.
+ * @retval LINEARS_ERROR_DOMAIN kp, ki and kd have mixed signs, derivative_filter is
+ *         negative, lower is not below upper, options has an unknown bit, derivative
+ *         is unknown, an enabled option parameter is out of range, or integral is
+ *         outside the integral bounds.
  * @note Fields are library-owned after init; serialize calls sharing ctx.
  */
 linears_status_t fieldctrl_q31_pid_init(fieldctrl_q31_pid_t *ctx,
@@ -1079,6 +1154,27 @@ linears_status_t fieldctrl_q31_pid_init(fieldctrl_q31_pid_t *ctx,
  * @note Use it when a held loop is re-enabled. Failure preserves ctx.
  */
 linears_status_t fieldctrl_q31_pid_reset(fieldctrl_q31_pid_t *ctx, linears_q31_t integral);
+
+/**
+ * @brief Replace the tuning of a running Q31 PID without restarting it.
+ *
+ * Validates config exactly like fieldctrl_q31_pid_init() and keeps the
+ * controller state, so output limits and gains may change every sample, for
+ * example a limit that follows the bus voltage or a gain schedule.
+ *
+ * @param[in,out] ctx Non-NULL successfully initialized context.
+ * @param[in] config Non-NULL new tuning with F31 coefficients, copied into ctx.
+ * @return linears_status_t Retune status.
+ * @retval LINEARS_OK The tuning is replaced. The F31 integral is clamped into the
+ *         new integral bounds; the derivative history and D(n-1) are kept, except
+ *         that a zero kd clears D(n-1). The dt cache is kept unless ki, kd or
+ *         derivative_filter changed.
+ * @retval LINEARS_ERROR_ARGUMENT ctx or config is NULL.
+ * @retval LINEARS_ERROR_DOMAIN config breaks a rule of fieldctrl_q31_pid_init().
+ * @note Failure preserves ctx. Serialize calls sharing ctx.
+ */
+linears_status_t fieldctrl_q31_pid_retune(fieldctrl_q31_pid_t *ctx,
+                                         const fieldctrl_q31_pid_config_t *config);
 
 /**
  * @brief Advance a Q31 PID by one per-unit sample.

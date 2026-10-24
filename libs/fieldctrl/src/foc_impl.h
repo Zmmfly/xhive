@@ -161,14 +161,19 @@ linears_status_t FC_N(speed_foc_init)(FC_TYPE(speed_foc) *ctx,
     linears_status_t status = LINEARS_OK;
     FC_TYPE(speed_foc) next;
     FC_TYPE(pid_config) speed = {0};
-    FC_W limit, zero;
+    FC_W limit, zero, kp, ki;
     FC_T lower, initial;
     if (ctx == NULL || config == NULL) return LINEARS_ERROR_ARGUMENT;
     if (config->pole_pairs == 0) return LINEARS_ERROR_DOMAIN;
     limit = FC_LOAD(config->current_limit);
+    kp = FC_COEFF_LOAD(config->kp);
+    ki = FC_COEFF_LOAD(config->ki);
     zero = FC_I(0);
     if (status != LINEARS_OK) return status;
-    if (FC_CMP(limit, zero) <= 0) return LINEARS_ERROR_DOMAIN;
+    /* The generic PID also accepts reverse action, but the cascade
+     * anti-windup in speed_foc_step assumes a direct-acting speed loop. */
+    if (FC_CMP(limit, zero) <= 0 || FC_CMP(kp, zero) < 0 || FC_CMP(ki, zero) < 0)
+        return LINEARS_ERROR_DOMAIN;
     FC_STORE(FC_NEG(limit), &lower);
     FC_STORE(zero, &initial);
     if (status != LINEARS_OK) return status;

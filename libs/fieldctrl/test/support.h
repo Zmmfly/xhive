@@ -92,6 +92,7 @@ template<class T> struct Api;
         static constexpr auto svpwm = fieldctrl_##suffix##_svpwm; \
         static constexpr auto pid_init = fieldctrl_##suffix##_pid_init; \
         static constexpr auto pid_reset = fieldctrl_##suffix##_pid_reset; \
+        static constexpr auto pid_retune = fieldctrl_##suffix##_pid_retune; \
         static constexpr auto pid_step = fieldctrl_##suffix##_pid_step; \
         static constexpr auto vvvf_init = fieldctrl_##suffix##_vvvf_init; \
         static constexpr auto vvvf_step = fieldctrl_##suffix##_vvvf_step; \
