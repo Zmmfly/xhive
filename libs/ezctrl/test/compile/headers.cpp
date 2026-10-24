@@ -44,6 +44,12 @@ static_assert(std::is_same<ezc::pid<double>::context_type, ezc_pid_f64_t>::value
 static_assert(std::is_same<ezc::pid<double>::callback_type, ezc_pid_f64_cb_t>::value,
               "ezc::pid<double> must reuse the f64 callback type");
 
+/* Each C context embeds the fieldctrl controller of the same scalar type. */
+static_assert(std::is_same<decltype(ezc_pid_f32_t::pid), fieldctrl_f32_pid_t>::value,
+              "the f32 context must be computed by fieldctrl_f32_pid");
+static_assert(std::is_same<decltype(ezc_pid_f64_t::pid), fieldctrl_f64_pid_t>::value,
+              "the f64 context must be computed by fieldctrl_f64_pid");
+
 static_assert(std::is_same<decltype(std::declval<ezc::pid<float> &>().update(1.0f, 0.0f, 1.0f)),
                            float>::value,
               "the wrapper update must return the scalar type");

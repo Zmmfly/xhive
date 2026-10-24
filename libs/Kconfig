@@ -73,9 +73,10 @@ config LIBS_ADD_BITMAP
 config LIBS_ADD_EZCTRL
     bool "Add ezctrl Control Library"
     default n
+    select LIBS_ADD_FIELDCTRL
     help
         Add the ezctrl control library (PID controller and other control
-        primitives).
+        primitives). Its PID is computed by the fieldctrl library.
 
 config LIBS_ADD_LINEARS
     bool "Add linears Matrix Library"

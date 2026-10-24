@@ -15,7 +15,7 @@
  * #include "ezctrl.hpp"
  *
  * ezc::pid<float> pid;              // default-constructed: disabled controller
- * pid.set_params(1.0f, 0.5f, 0.0f); // kp, ki per second, kd per second
+ * pid.set_params(1.0f, 0.5f, 0.0f); // kp, ki per second, kd in seconds
  *
  * // once per control period, dt = seconds since the previous call
  * float duty = pid.update(setpoint, measure, dt);
@@ -26,9 +26,8 @@
  *
  * @code
  * ezc::pid<float> ctrl;
- * ctrl.set_params(2.0f, 0.5f, 0.01f); // kp, ki per second, kd per second
- * ctrl.limit(0.0f, 1.0f);             // clamp the output to the actuator range
- * ctrl.anti_windup(true);
+ * ctrl.set_params(2.0f, 0.5f, 0.01f); // kp, ki per second, kd in seconds
+ * ctrl.limit(0.0f, 1.0f);             // clamp the output; anti-windup is implied
  * ctrl.integral_limit(-1.0f, 1.0f);   // enables EZC_PID_OPT_INTEGRAL_LIMIT
  * ctrl.integral_separation(5.0f);     // enables EZC_PID_OPT_INTEGRAL_SEPARATION
  * ctrl.setpoint_weight(0.5f);         // enables EZC_PID_OPT_SETPOINT_WEIGHT
@@ -38,14 +37,15 @@
  * float duty = ctrl.update(setpoint, measure, dt_seconds);
  * @endcode
  *
- * Configuration methods are named after what they set (`limit`, `anti_windup`,
+ * Configuration methods are named after what they set (`limit`,
  * `integral_limit`, `integral_separation`, `setpoint_weight`,
  * `derivative_source`, `derivative_filter`), except `set_params` and
- * `set_callback`; all of them return `ezc_status_t` like their C counterparts.
- * `init()` is still there for bulk configuration from `ezc_pid_f32_cfg_t` (or
- * its f64 variant), and `context()` exposes the C state when it is needed. The
- * scalar type selects the C API through the @ref ezc::pid_traits specialization
- * for that type.
+ * `set_callback`; all of them return `ezc_status_t` like their C counterparts
+ * and, except `set_callback`, rebuild the fieldctrl controller as described in
+ * `ezctrl/pid.h`. `init()` is still there for bulk configuration from
+ * `ezc_pid_f32_cfg_t` (or its f64 variant), and `context()` exposes the C
+ * state when it is needed. The scalar type selects the C API through the
+ * @ref ezc::pid_traits specialization for that type.
  *
  * The host test suites are further executable examples: `test/pid_cpp.cc` for
  * the wrapper and `test/compile/headers.cpp` for mixed-language consumption. A
@@ -56,8 +56,8 @@
  * Include `ezctrl.hpp` to pull in this layer together with every other C++
  * wrapper of the library.
  *
- * Requires C++11 or later and the C API of the module; no other dependency is
- * added.
+ * Requires C++11 or later and the C API of the module, which includes the
+ * fieldctrl C headers; no other dependency is added.
  */
 #ifndef __EZCTRL_PID_HPP__
 #define __EZCTRL_PID_HPP__
@@ -103,11 +103,11 @@ struct pid_traits<float> {
      * @brief Change the gains; forwards to ezc_pid_f32_set_gains().
      *
      * @param[in,out] ctx Controller context. Must not be NULL.
-     * @param[in] kp Proportional gain.
-     * @param[in] ki Integral gain applied per sample.
-     * @param[in] kd Derivative gain applied per sample.
-     * @return ezc_status_t Result of ezc_pid_f32_set_gains(); the controller
-     *         state is preserved.
+     * @param[in] kp Proportional gain; must not be negative.
+     * @param[in] ki Integral gain per second; must not be negative.
+     * @param[in] kd Derivative gain in seconds; must not be negative.
+     * @return ezc_status_t Result of ezc_pid_f32_set_gains(); the integral is
+     *         kept.
      */
     static ezc_status_t set_gains(context_type *ctx, value_type kp, value_type ki,
                                   value_type kd) noexcept {
@@ -119,7 +119,7 @@ struct pid_traits<float> {
      *
      * @param[in,out] ctx Controller context. Must not be NULL.
      * @param[in] out_min Lower output limit.
-     * @param[in] out_max Upper output limit; must not be below @p out_min.
+     * @param[in] out_max Upper output limit; must be above @p out_min.
      * @return ezc_status_t Result of ezc_pid_f32_set_limit().
      */
     static ezc_status_t set_limit(context_type *ctx, value_type out_min,
@@ -135,18 +135,6 @@ struct pid_traits<float> {
      */
     static ezc_status_t clear_limit(context_type *ctx) noexcept {
         return ezc_pid_f32_clear_limit(ctx);
-    }
-
-    /**
-     * @brief Enable or disable anti-windup; forwards to
-     *        ezc_pid_f32_set_anti_windup().
-     *
-     * @param[in,out] ctx Controller context. Must not be NULL.
-     * @param[in] enable true to enable anti-windup, false to disable it.
-     * @return ezc_status_t Result of ezc_pid_f32_set_anti_windup().
-     */
-    static ezc_status_t set_anti_windup(context_type *ctx, bool enable) noexcept {
-        return ezc_pid_f32_set_anti_windup(ctx, enable);
     }
 
     /**
@@ -269,8 +257,9 @@ struct pid_traits<float> {
      * @param[in] setpoint Target value of this update step.
      * @param[in] measure Measured value of this update step.
      * @param[in] dt Elapsed time since the previous update step, in seconds.
-     * @return value_type Controller output after clamping; also handed to the
-     *         callback when one is installed.
+     * @return value_type Controller output after clamping, or the last
+     *         successful output when the step was rejected; a successful
+     *         output is also handed to the callback when one is installed.
      */
     static value_type update(context_type *ctx, value_type setpoint,
                              value_type measure, value_type dt) noexcept {
@@ -305,11 +294,11 @@ struct pid_traits<double> {
      * @brief Change the gains; forwards to ezc_pid_f64_set_gains().
      *
      * @param[in,out] ctx Controller context. Must not be NULL.
-     * @param[in] kp Proportional gain.
-     * @param[in] ki Integral gain applied per sample.
-     * @param[in] kd Derivative gain applied per sample.
-     * @return ezc_status_t Result of ezc_pid_f64_set_gains(); the controller
-     *         state is preserved.
+     * @param[in] kp Proportional gain; must not be negative.
+     * @param[in] ki Integral gain per second; must not be negative.
+     * @param[in] kd Derivative gain in seconds; must not be negative.
+     * @return ezc_status_t Result of ezc_pid_f64_set_gains(); the integral is
+     *         kept.
      */
     static ezc_status_t set_gains(context_type *ctx, value_type kp, value_type ki,
                                   value_type kd) noexcept {
@@ -321,7 +310,7 @@ struct pid_traits<double> {
      *
      * @param[in,out] ctx Controller context. Must not be NULL.
      * @param[in] out_min Lower output limit.
-     * @param[in] out_max Upper output limit; must not be below @p out_min.
+     * @param[in] out_max Upper output limit; must be above @p out_min.
      * @return ezc_status_t Result of ezc_pid_f64_set_limit().
      */
     static ezc_status_t set_limit(context_type *ctx, value_type out_min,
@@ -337,18 +326,6 @@ struct pid_traits<double> {
      */
     static ezc_status_t clear_limit(context_type *ctx) noexcept {
         return ezc_pid_f64_clear_limit(ctx);
-    }
-
-    /**
-     * @brief Enable or disable anti-windup; forwards to
-     *        ezc_pid_f64_set_anti_windup().
-     *
-     * @param[in,out] ctx Controller context. Must not be NULL.
-     * @param[in] enable true to enable anti-windup, false to disable it.
-     * @return ezc_status_t Result of ezc_pid_f64_set_anti_windup().
-     */
-    static ezc_status_t set_anti_windup(context_type *ctx, bool enable) noexcept {
-        return ezc_pid_f64_set_anti_windup(ctx, enable);
     }
 
     /**
@@ -471,8 +448,9 @@ struct pid_traits<double> {
      * @param[in] setpoint Target value of this update step.
      * @param[in] measure Measured value of this update step.
      * @param[in] dt Elapsed time since the previous update step, in seconds.
-     * @return value_type Controller output after clamping; also handed to the
-     *         callback when one is installed.
+     * @return value_type Controller output after clamping, or the last
+     *         successful output when the step was rejected; a successful
+     *         output is also handed to the callback when one is installed.
      */
     static value_type update(context_type *ctx, value_type setpoint,
                              value_type measure, value_type dt) noexcept {
@@ -493,11 +471,12 @@ struct pid_traits<double> {
  * @note The wrapper adds no synchronization. As with the C API, update steps
  *       that share one controller must be serialized.
  * @note The setters configure and enable in one call: `limit()` sets
- *       `limit_enabled`, `anti_windup()` stores the flag, `integral_limit()`,
- *       `integral_separation()` and `setpoint_weight()` set their
- *       `EZC_PID_OPT_*` bit, and `derivative_filter()` filters while its time
- *       constant is greater than zero. Nothing has to be enabled twice, and
- *       `init()` is only needed for bulk configuration.
+ *       `limit_enabled`, `integral_limit()`, `integral_separation()` and
+ *       `setpoint_weight()` set their `EZC_PID_OPT_*` bit, and
+ *       `derivative_filter()` filters while its time constant is greater than
+ *       zero. Nothing has to be enabled twice, and `init()` is only needed for
+ *       bulk configuration. Anti-windup is always active while the output is
+ *       limited.
  */
 template <typename T>
 class pid {
@@ -532,10 +511,11 @@ public:
     /**
      * @brief Set the gains, see ezc_pid_*_set_gains().
      *
-     * @param[in] kp Proportional gain.
-     * @param[in] ki Integral gain per second.
-     * @param[in] kd Derivative gain per second.
-     * @return ezc_status_t EZC_OK on success.
+     * @param[in] kp Proportional gain; must not be negative.
+     * @param[in] ki Integral gain per second; must not be negative.
+     * @param[in] kd Derivative gain in seconds; must not be negative.
+     * @return ezc_status_t EZC_OK on success, EZC_ERR_INVALID_ARG for a
+     *         negative or non-finite gain.
      */
     ezc_status_t set_params(value_type kp, value_type ki, value_type kd) noexcept {
         return traits_type::set_gains(&ctx_, kp, ki, kd);
@@ -545,9 +525,9 @@ public:
      * @brief Enable output clamping, see ezc_pid_*_set_limit().
      *
      * @param[in] out_min Lower output limit.
-     * @param[in] out_max Upper output limit; must not be below @p out_min.
+     * @param[in] out_max Upper output limit; must be above @p out_min.
      * @return ezc_status_t EZC_OK on success, EZC_ERR_INVALID_ARG for an
-     *         inverted or non-comparable range.
+     *         empty, inverted or non-finite range.
      */
     ezc_status_t limit(value_type out_min, value_type out_max) noexcept {
         return traits_type::set_limit(&ctx_, out_min, out_max);
@@ -563,19 +543,9 @@ public:
     }
 
     /**
-     * @brief Enable or disable anti-windup, see ezc_pid_*_set_anti_windup().
-     *
-     * @param[in] enable true to enable anti-windup, false to disable it.
-     * @return ezc_status_t EZC_OK on success.
-     */
-    ezc_status_t anti_windup(bool enable) noexcept {
-        return traits_type::set_anti_windup(&ctx_, enable);
-    }
-
-    /**
      * @brief Install or remove the update callback, see ezc_pid_*_set_callback().
      *
-     * @param[in] callback Function invoked after each completed update step, or
+     * @param[in] callback Function invoked after each successful update step, or
      *                     nullptr to remove the current callback. A captureless
      *                     lambda converts to this function pointer.
      * @param[in] user_ctx Context pointer handed to @p callback; may be nullptr.
@@ -600,7 +570,7 @@ public:
      *
      * @param[in] deriv_filter_t Filter time constant in seconds; 0 disables it.
      * @return ezc_status_t EZC_OK on success, EZC_ERR_INVALID_ARG for a negative
-     *         or non-comparable time constant.
+     *         or non-finite time constant.
      */
     ezc_status_t derivative_filter(value_type deriv_filter_t) noexcept {
         return traits_type::set_derivative_filter(&ctx_, deriv_filter_t);
@@ -659,9 +629,10 @@ public:
     }
 
     /**
-     * @brief Reset the controller state, see ezc_pid_*_reset().
+     * @brief Restart the controller, see ezc_pid_*_reset().
      *
-     * @post Integral and error state are zero while gains, limits and callback
+     * @post The integral is zero clamped into its bounds and the derivative
+     *       history is cleared, while the configuration and the last output
      *       are preserved.
      */
     void reset() noexcept {
@@ -674,10 +645,11 @@ public:
      * @param[in] setpoint Target value of this update step.
      * @param[in] measure Measured value of this update step.
      * @param[in] dt Elapsed time since the previous update step, in seconds; a
-     *               value that is not a finite positive number makes this a
-     *               zero-time step.
-     * @return value_type Controller output after clamping; also handed to the
-     *         callback when one is installed.
+     *               value that is not a finite positive number rejects the
+     *               step.
+     * @return value_type Controller output after clamping, or the last
+     *         successful output when the step was rejected; a successful
+     *         output is also handed to the callback when one is installed.
      */
     value_type update(value_type setpoint, value_type measure, value_type dt) noexcept {
         return traits_type::update(&ctx_, setpoint, measure, dt);

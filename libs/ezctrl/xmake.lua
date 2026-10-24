@@ -1,14 +1,23 @@
+local standalone = path.normalize(os.projectdir()) == path.normalize(os.scriptdir())
+if standalone then
+    -- Only the selected library entry registers tests and test packages.
+    includes("../linears")
+    includes("../filters")
+    includes("../fieldctrl")
+end
+
 target("ezctrl")
     set_kind("object")
     set_default(false)
     set_languages("c99")
     add_files("src/*.c")
     add_includedirs("inc", {public = true})
+    -- The public PID header embeds the fieldctrl controller context.
+    add_deps("fieldctrl", {public = true})
     local library_scope = interp_get_scopename()
 target_end()
 
 -- Declare independent host tests, never copies in the embedded namespace.
-local standalone = path.normalize(os.projectdir()) == path.normalize(os.scriptdir())
 if is_plat("linux", "windows", "macosx") and
    ((standalone and library_scope == "ezctrl") or
     (library_scope == "xhive_host::ezctrl" and has_config("xhive_tests"))) then

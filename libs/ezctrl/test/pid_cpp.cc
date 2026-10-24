@@ -57,8 +57,8 @@ void check_configured_flow() {
 
     /* A default-constructed wrapper is a disabled controller. */
     EXPECT_EQ(step(pid, T(1), T(0)), T(0));
-    EXPECT_EQ(pid.context().kp, T(0));
-    EXPECT_EQ(as_const(pid).ki, T(0));
+    EXPECT_EQ(pid.context().cfg.kp, T(0));
+    EXPECT_EQ(as_const(pid).cfg.ki, T(0));
 
     config cfg{};
     cfg.kp = T(1);
@@ -66,18 +66,18 @@ void check_configured_flow() {
     cfg.kd = T(0.25);
     ASSERT_EQ(pid.init(cfg), EZC_OK);
 
-    /* P = 1, I = 0.5, D = 0.25 */
-    EXPECT_NEAR(step(pid, T(1), T(0)), T(1.75), eps);
+    /* P = 1, I = 0.5, no derivative on the first step */
+    EXPECT_NEAR(step(pid, T(1), T(0)), T(1.5), eps);
     /* P = 1, I = 1.0, D = 0 */
     EXPECT_NEAR(step(pid, T(1), T(0)), T(2), eps);
-    EXPECT_NEAR(pid.context().integral, T(1), eps);
+    EXPECT_NEAR(pid.context().pid.integral, T(1), eps);
 
     /* Runtime gain changes and reset keep their C semantics. */
     ASSERT_EQ(pid.set_params(T(0), T(1), T(0)), EZC_OK);
     EXPECT_EQ(step(pid, T(1), T(0)), T(2));
     pid.reset();
-    EXPECT_EQ(pid.context().integral, T(0));
-    EXPECT_EQ(pid.context().prev_error, T(0));
+    EXPECT_EQ(pid.context().pid.integral, T(0));
+    EXPECT_EQ(pid.context().pid.history, 0);
     EXPECT_EQ(step(pid, T(1), T(0)), T(1));
 
     /* A rejected configuration leaves a zeroed, still usable context. */
@@ -89,11 +89,13 @@ void check_configured_flow() {
     EXPECT_EQ(pid.init(bad), EZC_ERR_INVALID_ARG);
     EXPECT_EQ(step(pid, T(1), T(0)), T(0));
 
-    /* The setters report rejected ranges without changing the context. */
+    /* The setters report rejected values without changing the context. */
     ASSERT_EQ(pid.limit(T(-1), T(1)), EZC_OK);
     EXPECT_EQ(pid.limit(T(1), T(-1)), EZC_ERR_INVALID_ARG);
-    EXPECT_TRUE(as_const(pid).limit_enabled);
-    EXPECT_EQ(as_const(pid).out_max, T(1));
+    EXPECT_EQ(pid.set_params(T(-1), T(0), T(0)), EZC_ERR_INVALID_ARG);
+    EXPECT_TRUE(as_const(pid).cfg.limit_enabled);
+    EXPECT_EQ(as_const(pid).cfg.out_max, T(1));
+    EXPECT_EQ(as_const(pid).cfg.kp, T(0));
 }
 
 template <typename T>
@@ -108,11 +110,11 @@ void check_limit_and_windup_flow() {
     record<T> sink;
 
     config cfg{};
+    cfg.kp = T(1);
     cfg.ki = T(1);
     cfg.limit_enabled = true;
     cfg.out_min = T(-10);
     cfg.out_max = T(10);
-    cfg.anti_windup_enabled = true;
     ASSERT_EQ(pid.init(cfg), EZC_OK);
 
     /* A captureless lambda converts to the C callback type. */
@@ -125,9 +127,10 @@ void check_limit_and_windup_flow() {
     };
     ASSERT_EQ(pid.set_callback(callback, &sink), EZC_OK);
 
-    const T saturated = step(pid, T(1000), T(0));
+    /* P = 8: anti-windup stops the integral at 10 - 8. */
+    const T saturated = step(pid, T(8), T(0));
     EXPECT_NEAR(saturated, T(10), eps);
-    EXPECT_NEAR(pid.context().integral, T(10), eps);
+    EXPECT_NEAR(pid.context().pid.integral, T(2), eps);
     EXPECT_EQ(sink.calls, 1);
     EXPECT_EQ(sink.user, static_cast<void *>(&sink));
     EXPECT_EQ(sink.output, saturated);
@@ -136,24 +139,21 @@ void check_limit_and_windup_flow() {
     /* Without a limit the whole raw output is returned, still with callback. */
     ASSERT_EQ(pid.clear_limit(), EZC_OK);
     const T unclamped = step(pid, T(0), T(0));
-    EXPECT_NEAR(unclamped, T(10), eps);
+    EXPECT_NEAR(unclamped, T(2), eps);
     EXPECT_EQ(sink.calls, 2);
     EXPECT_EQ(sink.output, unclamped);
     EXPECT_FALSE(sink.limited);
 
-    /* Anti-windup can be disabled again without touching the state. */
-    ASSERT_EQ(pid.anti_windup(false), EZC_OK);
-    EXPECT_FALSE(as_const(pid).anti_windup_enabled);
-    ASSERT_EQ(pid.limit(T(-10), T(10)), EZC_OK);
-    EXPECT_NEAR(step(pid, T(100), T(0)), T(10), eps);
-    EXPECT_NEAR(pid.context().integral, T(110), eps);
+    /* A narrower limit clamps the integral into it right away. */
+    ASSERT_EQ(pid.limit(T(-1), T(1)), EZC_OK);
+    EXPECT_NEAR(pid.context().pid.integral, T(1), eps);
+    EXPECT_NEAR(step(pid, T(0), T(0)), T(1), eps);
+    EXPECT_EQ(sink.calls, 3);
 
     /* Removing the callback stops delivery without stopping the computation. */
     ASSERT_EQ(pid.set_callback(nullptr), EZC_OK);
-    ASSERT_EQ(pid.clear_limit(), EZC_OK);
-    const int calls = sink.calls;
-    EXPECT_NEAR(step(pid, T(0), T(0)), T(110), eps);
-    EXPECT_EQ(sink.calls, calls);
+    EXPECT_NEAR(step(pid, T(0), T(0)), T(1), eps);
+    EXPECT_EQ(sink.calls, 3);
 }
 
 template <typename T>
@@ -171,13 +171,14 @@ void check_sample_period_flow() {
 
     /* The wrapper passes a varying sample period straight through. */
     EXPECT_NEAR(pid.update(T(1), T(0), T(0.5)), T(1.5), eps);
-    EXPECT_NEAR(pid.update(T(1), T(0), T(1)), T(2.5), eps);
-    EXPECT_NEAR(pid.context().integral, T(1.5), eps);
+    const T last = pid.update(T(1), T(0), T(1));
+    EXPECT_NEAR(last, T(2.5), eps);
+    EXPECT_NEAR(pid.context().pid.integral, T(1.5), eps);
 
-    /* An invalid period is the documented zero-time step. */
-    EXPECT_NEAR(pid.update(T(2), T(0), T(0)), T(3.5), eps);
-    EXPECT_NEAR(pid.context().integral, T(1.5), eps);
-    EXPECT_EQ(pid.context().prev_error, T(2));
+    /* An invalid period rejects the step and holds the last output. */
+    EXPECT_EQ(pid.update(T(2), T(0), T(0)), last);
+    EXPECT_NEAR(pid.context().pid.integral, T(1.5), eps);
+    EXPECT_EQ(pid.context().pid.previous_error, T(1));
 }
 
 /* The default-constructed wrapper needs neither init() nor a C structure. */
@@ -189,9 +190,9 @@ void check_setter_only_flow() {
 
     controller ctrl;
     ASSERT_EQ(ctrl.set_params(T(2), T(1), T(0)), EZC_OK);
-    EXPECT_EQ(ctrl.context().kp, T(2));
-    EXPECT_EQ(ctrl.context().ki, T(1));
-    EXPECT_EQ(ctrl.context().kd, T(0));
+    EXPECT_EQ(ctrl.context().cfg.kp, T(2));
+    EXPECT_EQ(ctrl.context().cfg.ki, T(1));
+    EXPECT_EQ(ctrl.context().cfg.kd, T(0));
 
     /* P = 2, I = 1 at dt = 1 s. */
     EXPECT_NEAR(ctrl.update(T(1), T(0), T(1)), T(3), eps);
@@ -206,29 +207,28 @@ void check_setters_enable_their_features() {
 
     controller ctrl;
     ASSERT_EQ(ctrl.set_params(T(0), T(1), T(0)), EZC_OK);
-    EXPECT_EQ(ctrl.context().options, 0u);
+    EXPECT_EQ(ctrl.context().cfg.options, 0u);
 
     ASSERT_EQ(ctrl.limit(T(-2), T(2)), EZC_OK);
-    EXPECT_TRUE(ctrl.context().limit_enabled);
-    ASSERT_EQ(ctrl.anti_windup(true), EZC_OK);
-    EXPECT_TRUE(ctrl.context().anti_windup_enabled);
+    EXPECT_TRUE(ctrl.context().cfg.limit_enabled);
     ASSERT_EQ(ctrl.integral_limit(T(-1), T(1)), EZC_OK);
-    EXPECT_NE(ctrl.context().options & EZC_PID_OPT_INTEGRAL_LIMIT, 0u);
+    EXPECT_NE(ctrl.context().cfg.options & EZC_PID_OPT_INTEGRAL_LIMIT, 0u);
     ASSERT_EQ(ctrl.integral_separation(T(5)), EZC_OK);
-    EXPECT_NE(ctrl.context().options & EZC_PID_OPT_INTEGRAL_SEPARATION, 0u);
+    EXPECT_NE(ctrl.context().cfg.options & EZC_PID_OPT_INTEGRAL_SEPARATION, 0u);
     ASSERT_EQ(ctrl.setpoint_weight(T(0)), EZC_OK);
-    EXPECT_NE(ctrl.context().options & EZC_PID_OPT_SETPOINT_WEIGHT, 0u);
+    EXPECT_NE(ctrl.context().cfg.options & EZC_PID_OPT_SETPOINT_WEIGHT, 0u);
+    EXPECT_EQ(ctrl.context().pid.config.options, ctrl.context().cfg.options);
 
     /* The features are active: P = 0, I clamps at 1 while |e| = 4 <= 5. */
     EXPECT_NEAR(ctrl.update(T(4), T(0), T(1)), T(1), eps);
-    EXPECT_NEAR(ctrl.context().integral, T(1), eps);
+    EXPECT_NEAR(ctrl.context().pid.integral, T(1), eps);
     EXPECT_NEAR(ctrl.update(T(4), T(0), T(1)), T(1), eps);
-    EXPECT_NEAR(ctrl.context().integral, T(1), eps);
+    EXPECT_NEAR(ctrl.context().pid.integral, T(1), eps);
 
     /* Clearing removes the option bit and keeps the values. */
     ASSERT_EQ(ctrl.clear_integral_limit(), EZC_OK);
-    EXPECT_EQ(ctrl.context().options & EZC_PID_OPT_INTEGRAL_LIMIT, 0u);
-    EXPECT_EQ(ctrl.context().integral_max, T(1));
+    EXPECT_EQ(ctrl.context().cfg.options & EZC_PID_OPT_INTEGRAL_LIMIT, 0u);
+    EXPECT_EQ(ctrl.context().cfg.integral_max, T(1));
 }
 
 } /* namespace */
