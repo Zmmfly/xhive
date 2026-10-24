@@ -4,11 +4,8 @@
  * It closes the loop on a simulated first-order plant, so the printed output
  * shows the controller settling on a setpoint. The file is intentionally not
  * part of any Xmake target: build it by hand together with the scalar
- * implementation, for example from the repository root:
- *
- *   cc -std=c99 -Wall -Wextra -I libs/ezctrl/inc \
- *      libs/ezctrl/examples/pid_c.c libs/ezctrl/src/pid_f32.c -o pid_c
- *   ./pid_c
+ * implementation and the fieldctrl, filters and linears sources it depends on,
+ * as shown in libs/ezctrl/examples/README.md.
  */
 
 #include "ezctrl/pid.h"
@@ -30,7 +27,7 @@ int main(void)
     float measure = 0.0f;
     int step;
 
-    /* The whole configuration: kp, ki per second, kd per second. Use kd = 0
+    /* The whole configuration: kp, ki per second, kd in seconds. Use kd = 0
      * for a PI loop, or a small value such as 0.02f to add damping. */
     ezc_pid_f32_set_gains(&pid, 2.0f, 4.0f, 0.0f);
 
@@ -45,8 +42,7 @@ int main(void)
     }
 
     /* Optional features are one call each, for example:
-     *   ezc_pid_f32_set_limit(&pid, -1.0f, 1.0f);
-     *   ezc_pid_f32_set_anti_windup(&pid, true);
+     *   ezc_pid_f32_set_limit(&pid, -1.0f, 1.0f);   (anti-windup is implied)
      *   ezc_pid_f32_set_derivative_source(&pid, EZC_PID_DERIV_ON_MEASUREMENT);
      *   ezc_pid_f32_set_derivative_filter(&pid, 0.01f);
      *   ezc_pid_f32_set_integral_limit(&pid, -1.0f, 1.0f);
