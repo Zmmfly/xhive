@@ -63,6 +63,16 @@
 #define FC_ACC_STORE(x,p) FC_STORE((x),(p))
 #endif
 #define FC_COEFF_LOAD(x) FC_ACC_LOAD(x)
+/* Fields validated by an init entry point: convert to the working format
+ * without repeating the finite check in every step. */
+#if FC_VARIANT == 15
+#define FC_FIELD(x) linears_fixed_from_q15(x)
+#elif FC_VARIANT == 31
+#define FC_FIELD(x) linears_fixed_from_q31(x)
+#else
+#define FC_FIELD(x) (x)
+#endif
+#define FC_COEFF_FIELD(x) (x)
 #if FC_VARIANT == 15
 /* Circular nearest rounding: the upper half-cell is zero turns, not +MAX. */
 #define FC_ANGLE_STORE(x,p) do { \

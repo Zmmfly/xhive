@@ -1,5 +1,5 @@
 #include "fieldctrl_base.h"
-#include "fieldctrl_pi_work.h"
+#include "fieldctrl_pid_work.h"
 
 #define FC_VARIANT 32
 #include "fieldctrl_variant.h"

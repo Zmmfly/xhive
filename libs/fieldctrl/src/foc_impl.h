@@ -160,6 +160,7 @@ linears_status_t FC_N(speed_foc_init)(FC_TYPE(speed_foc) *ctx,
 {
     linears_status_t status = LINEARS_OK;
     FC_TYPE(speed_foc) next;
+    FC_TYPE(pid_config) speed = {0};
     FC_W limit, zero;
     FC_T lower, initial;
     if (ctx == NULL || config == NULL) return LINEARS_ERROR_ARGUMENT;
@@ -173,8 +174,12 @@ linears_status_t FC_N(speed_foc_init)(FC_TYPE(speed_foc) *ctx,
     if (status != LINEARS_OK) return status;
     status = FC_N(foc_init)(&next.current, &config->current);
     if (status != LINEARS_OK) return status;
-    status = FC_N(pi_init)(&next.speed, config->kp, config->ki, lower,
-        config->current_limit, initial);
+    /* The speed loop is the generic PID without derivative or options. */
+    speed.kp = config->kp;
+    speed.ki = config->ki;
+    speed.lower = lower;
+    speed.upper = config->current_limit;
+    status = FC_N(pid_init)(&next.speed, &speed, initial);
     if (status != LINEARS_OK) return status;
     next.pole_pairs = config->pole_pairs;
     *ctx = next;
@@ -189,21 +194,22 @@ linears_status_t FC_N(speed_foc_step)(FC_TYPE(speed_foc) *ctx,
     linears_status_t status = LINEARS_OK;
     FC_TYPE(speed_foc) next;
     FC_TYPE(speed_foc_output) result;
-    FC_W mechanical, speed_error, residual, zero, period, q_reference;
+    FC_TYPE(pid_output) speed_command;
+    FC_W mechanical, reference, speed_error, residual, zero, period;
     if (ctx == NULL || output == NULL) return LINEARS_ERROR_ARGUMENT;
     if (fc_overlap(ctx, sizeof(*ctx), output, sizeof(*output)))
         return LINEARS_ERROR_ALIAS;
     next = *ctx;
     mechanical = FC_DIV(FC_LOAD(electrical_speed), FC_I(next.pole_pairs));
-    speed_error = FC_SUB(FC_LOAD(mechanical_reference), mechanical);
+    reference = FC_LOAD(mechanical_reference);
+    speed_error = FC_SUB(reference, mechanical);
     period = FC_LOAD(dt);
     FC_STORE(mechanical, &result.mechanical_speed);
     FC_STORE(FC_I(0), &result.reference.d);
     if (status != LINEARS_OK) return status;
-    status = FC_N(pi_step_work)(&next.speed, speed_error, period, &q_reference);
+    status = FC_N(pid_step_work)(&next.speed, reference, mechanical, period, &speed_command);
     if (status != LINEARS_OK) return status;
-    FC_STORE(q_reference, &result.reference.q);
-    if (status != LINEARS_OK) return status;
+    result.reference.q = speed_command.output;
     status = FC_N(foc_step)(&next.current, current, result.reference,
         electrical_angle, dc_bus, dt, &result.current);
     if (status != LINEARS_OK) return status;

@@ -76,7 +76,9 @@ template<class T> struct Api;
         using ab = fieldctrl_##suffix##_ab_t; \
         using abc = fieldctrl_##suffix##_abc_t; \
         using dq = fieldctrl_##suffix##_dq_t; \
-        using pi = fieldctrl_##suffix##_pi_t; \
+        using pid = fieldctrl_##suffix##_pid_t; \
+        using pid_config = fieldctrl_##suffix##_pid_config_t; \
+        using pid_output = fieldctrl_##suffix##_pid_output_t; \
         using vvvf = fieldctrl_##suffix##_vvvf_t; \
         using vvvf_output = fieldctrl_##suffix##_vvvf_output_t; \
         static constexpr auto wrap = fieldctrl_##suffix##_wrap; \
@@ -88,8 +90,9 @@ template<class T> struct Api;
         static constexpr auto inverse_park = fieldctrl_##suffix##_inverse_park; \
         static constexpr auto limit_voltage = fieldctrl_##suffix##_limit_voltage; \
         static constexpr auto svpwm = fieldctrl_##suffix##_svpwm; \
-        static constexpr auto pi_init = fieldctrl_##suffix##_pi_init; \
-        static constexpr auto pi_step = fieldctrl_##suffix##_pi_step; \
+        static constexpr auto pid_init = fieldctrl_##suffix##_pid_init; \
+        static constexpr auto pid_reset = fieldctrl_##suffix##_pid_reset; \
+        static constexpr auto pid_step = fieldctrl_##suffix##_pid_step; \
         static constexpr auto vvvf_init = fieldctrl_##suffix##_vvvf_init; \
         static constexpr auto vvvf_step = fieldctrl_##suffix##_vvvf_step; \
     };

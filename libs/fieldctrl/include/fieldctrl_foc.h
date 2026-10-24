@@ -128,7 +128,7 @@ typedef struct {
  */
 typedef struct {
     fieldctrl_f32_foc_t current; /**< Inner current-controller state. */
-    fieldctrl_f32_pi_t speed; /**< Mechanical-speed PI state; output in A. */
+    fieldctrl_f32_pid_t speed; /**< Mechanical-speed PID state with kd = 0; output in A. */
     uint32_t pole_pairs; /**< Immutable electrical/mechanical frequency ratio. */
 } fieldctrl_f32_speed_foc_t;
 
@@ -161,7 +161,7 @@ linears_status_t fieldctrl_f32_speed_foc_init(fieldctrl_f32_speed_foc_t *ctx,
 /**
  * @brief Run a single-precision speed PI followed by the d/q current loop.
  *
- * Current-reference clipping uses conditional speed-PI anti-windup. Inner
+ * Current-reference clipping uses the speed PID's boundary anti-windup. Inner
  * radial voltage saturation also cancels this sample's speed-integral update
  * if speed error and q-voltage saturation residual have the same sign. The
  * current sample's q reference is retained; the restored integral affects the
@@ -287,7 +287,7 @@ typedef struct {
  */
 typedef struct {
     fieldctrl_f64_foc_t current; /**< Inner current-controller state. */
-    fieldctrl_f64_pi_t speed; /**< Mechanical-speed PI state; output in A. */
+    fieldctrl_f64_pid_t speed; /**< Mechanical-speed PID state with kd = 0; output in A. */
     uint32_t pole_pairs; /**< Immutable electrical/mechanical frequency ratio. */
 } fieldctrl_f64_speed_foc_t;
 
@@ -320,7 +320,7 @@ linears_status_t fieldctrl_f64_speed_foc_init(fieldctrl_f64_speed_foc_t *ctx,
 /**
  * @brief Run a double-precision speed PI followed by the d/q current loop.
  *
- * Current-reference clipping uses conditional speed-PI anti-windup. Inner
+ * Current-reference clipping uses the speed PID's boundary anti-windup. Inner
  * radial voltage saturation also cancels this sample's speed-integral update
  * if speed error and q-voltage saturation residual have the same sign. The
  * current sample's q reference is retained; the restored integral affects the
@@ -453,7 +453,7 @@ typedef struct {
  */
 typedef struct {
     fieldctrl_q15_foc_t current; /**< Inner current-loop state. */
-    fieldctrl_q15_pi_t speed; /**< Mechanical-speed PI; integral/output units are Ipu. */
+    fieldctrl_q15_pid_t speed; /**< Mechanical-speed PID with kd = 0; integral/output units are Ipu. */
     uint32_t pole_pairs; /**< Immutable nonzero motor pole-pair count. */
 } fieldctrl_q15_speed_foc_t;
 
@@ -621,7 +621,7 @@ typedef struct {
  */
 typedef struct {
     fieldctrl_q31_foc_t current; /**< Inner current-loop state. */
-    fieldctrl_q31_pi_t speed; /**< Mechanical-speed PI; integral/output units are Ipu. */
+    fieldctrl_q31_pid_t speed; /**< Mechanical-speed PID with kd = 0; integral/output units are Ipu. */
     uint32_t pole_pairs; /**< Immutable nonzero motor pole-pair count. */
 } fieldctrl_q31_speed_foc_t;
 
