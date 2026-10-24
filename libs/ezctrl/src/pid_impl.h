@@ -48,8 +48,8 @@ static bool EZC_PID_FN(_built)(const EZC_PID_CONTEXT *ctx)
 /*
  * Clamp value into the integral bounds of a fieldctrl tuning: the output range,
  * or the independent integral limit while that option is set. This mirrors the
- * rule fieldctrl applies, because fieldctrl rejects an initial or reset
- * integral outside those bounds.
+ * rule fieldctrl applies, because fieldctrl init and reset reject an integral
+ * outside those bounds.
  */
 static EZC_PID_TYPE EZC_PID_FN(_clamp_integral)(const EZC_FC_CONFIG *fc, EZC_PID_TYPE value)
 {
@@ -67,35 +67,47 @@ static EZC_PID_TYPE EZC_PID_FN(_clamp_integral)(const EZC_FC_CONFIG *fc, EZC_PID
 }
 
 /*
- * Build the fieldctrl controller from next and commit next as the
- * configuration in effect. fieldctrl tuning is immutable, so this is the only
- * way a configuration change reaches the controller. The integral of a built
- * controller carries over; the derivative history and the dt cache restart.
- * fieldctrl validates every field and leaves ctx->pid unchanged on failure, and
- * cfg is then not committed either.
+ * Map an ezctrl configuration onto the fieldctrl tuning it describes. The
+ * callback is not part of the tuning.
+ */
+static void EZC_PID_FN(_map)(const EZC_PID_CONFIG *cfg, EZC_FC_CONFIG *fc)
+{
+    fc->kp = cfg->kp;
+    fc->ki = cfg->ki;
+    fc->kd = cfg->kd;
+    /* fieldctrl always clamps; a disabled limit is the whole finite range. */
+    fc->lower = cfg->limit_enabled ? cfg->out_min : -EZC_PID_MAX;
+    fc->upper = cfg->limit_enabled ? cfg->out_max : EZC_PID_MAX;
+    fc->options = cfg->options;
+    fc->derivative = (fieldctrl_pid_derivative_t)cfg->deriv_source;
+    fc->derivative_filter = cfg->deriv_filter_t;
+    fc->setpoint_weight = cfg->weight_p;
+    fc->integral_lower = cfg->integral_min;
+    fc->integral_upper = cfg->integral_max;
+    fc->separation = cfg->integral_separation;
+}
+
+/*
+ * Make next the configuration in effect. A built controller is retuned in
+ * place, which keeps its integral (clamped into the new bounds), derivative
+ * history and, for unchanged period coefficients, its dt cache. An unbuilt
+ * controller is initialized with zero clamped into the integral bounds.
+ * fieldctrl validates every field and leaves ctx->pid unchanged on failure,
+ * and cfg is then not committed either.
  */
 static ezc_status_t EZC_PID_FN(_apply)(EZC_PID_CONTEXT *ctx, const EZC_PID_CONFIG *next)
 {
     EZC_FC_CONFIG fc;
-    EZC_PID_TYPE integral;
+    linears_status_t status;
 
-    fc.kp = next->kp;
-    fc.ki = next->ki;
-    fc.kd = next->kd;
-    /* fieldctrl always clamps; a disabled limit is the whole finite range. */
-    fc.lower = next->limit_enabled ? next->out_min : -EZC_PID_MAX;
-    fc.upper = next->limit_enabled ? next->out_max : EZC_PID_MAX;
-    fc.options = next->options;
-    fc.derivative = (fieldctrl_pid_derivative_t)next->deriv_source;
-    fc.derivative_filter = next->deriv_filter_t;
-    fc.setpoint_weight = next->weight_p;
-    fc.integral_lower = next->integral_min;
-    fc.integral_upper = next->integral_max;
-    fc.separation = next->integral_separation;
-
-    integral = EZC_PID_FN(_built)(ctx) ? ctx->pid.integral : (EZC_PID_TYPE)0;
-    integral = EZC_PID_FN(_clamp_integral)(&fc, integral);
-    if (EZC_FC_FN(_init)(&ctx->pid, &fc, integral) != LINEARS_OK) {
+    EZC_PID_FN(_map)(next, &fc);
+    if (EZC_PID_FN(_built)(ctx)) {
+        status = EZC_FC_FN(_retune)(&ctx->pid, &fc);
+    } else {
+        status = EZC_FC_FN(_init)(&ctx->pid, &fc,
+                                  EZC_PID_FN(_clamp_integral)(&fc, (EZC_PID_TYPE)0));
+    }
+    if (status != LINEARS_OK) {
         return EZC_ERR_INVALID_ARG;
     }
     ctx->cfg = *next;
@@ -272,13 +284,33 @@ void EZC_PID_FN(_reset)(EZC_PID_CONTEXT *ctx)
                             EZC_PID_FN(_clamp_integral)(&ctx->pid.config, (EZC_PID_TYPE)0));
 }
 
-EZC_PID_TYPE EZC_PID_FN(_update)(EZC_PID_CONTEXT *ctx, EZC_PID_TYPE setpoint,
-                                 EZC_PID_TYPE measure, EZC_PID_TYPE dt)
+ezc_status_t EZC_PID_FN(_reset_to)(EZC_PID_CONTEXT *ctx, EZC_PID_TYPE integral)
+{
+    linears_status_t status;
+
+    if (ctx == NULL) {
+        return EZC_ERR_INVALID_ARG;
+    }
+    if (EZC_PID_FN(_built)(ctx)) {
+        status = EZC_FC_FN(_reset)(&ctx->pid, integral);
+    } else {
+        /* Building the controller with this integral is atomic as well. */
+        EZC_FC_CONFIG fc;
+
+        EZC_PID_FN(_map)(&ctx->cfg, &fc);
+        status = EZC_FC_FN(_init)(&ctx->pid, &fc, integral);
+    }
+    return (status == LINEARS_OK) ? EZC_OK : EZC_ERR_INVALID_ARG;
+}
+
+ezc_status_t EZC_PID_FN(_try_update)(EZC_PID_CONTEXT *ctx, EZC_PID_TYPE setpoint,
+                                     EZC_PID_TYPE measure, EZC_PID_TYPE dt,
+                                     EZC_PID_TYPE *output)
 {
     EZC_FC_OUTPUT out;
 
-    if (ctx == NULL) {
-        return (EZC_PID_TYPE)0;
+    if ((ctx == NULL) || (output == NULL)) {
+        return EZC_ERR_INVALID_ARG;
     }
     /*
      * A zero-initialized context builds its disabled controller on first use.
@@ -286,13 +318,14 @@ EZC_PID_TYPE EZC_PID_FN(_update)(EZC_PID_CONTEXT *ctx, EZC_PID_TYPE setpoint,
      * directly, which the failure branch then treats as a rejected step.
      */
     if (!EZC_PID_FN(_built)(ctx) && (EZC_PID_FN(_apply)(ctx, &ctx->cfg) != EZC_OK)) {
-        return ctx->output;
+        return EZC_ERR_INVALID_ARG;
     }
     /* fieldctrl rejects the step atomically: no state changed, out unwritten. */
     if (EZC_FC_FN(_step)(&ctx->pid, setpoint, measure, dt, &out) != LINEARS_OK) {
-        return ctx->output;
+        return EZC_ERR_INVALID_ARG;
     }
     ctx->output = out.output;
+    *output = out.output;
 
     if (ctx->cfg.callback != NULL) {
         EZC_PID_RESULT result;
@@ -307,7 +340,21 @@ EZC_PID_TYPE EZC_PID_FN(_update)(EZC_PID_CONTEXT *ctx, EZC_PID_TYPE setpoint,
         result.limited = out.saturated != 0;
         ctx->cfg.callback(ctx->cfg.callback_ctx, &result);
     }
-    return out.output;
+    return EZC_OK;
+}
+
+EZC_PID_TYPE EZC_PID_FN(_update)(EZC_PID_CONTEXT *ctx, EZC_PID_TYPE setpoint,
+                                 EZC_PID_TYPE measure, EZC_PID_TYPE dt)
+{
+    EZC_PID_TYPE output;
+
+    if (ctx == NULL) {
+        return (EZC_PID_TYPE)0;
+    }
+    if (EZC_PID_FN(_try_update)(ctx, setpoint, measure, dt, &output) != EZC_OK) {
+        return ctx->output;
+    }
+    return output;
 }
 
 #undef EZC_FC_FN

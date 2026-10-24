@@ -117,6 +117,13 @@ struct pid_api<float> {
         return ezc_pid_f32_set_setpoint_weight(ctx, weight);
     }
     static void reset(context_type *ctx) { ezc_pid_f32_reset(ctx); }
+    static ezc_status_t reset_to(context_type *ctx, value_type integral) {
+        return ezc_pid_f32_reset_to(ctx, integral);
+    }
+    static ezc_status_t try_update(context_type *ctx, value_type setpoint, value_type measure,
+                                   value_type dt, value_type *output) {
+        return ezc_pid_f32_try_update(ctx, setpoint, measure, dt, output);
+    }
 
     /*
      * One update step with a one-second sample period. The per-step arithmetic
@@ -213,6 +220,13 @@ struct pid_api<double> {
         return ezc_pid_f64_set_setpoint_weight(ctx, weight);
     }
     static void reset(context_type *ctx) { ezc_pid_f64_reset(ctx); }
+    static ezc_status_t reset_to(context_type *ctx, value_type integral) {
+        return ezc_pid_f64_reset_to(ctx, integral);
+    }
+    static ezc_status_t try_update(context_type *ctx, value_type setpoint, value_type measure,
+                                   value_type dt, value_type *output) {
+        return ezc_pid_f64_try_update(ctx, setpoint, measure, dt, output);
+    }
 
     /*
      * One update step with a one-second sample period. The per-step arithmetic

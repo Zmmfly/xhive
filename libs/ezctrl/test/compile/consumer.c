@@ -84,6 +84,18 @@ static int check_f32(void)
     if (ezc_pid_f32_update(&ctx, 5.0f, 0.0f, 0.0f) != 1.0f) {
         return 1;
     }
+    /* try_update reports the same rejection and leaves its output alone. */
+    if (ezc_pid_f32_try_update(&ctx, 5.0f, 0.0f, 0.0f, &out) != EZC_ERR_INVALID_ARG ||
+        out != 1.0f) {
+        return 1;
+    }
+    /* A bumpless restart from a manual command of 0.25. */
+    if (ezc_pid_f32_reset_to(&ctx, 0.25f) != EZC_OK || ctx.pid.integral != 0.25f) {
+        return 1;
+    }
+    if (ezc_pid_f32_try_update(&ctx, 0.0f, 0.0f, 1.0f, &out) != EZC_OK || out != 0.25f) {
+        return 1;
+    }
     /* The optional features are reachable from C as well. */
     if (ezc_pid_f32_set_derivative_source(&ctx, EZC_PID_DERIV_ON_MEASUREMENT) != EZC_OK) {
         return 1;
@@ -164,6 +176,16 @@ static int check_f64(void)
     /* Half a second advances half the integral and returns P + I. */
     out = ezc_pid_f64_update(&ctx, 2.0, 0.0, 0.5);
     if (out != 1.0) {
+        return 1;
+    }
+    if (ezc_pid_f64_try_update(&ctx, 2.0, 0.0, -1.0, &out) != EZC_ERR_INVALID_ARG ||
+        out != 1.0) {
+        return 1;
+    }
+    if (ezc_pid_f64_reset_to(&ctx, -2.0) != EZC_OK) {
+        return 1;
+    }
+    if (ezc_pid_f64_try_update(&ctx, 0.0, 0.0, 1.0, &out) != EZC_OK || out != -2.0) {
         return 1;
     }
     /* The optional features are reachable from the double API as well. */

@@ -263,7 +263,7 @@ TYPED_TEST(PidTest, SetGainsRejectsMixedSignsOrNonFiniteGainsAndKeepsTheContext)
     EXPECT_EQ(api::set_gains(&ctx, T(0), T(1), T(-1)), EZC_ERR_INVALID_ARG);
     EXPECT_EQ(api::set_gains(&ctx, nan, T(0), T(0)), EZC_ERR_INVALID_ARG);
 
-    /* Nothing was rebuilt: tuning, integral and history are untouched. */
+    /* Nothing was retuned: tuning, integral and history are untouched. */
     EXPECT_EQ(ctx.cfg.kp, T(1));
     EXPECT_EQ(ctx.cfg.ki, T(1));
     EXPECT_EQ(ctx.pid.config.kp, T(1));
@@ -335,7 +335,7 @@ TYPED_TEST(PidTest, ClearLimitDisablesClamping) {
     EXPECT_EQ(api::step(&ctx, T(1), T(0)), T(5));
 }
 
-TYPED_TEST(PidTest, SettersRestartTheDerivativeHistory) {
+TYPED_TEST(PidTest, SettersKeepTheDerivativeHistory) {
     using api = ezc_test::pid_api<TypeParam>;
     using T = TypeParam;
 
@@ -346,17 +346,48 @@ TYPED_TEST(PidTest, SettersRestartTheDerivativeHistory) {
     ASSERT_EQ(api::step(&ctx, T(1), T(0)), T(0));
     ASSERT_EQ(api::step(&ctx, T(3), T(0)), T(2));
 
-    /* Even an unchanged value rebuilds the immutable fieldctrl tuning. */
+    /* Retuning keeps the history and, with unchanged ki/kd, the dt cache. */
     ASSERT_EQ(api::set_gains(&ctx, T(0), T(0), T(1)), EZC_OK);
-    EXPECT_EQ(ctx.pid.history, 0);
-    EXPECT_EQ(ctx.pid.cached_dt, T(0));
+    EXPECT_NE(ctx.pid.history, 0);
+    EXPECT_EQ(ctx.pid.cached_dt, T(1));
 
-    /* The error jump to 5 is not differentiated, the next change is. */
-    EXPECT_EQ(api::step(&ctx, T(5), T(0)), T(0));
+    /* The error change 3 -> 5 is differentiated across the setter. */
+    EXPECT_EQ(api::step(&ctx, T(5), T(0)), T(2));
     EXPECT_EQ(api::step(&ctx, T(6), T(0)), T(1));
 }
 
-TYPED_TEST(PidTest, SetCallbackDoesNotRebuildTheController) {
+TYPED_TEST(PidTest, SetLimitEveryPeriodDoesNotDisturbTheController) {
+    using api = ezc_test::pid_api<TypeParam>;
+    using T = TypeParam;
+
+    typename api::context_type dynamic{};
+    typename api::context_type fixed{};
+    typename api::config_type cfg = api::make_config();
+    cfg.kp = T(1);
+    cfg.ki = T(0.5);
+    cfg.kd = T(0.25);
+    cfg.deriv_filter_t = T(0.5);
+    cfg.limit_enabled = true;
+    cfg.out_min = T(-4);
+    cfg.out_max = T(4);
+    ASSERT_EQ(api::init(&dynamic, &cfg), EZC_OK);
+    ASSERT_EQ(api::init(&fixed, &cfg), EZC_OK);
+
+    /* A limit that is reapplied every period, as from a supply measurement. */
+    for (int n = 0; n < 40; ++n) {
+        const T setpoint = (n % 10 < 5) ? T(3) : T(-2);
+        const T measure = T(0.125) * T(n % 4);
+        ASSERT_EQ(api::set_limit(&dynamic, T(-4), T(4)), EZC_OK);
+        EXPECT_EQ(api::update(&dynamic, setpoint, measure, T(0.25)),
+                  api::update(&fixed, setpoint, measure, T(0.25)))
+            << "step " << n;
+    }
+    EXPECT_EQ(dynamic.pid.integral, fixed.pid.integral);
+    EXPECT_EQ(dynamic.pid.derivative, fixed.pid.derivative);
+    EXPECT_NE(fixed.pid.derivative, T(0));
+}
+
+TYPED_TEST(PidTest, SetCallbackDoesNotRetuneTheController) {
     using api = ezc_test::pid_api<TypeParam>;
     using T = TypeParam;
 
@@ -437,4 +468,42 @@ TYPED_TEST(PidTest, ResetIgnoresAnUnbuiltContext) {
     api::reset(&ctx);
     EXPECT_EQ(ctx.pid.config.upper, T(0));
     EXPECT_EQ(api::step(&ctx, T(1), T(0)), T(0));
+}
+
+TYPED_TEST(PidTest, ResetToStartsFromTheGivenIntegral) {
+    using api = ezc_test::pid_api<TypeParam>;
+    using T = TypeParam;
+    const T nan = std::numeric_limits<T>::quiet_NaN();
+
+    typename api::context_type ctx{};
+    typename api::config_type cfg = api::make_config();
+    cfg.kp = T(1);
+    cfg.ki = T(1);
+    cfg.kd = T(1);
+    cfg.limit_enabled = true;
+    cfg.out_min = T(0);
+    cfg.out_max = T(10);
+    ASSERT_EQ(api::init(&ctx, &cfg), EZC_OK);
+    ASSERT_EQ(api::step(&ctx, T(1), T(0)), T(2));
+
+    /* Bumpless switch from a manual command of 6 at zero error. */
+    ASSERT_EQ(api::reset_to(&ctx, T(6)), EZC_OK);
+    EXPECT_EQ(ctx.pid.integral, T(6));
+    EXPECT_EQ(ctx.pid.history, 0);
+    EXPECT_EQ(ctx.output, T(2));
+    EXPECT_EQ(api::step(&ctx, T(0), T(0)), T(6));
+
+    /* Outside the integral bounds or not finite: rejected, nothing changes. */
+    EXPECT_EQ(api::reset_to(&ctx, T(11)), EZC_ERR_INVALID_ARG);
+    EXPECT_EQ(api::reset_to(&ctx, T(-1)), EZC_ERR_INVALID_ARG);
+    EXPECT_EQ(api::reset_to(&ctx, nan), EZC_ERR_INVALID_ARG);
+    EXPECT_EQ(api::reset_to(nullptr, T(0)), EZC_ERR_INVALID_ARG);
+    EXPECT_EQ(ctx.pid.integral, T(6));
+    EXPECT_NE(ctx.pid.history, 0);
+
+    /* A zero-initialized context is built with the given integral. */
+    typename api::context_type fresh{};
+    ASSERT_EQ(api::reset_to(&fresh, T(3)), EZC_OK);
+    EXPECT_EQ(fresh.pid.integral, T(3));
+    EXPECT_EQ(api::step(&fresh, T(5), T(0)), T(3));
 }

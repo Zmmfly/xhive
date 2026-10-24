@@ -46,9 +46,9 @@
  *   event-driven sample rates. `ki` is the integral gain per second and `kd`
  *   the derivative gain in seconds. fieldctrl caches `ki * dt`, `kd / dt` and
  *   the filter weight and recomputes them only when `dt` changes.
- * - The first step after initialization, reset or a configuration change only
- *   records `e(n)` and `measure(n)`: its derivative term is zero, so neither a
- *   nonzero start value nor a reconfiguration causes a derivative kick.
+ * - The first step after initialization or reset only records `e(n)` and
+ *   `measure(n)`: its derivative term is zero, so a nonzero start value causes
+ *   no derivative kick. Configuration changes keep the derivative history.
  * - The output limit is optional. While it is disabled the output range is the
  *   whole finite range of the scalar type (`[-FLT_MAX, FLT_MAX]` or
  *   `[-DBL_MAX, DBL_MAX]`).
@@ -59,20 +59,24 @@
  *   exactly on that limit, and never moves back past `I(n-1)`.
  * - A step is rejected when `dt` is not a finite positive number, when the
  *   setpoint or the measurement is not finite, or when an intermediate value
- *   overflows. A rejected step changes no state, does not invoke the callback
- *   and returns the output of the last successful step (zero before the first
- *   one).
+ *   overflows. A rejected step changes no state and does not invoke the
+ *   callback. `*_try_update()` reports it as `EZC_ERR_INVALID_ARG`;
+ *   `*_update()` returns the output of the last successful step instead (zero
+ *   before the first one).
  * - The callback is optional. It receives the callback context pointer and the
  *   full result of every successful step, including the returned output.
  *
  * Configuration
  * -------------
  * The configuration in effect is a whole `ezc_pid_*_cfg_t` stored in the
- * context: `*_init()` replaces it and each setter changes one part of it. The
- * fieldctrl tuning is immutable, so every change except the callback rebuilds
- * the fieldctrl controller: the integral is kept, clamped into the new integral
- * bounds, while the derivative history and the `dt` cache restart. A rejected
- * change leaves the whole context unchanged.
+ * context: `*_init()` replaces it and each setter changes one part of it.
+ * Every change except the callback retunes the fieldctrl controller in place
+ * (`fieldctrl_*_pid_retune()`): the integral is kept, clamped into the new
+ * integral bounds, and the derivative history continues. Setters may
+ * therefore run every control period, for example for an output limit that
+ * follows a supply voltage or for gain scheduling. A rejected change leaves
+ * the whole context unchanged. `*_reset_to()` restarts the controller from a
+ * chosen integral, for a bumpless switch from manual to automatic operation.
  *
  * Optional features
  * -----------------
@@ -286,8 +290,9 @@ ezc_status_t ezc_pid_f32_init(ezc_pid_f32_t *ctx, const ezc_pid_f32_cfg_t *cfg);
  * @retval EZC_ERR_INVALID_ARG ctx is NULL, a gain is not finite or the gains have
  *                             mixed signs; the context is left unchanged.
  *
- * @note Rebuilds the fieldctrl controller: the integral is kept, and the next
- *       update step has no derivative term.
+ * @note Retunes in place: the integral and the derivative history are kept,
+ *       so gain scheduling may call this every period. A zero @p kd also
+ *       clears the stored derivative term.
  */
 ezc_status_t ezc_pid_f32_set_gains(ezc_pid_f32_t *ctx, float kp, float ki, float kd);
 
@@ -303,9 +308,9 @@ ezc_status_t ezc_pid_f32_set_gains(ezc_pid_f32_t *ctx, float kp, float ki, float
  * @retval EZC_ERR_INVALID_ARG ctx is NULL or the range was rejected; the context
  *                             is left unchanged.
  *
- * @note Rebuilds the fieldctrl controller. Without the integral limit option
- *       the integral is clamped into the new range, and anti-windup acts on
- *       it from the next step.
+ * @note Retunes in place, so the limit may change every period. Without the
+ *       integral limit option the integral is clamped into the new range, and
+ *       anti-windup acts on it from the next step.
  */
 ezc_status_t ezc_pid_f32_set_limit(ezc_pid_f32_t *ctx, float out_min, float out_max);
 
@@ -318,8 +323,8 @@ ezc_status_t ezc_pid_f32_set_limit(ezc_pid_f32_t *ctx, float out_min, float out_
  *               `out_max` are retained in `cfg` but ignored.
  * @retval EZC_ERR_INVALID_ARG ctx is NULL.
  *
- * @note Rebuilds the fieldctrl controller. Without the integral limit option
- *       the integral bounds widen to the same range.
+ * @note Retunes in place. Without the integral limit option the integral
+ *       bounds widen to the same range.
  */
 ezc_status_t ezc_pid_f32_clear_limit(ezc_pid_f32_t *ctx);
 
@@ -335,7 +340,7 @@ ezc_status_t ezc_pid_f32_clear_limit(ezc_pid_f32_t *ctx);
  * @retval EZC_OK The callback and its context were stored.
  * @retval EZC_ERR_INVALID_ARG ctx is NULL; the context is left unchanged.
  *
- * @note Only `cfg` changes; the fieldctrl controller is not rebuilt. The
+ * @note Only `cfg` changes; the fieldctrl controller is not retuned. The
  *       callback runs in the update caller's context and must not call back
  *       into the same controller context.
  */
@@ -354,8 +359,9 @@ ezc_status_t ezc_pid_f32_set_callback(ezc_pid_f32_t *ctx, ezc_pid_f32_cb_t callb
  * @retval EZC_ERR_INVALID_ARG ctx is NULL or source is not a known value; the
  *                             context is left unchanged.
  *
- * @note Rebuilds the fieldctrl controller: the next update step has no
- *       derivative term.
+ * @note Retunes in place. Both the previous error and the previous measurement
+ *       are recorded on every step, so the next step differentiates the new
+ *       source without a restart.
  */
 ezc_status_t ezc_pid_f32_set_derivative_source(ezc_pid_f32_t *ctx,
                                                ezc_pid_deriv_source_t source);
@@ -372,8 +378,8 @@ ezc_status_t ezc_pid_f32_set_derivative_source(ezc_pid_f32_t *ctx,
  * @retval EZC_ERR_INVALID_ARG ctx is NULL, or deriv_filter_t is negative or not
  *                             finite; the context is left unchanged.
  *
- * @note Rebuilds the fieldctrl controller: the filter state restarts from zero
- *       and the next update step has no derivative term.
+ * @note Retunes in place: the filter continues from the current derivative
+ *       term, and the next step's derivative is computed as usual.
  */
 ezc_status_t ezc_pid_f32_set_derivative_filter(ezc_pid_f32_t *ctx, float deriv_filter_t);
 
@@ -390,8 +396,8 @@ ezc_status_t ezc_pid_f32_set_derivative_filter(ezc_pid_f32_t *ctx, float deriv_f
  *                             is left unchanged.
  *
  * @note The range replaces the output range as integral bounds and may be wider
- *       or narrower than it. Rebuilding the fieldctrl controller clamps the
- *       current integral into the range immediately.
+ *       or narrower than it. Retuning clamps the current integral into the
+ *       range immediately.
  */
 ezc_status_t ezc_pid_f32_set_integral_limit(ezc_pid_f32_t *ctx, float integral_min,
                                             float integral_max);
@@ -405,8 +411,7 @@ ezc_status_t ezc_pid_f32_set_integral_limit(ezc_pid_f32_t *ctx, float integral_m
  *               `integral_min` and `integral_max` are retained but ignored.
  * @retval EZC_ERR_INVALID_ARG ctx is NULL.
  *
- * @note Rebuilds the fieldctrl controller and clamps the integral into the
- *       output range.
+ * @note Retunes in place and clamps the integral into the output range.
  */
 ezc_status_t ezc_pid_f32_clear_integral_limit(ezc_pid_f32_t *ctx);
 
@@ -466,11 +471,60 @@ ezc_status_t ezc_pid_f32_set_setpoint_weight(ezc_pid_f32_t *ctx, float weight);
 void ezc_pid_f32_reset(ezc_pid_f32_t *ctx);
 
 /**
- * @brief Run one float PID update step.
+ * @brief Restart the float controller from a given integral.
+ *
+ * Like @ref ezc_pid_f32_reset, but the integral starts at @p integral. Pass the
+ * actuator command that was applied manually to switch to automatic operation
+ * without a bump. A zero-initialized context is built with this integral.
+ *
+ * @param[in,out] ctx Controller context. Must not be NULL.
+ * @param[in] integral Integral term to start from, in output units; must be
+ *                     finite and inside the integral bounds (the output range,
+ *                     or `[integral_min, integral_max]` while
+ *                     `EZC_PID_OPT_INTEGRAL_LIMIT` is set).
+ * @return ezc_status_t Operation status.
+ * @retval EZC_OK The integral is stored and the derivative history is cleared;
+ *               `cfg` and `output` are kept.
+ * @retval EZC_ERR_INVALID_ARG ctx is NULL, @p integral is not finite or outside
+ *                             the integral bounds, or a directly written `cfg`
+ *                             of an unbuilt context is invalid; the context is
+ *                             left unchanged.
+ */
+ezc_status_t ezc_pid_f32_reset_to(ezc_pid_f32_t *ctx, float integral);
+
+/**
+ * @brief Run one float PID update step and report whether it was accepted.
  *
  * Builds the fieldctrl controller of a zero-initialized context, advances it by
- * one fieldctrl_f32_pid_step() and, on success, stores the output, invokes the
- * callback if one is installed and returns the output.
+ * one fieldctrl_f32_pid_step() and, on success, stores the output in both
+ * `ctx->output` and @p output and then invokes the callback if one is
+ * installed.
+ *
+ * @param[in,out] ctx Controller context. Must not be NULL.
+ * @param[in] setpoint Target value of this update step; must be finite.
+ * @param[in] measure Measured value of this update step; must be finite.
+ * @param[in] dt Elapsed time since the previous update step, in seconds; must
+ *               be finite and positive.
+ * @param[out] output Destination of `u(n)`. Must not be NULL; unchanged when the
+ *                    step is rejected.
+ * @return ezc_status_t Step status.
+ * @retval EZC_OK The step was computed and committed.
+ * @retval EZC_ERR_INVALID_ARG ctx or output is NULL, or the step was rejected
+ *                             (see the file comment); nothing changed and no
+ *                             callback ran.
+ *
+ * @pre @p ctx was initialized by @ref ezc_pid_f32_init or zero-initialized.
+ * @note Not reentrant and not interrupt safe with respect to the same context:
+ *       serialize calls that share one context.
+ */
+ezc_status_t ezc_pid_f32_try_update(ezc_pid_f32_t *ctx, float setpoint, float measure,
+                                    float dt, float *output);
+
+/**
+ * @brief Run one float PID update step.
+ *
+ * Same step as @ref ezc_pid_f32_try_update, for callers that only need the
+ * command value.
  *
  * @param[in,out] ctx Controller context. NULL returns zero.
  * @param[in] setpoint Target value of this update step; must be finite.
@@ -489,8 +543,8 @@ void ezc_pid_f32_reset(ezc_pid_f32_t *ctx);
  *       serialize calls that share one context. Calls on different contexts are
  *       independent.
  * @warning The return value alone does not distinguish a rejected step from a
- *          held output. Validate `dt` and sensor data before the call when the
- *          actuator must not keep the previous command.
+ *          held output. Use the `try_update` variant when the actuator must not
+ *          silently keep the previous command.
  */
 float ezc_pid_f32_update(ezc_pid_f32_t *ctx, float setpoint, float measure, float dt);
 
@@ -609,8 +663,9 @@ ezc_status_t ezc_pid_f64_init(ezc_pid_f64_t *ctx, const ezc_pid_f64_cfg_t *cfg);
  * @retval EZC_ERR_INVALID_ARG ctx is NULL, a gain is not finite or the gains have
  *                             mixed signs; the context is left unchanged.
  *
- * @note Rebuilds the fieldctrl controller: the integral is kept, and the next
- *       update step has no derivative term.
+ * @note Retunes in place: the integral and the derivative history are kept,
+ *       so gain scheduling may call this every period. A zero @p kd also
+ *       clears the stored derivative term.
  */
 ezc_status_t ezc_pid_f64_set_gains(ezc_pid_f64_t *ctx, double kp, double ki, double kd);
 
@@ -626,9 +681,9 @@ ezc_status_t ezc_pid_f64_set_gains(ezc_pid_f64_t *ctx, double kp, double ki, dou
  * @retval EZC_ERR_INVALID_ARG ctx is NULL or the range was rejected; the context
  *                             is left unchanged.
  *
- * @note Rebuilds the fieldctrl controller. Without the integral limit option
- *       the integral is clamped into the new range, and anti-windup acts on
- *       it from the next step.
+ * @note Retunes in place, so the limit may change every period. Without the
+ *       integral limit option the integral is clamped into the new range, and
+ *       anti-windup acts on it from the next step.
  */
 ezc_status_t ezc_pid_f64_set_limit(ezc_pid_f64_t *ctx, double out_min, double out_max);
 
@@ -641,8 +696,8 @@ ezc_status_t ezc_pid_f64_set_limit(ezc_pid_f64_t *ctx, double out_min, double ou
  *               `out_max` are retained in `cfg` but ignored.
  * @retval EZC_ERR_INVALID_ARG ctx is NULL.
  *
- * @note Rebuilds the fieldctrl controller. Without the integral limit option
- *       the integral bounds widen to the same range.
+ * @note Retunes in place. Without the integral limit option the integral
+ *       bounds widen to the same range.
  */
 ezc_status_t ezc_pid_f64_clear_limit(ezc_pid_f64_t *ctx);
 
@@ -658,7 +713,7 @@ ezc_status_t ezc_pid_f64_clear_limit(ezc_pid_f64_t *ctx);
  * @retval EZC_OK The callback and its context were stored.
  * @retval EZC_ERR_INVALID_ARG ctx is NULL; the context is left unchanged.
  *
- * @note Only `cfg` changes; the fieldctrl controller is not rebuilt. The
+ * @note Only `cfg` changes; the fieldctrl controller is not retuned. The
  *       callback runs in the update caller's context and must not call back
  *       into the same controller context.
  */
@@ -677,8 +732,9 @@ ezc_status_t ezc_pid_f64_set_callback(ezc_pid_f64_t *ctx, ezc_pid_f64_cb_t callb
  * @retval EZC_ERR_INVALID_ARG ctx is NULL or source is not a known value; the
  *                             context is left unchanged.
  *
- * @note Rebuilds the fieldctrl controller: the next update step has no
- *       derivative term.
+ * @note Retunes in place. Both the previous error and the previous measurement
+ *       are recorded on every step, so the next step differentiates the new
+ *       source without a restart.
  */
 ezc_status_t ezc_pid_f64_set_derivative_source(ezc_pid_f64_t *ctx,
                                                ezc_pid_deriv_source_t source);
@@ -695,8 +751,8 @@ ezc_status_t ezc_pid_f64_set_derivative_source(ezc_pid_f64_t *ctx,
  * @retval EZC_ERR_INVALID_ARG ctx is NULL, or deriv_filter_t is negative or not
  *                             finite; the context is left unchanged.
  *
- * @note Rebuilds the fieldctrl controller: the filter state restarts from zero
- *       and the next update step has no derivative term.
+ * @note Retunes in place: the filter continues from the current derivative
+ *       term, and the next step's derivative is computed as usual.
  */
 ezc_status_t ezc_pid_f64_set_derivative_filter(ezc_pid_f64_t *ctx, double deriv_filter_t);
 
@@ -713,8 +769,8 @@ ezc_status_t ezc_pid_f64_set_derivative_filter(ezc_pid_f64_t *ctx, double deriv_
  *                             is left unchanged.
  *
  * @note The range replaces the output range as integral bounds and may be wider
- *       or narrower than it. Rebuilding the fieldctrl controller clamps the
- *       current integral into the range immediately.
+ *       or narrower than it. Retuning clamps the current integral into the
+ *       range immediately.
  */
 ezc_status_t ezc_pid_f64_set_integral_limit(ezc_pid_f64_t *ctx, double integral_min,
                                             double integral_max);
@@ -728,8 +784,7 @@ ezc_status_t ezc_pid_f64_set_integral_limit(ezc_pid_f64_t *ctx, double integral_
  *               `integral_min` and `integral_max` are retained but ignored.
  * @retval EZC_ERR_INVALID_ARG ctx is NULL.
  *
- * @note Rebuilds the fieldctrl controller and clamps the integral into the
- *       output range.
+ * @note Retunes in place and clamps the integral into the output range.
  */
 ezc_status_t ezc_pid_f64_clear_integral_limit(ezc_pid_f64_t *ctx);
 
@@ -789,11 +844,60 @@ ezc_status_t ezc_pid_f64_set_setpoint_weight(ezc_pid_f64_t *ctx, double weight);
 void ezc_pid_f64_reset(ezc_pid_f64_t *ctx);
 
 /**
- * @brief Run one double PID update step.
+ * @brief Restart the double controller from a given integral.
+ *
+ * Like @ref ezc_pid_f64_reset, but the integral starts at @p integral. Pass the
+ * actuator command that was applied manually to switch to automatic operation
+ * without a bump. A zero-initialized context is built with this integral.
+ *
+ * @param[in,out] ctx Controller context. Must not be NULL.
+ * @param[in] integral Integral term to start from, in output units; must be
+ *                     finite and inside the integral bounds (the output range,
+ *                     or `[integral_min, integral_max]` while
+ *                     `EZC_PID_OPT_INTEGRAL_LIMIT` is set).
+ * @return ezc_status_t Operation status.
+ * @retval EZC_OK The integral is stored and the derivative history is cleared;
+ *               `cfg` and `output` are kept.
+ * @retval EZC_ERR_INVALID_ARG ctx is NULL, @p integral is not finite or outside
+ *                             the integral bounds, or a directly written `cfg`
+ *                             of an unbuilt context is invalid; the context is
+ *                             left unchanged.
+ */
+ezc_status_t ezc_pid_f64_reset_to(ezc_pid_f64_t *ctx, double integral);
+
+/**
+ * @brief Run one double PID update step and report whether it was accepted.
  *
  * Builds the fieldctrl controller of a zero-initialized context, advances it by
- * one fieldctrl_f64_pid_step() and, on success, stores the output, invokes the
- * callback if one is installed and returns the output.
+ * one fieldctrl_f64_pid_step() and, on success, stores the output in both
+ * `ctx->output` and @p output and then invokes the callback if one is
+ * installed.
+ *
+ * @param[in,out] ctx Controller context. Must not be NULL.
+ * @param[in] setpoint Target value of this update step; must be finite.
+ * @param[in] measure Measured value of this update step; must be finite.
+ * @param[in] dt Elapsed time since the previous update step, in seconds; must
+ *               be finite and positive.
+ * @param[out] output Destination of `u(n)`. Must not be NULL; unchanged when the
+ *                    step is rejected.
+ * @return ezc_status_t Step status.
+ * @retval EZC_OK The step was computed and committed.
+ * @retval EZC_ERR_INVALID_ARG ctx or output is NULL, or the step was rejected
+ *                             (see the file comment); nothing changed and no
+ *                             callback ran.
+ *
+ * @pre @p ctx was initialized by @ref ezc_pid_f64_init or zero-initialized.
+ * @note Not reentrant and not interrupt safe with respect to the same context:
+ *       serialize calls that share one context.
+ */
+ezc_status_t ezc_pid_f64_try_update(ezc_pid_f64_t *ctx, double setpoint, double measure,
+                                    double dt, double *output);
+
+/**
+ * @brief Run one double PID update step.
+ *
+ * Same step as @ref ezc_pid_f64_try_update, for callers that only need the
+ * command value.
  *
  * @param[in,out] ctx Controller context. NULL returns zero.
  * @param[in] setpoint Target value of this update step; must be finite.
@@ -812,8 +916,8 @@ void ezc_pid_f64_reset(ezc_pid_f64_t *ctx);
  *       serialize calls that share one context. Calls on different contexts are
  *       independent.
  * @warning The return value alone does not distinguish a rejected step from a
- *          held output. Validate `dt` and sensor data before the call when the
- *          actuator must not keep the previous command.
+ *          held output. Use the `try_update` variant when the actuator must not
+ *          silently keep the previous command.
  */
 double ezc_pid_f64_update(ezc_pid_f64_t *ctx, double setpoint, double measure, double dt);
 

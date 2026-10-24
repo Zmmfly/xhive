@@ -59,7 +59,7 @@ TYPED_TEST(PidTest, DerivativeOnMeasurementIgnoresSetpointSteps) {
     EXPECT_EQ(api::step(&kick, T(100), T(0)), T(99));
 }
 
-TYPED_TEST(PidTest, DerivativeSourceSwitchRestartsTheHistory) {
+TYPED_TEST(PidTest, DerivativeSourceSwitchKeepsTheHistory) {
     using api = ezc_test::pid_api<TypeParam>;
     using T = TypeParam;
 
@@ -72,17 +72,17 @@ TYPED_TEST(PidTest, DerivativeSourceSwitchRestartsTheHistory) {
     /* Error from 1 to -2. */
     EXPECT_EQ(api::step(&ctx, T(1), T(3)), T(-3));
 
-    /* Switching the source rebuilds: the first step after it has no D. */
+    /* Both signals are recorded every step, so the switch needs no restart. */
     ASSERT_EQ(api::set_derivative_source(&ctx, EZC_PID_DERIV_ON_MEASUREMENT), EZC_OK);
-    EXPECT_EQ(ctx.pid.history, 0);
-    EXPECT_EQ(api::step(&ctx, T(1), T(4)), T(0));
-    /* Measurement from 4 to 6. */
-    EXPECT_EQ(api::step(&ctx, T(1), T(6)), T(-2));
+    EXPECT_NE(ctx.pid.history, 0);
+    /* Measurement from 3 to 4. */
+    EXPECT_EQ(api::step(&ctx, T(1), T(4)), T(-1));
+    /* Measurement from 4 to 6; the setpoint step is ignored. */
+    EXPECT_EQ(api::step(&ctx, T(2), T(6)), T(-2));
 
     ASSERT_EQ(api::set_derivative_source(&ctx, EZC_PID_DERIV_ON_ERROR), EZC_OK);
-    EXPECT_EQ(api::step(&ctx, T(1), T(6)), T(0));
-    /* Error from -5 to -4. */
-    EXPECT_EQ(api::step(&ctx, T(2), T(6)), T(1));
+    /* Error from -4 to -3. */
+    EXPECT_EQ(api::step(&ctx, T(3), T(6)), T(1));
 }
 
 TYPED_TEST(PidTest, DerivativeFilterFollowsTheDiscreteLowPass) {
@@ -116,11 +116,15 @@ TYPED_TEST(PidTest, DisabledDerivativeFilterPassesTheRawDerivative) {
     ASSERT_EQ(api::step(&ctx, T(0), T(0)), T(0));
     ASSERT_EQ(api::step(&ctx, T(1), T(0)), T(0.5));
 
-    /* Disabling the filter rebuilds the controller and restarts its state. */
+    /* Disabling the filter keeps the stored term; the next step is raw. */
     ASSERT_EQ(api::set_derivative_filter(&ctx, T(0)), EZC_OK);
-    EXPECT_EQ(ctx.pid.derivative, T(0));
+    EXPECT_EQ(ctx.pid.derivative, T(0.5));
     EXPECT_EQ(api::step(&ctx, T(1), T(0)), T(0));
     EXPECT_EQ(api::step(&ctx, T(3), T(0)), T(2));
+
+    /* Enabling it again filters from the current derivative term. */
+    ASSERT_EQ(api::set_derivative_filter(&ctx, T(1)), EZC_OK);
+    EXPECT_EQ(api::step(&ctx, T(3), T(0)), T(1));
 }
 
 TYPED_TEST(PidTest, IntegralLimitHoldsTheIntegralState) {

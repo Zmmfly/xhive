@@ -179,6 +179,18 @@ void check_sample_period_flow() {
     EXPECT_EQ(pid.update(T(2), T(0), T(0)), last);
     EXPECT_NEAR(pid.context().pid.integral, T(1.5), eps);
     EXPECT_EQ(pid.context().pid.previous_error, T(1));
+
+    /* try_update reports the same rejection instead of hiding it. */
+    T output = T(-7);
+    EXPECT_EQ(pid.try_update(T(2), T(0), T(0), output), EZC_ERR_INVALID_ARG);
+    EXPECT_EQ(output, T(-7));
+    ASSERT_EQ(pid.try_update(T(1), T(0), T(1), output), EZC_OK);
+    EXPECT_NEAR(output, T(3.5), eps);
+
+    /* reset_to restarts from a chosen integral, e.g. a manual command. */
+    ASSERT_EQ(pid.reset_to(T(4)), EZC_OK);
+    EXPECT_EQ(pid.context().pid.integral, T(4));
+    EXPECT_NEAR(pid.update(T(0), T(0), T(1)), T(4), eps);
 }
 
 /* The default-constructed wrapper needs neither init() nor a C structure. */

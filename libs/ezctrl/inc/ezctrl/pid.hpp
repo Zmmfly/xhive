@@ -41,8 +41,8 @@
  * `integral_limit`, `integral_separation`, `setpoint_weight`,
  * `derivative_source`, `derivative_filter`), except `set_params` and
  * `set_callback`; all of them return `ezc_status_t` like their C counterparts
- * and, except `set_callback`, rebuild the fieldctrl controller as described in
- * `ezctrl/pid.h`. `init()` is still there for bulk configuration from
+ * and, except `set_callback`, retune the fieldctrl controller in place as
+ * described in `ezctrl/pid.h`. `init()` is still there for bulk configuration from
  * `ezc_pid_f32_cfg_t` (or its f64 variant), and `context()` exposes the C
  * state when it is needed. The scalar type selects the C API through the
  * @ref ezc::pid_traits specialization for that type.
@@ -251,6 +251,33 @@ struct pid_traits<float> {
     }
 
     /**
+     * @brief Restart from a given integral; forwards to ezc_pid_f32_reset_to().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @param[in] integral Integral term inside the integral bounds.
+     * @return ezc_status_t Result of ezc_pid_f32_reset_to().
+     */
+    static ezc_status_t reset_to(context_type *ctx, value_type integral) noexcept {
+        return ezc_pid_f32_reset_to(ctx, integral);
+    }
+
+    /**
+     * @brief Run one update step with a status; forwards to
+     *        ezc_pid_f32_try_update().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @param[in] setpoint Target value of this update step.
+     * @param[in] measure Measured value of this update step.
+     * @param[in] dt Elapsed time since the previous update step, in seconds.
+     * @param[out] output Destination of the output; unchanged on rejection.
+     * @return ezc_status_t Result of ezc_pid_f32_try_update().
+     */
+    static ezc_status_t try_update(context_type *ctx, value_type setpoint, value_type measure,
+                                   value_type dt, value_type *output) noexcept {
+        return ezc_pid_f32_try_update(ctx, setpoint, measure, dt, output);
+    }
+
+    /**
      * @brief Run one update step; forwards to ezc_pid_f32_update().
      *
      * @param[in,out] ctx Controller context. Must not be NULL.
@@ -439,6 +466,33 @@ struct pid_traits<double> {
      */
     static void reset(context_type *ctx) noexcept {
         ezc_pid_f64_reset(ctx);
+    }
+
+    /**
+     * @brief Restart from a given integral; forwards to ezc_pid_f64_reset_to().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @param[in] integral Integral term inside the integral bounds.
+     * @return ezc_status_t Result of ezc_pid_f64_reset_to().
+     */
+    static ezc_status_t reset_to(context_type *ctx, value_type integral) noexcept {
+        return ezc_pid_f64_reset_to(ctx, integral);
+    }
+
+    /**
+     * @brief Run one update step with a status; forwards to
+     *        ezc_pid_f64_try_update().
+     *
+     * @param[in,out] ctx Controller context. Must not be NULL.
+     * @param[in] setpoint Target value of this update step.
+     * @param[in] measure Measured value of this update step.
+     * @param[in] dt Elapsed time since the previous update step, in seconds.
+     * @param[out] output Destination of the output; unchanged on rejection.
+     * @return ezc_status_t Result of ezc_pid_f64_try_update().
+     */
+    static ezc_status_t try_update(context_type *ctx, value_type setpoint, value_type measure,
+                                   value_type dt, value_type *output) noexcept {
+        return ezc_pid_f64_try_update(ctx, setpoint, measure, dt, output);
     }
 
     /**
@@ -637,6 +691,35 @@ public:
      */
     void reset() noexcept {
         traits_type::reset(&ctx_);
+    }
+
+    /**
+     * @brief Restart from a given integral, see ezc_pid_*_reset_to().
+     *
+     * @param[in] integral Integral term inside the integral bounds, for example
+     *                     the manual actuator command for a bumpless switch to
+     *                     automatic operation.
+     * @return ezc_status_t EZC_OK on success, EZC_ERR_INVALID_ARG when
+     *         @p integral is not finite or outside the integral bounds.
+     */
+    ezc_status_t reset_to(value_type integral) noexcept {
+        return traits_type::reset_to(&ctx_, integral);
+    }
+
+    /**
+     * @brief Run one update step and report rejection, see ezc_pid_*_try_update().
+     *
+     * @param[in] setpoint Target value of this update step.
+     * @param[in] measure Measured value of this update step.
+     * @param[in] dt Elapsed time since the previous update step, in seconds.
+     * @param[out] output Receives the controller output; unchanged when the step
+     *                    is rejected.
+     * @return ezc_status_t EZC_OK when the step was committed,
+     *         EZC_ERR_INVALID_ARG when it was rejected.
+     */
+    ezc_status_t try_update(value_type setpoint, value_type measure, value_type dt,
+                            value_type &output) noexcept {
+        return traits_type::try_update(&ctx_, setpoint, measure, dt, &output);
     }
 
     /**

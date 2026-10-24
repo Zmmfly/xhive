@@ -349,6 +349,46 @@ TYPED_TEST(PidTest, RejectedFirstStepReturnsZero) {
     EXPECT_EQ(api::update(&ctx, T(1), T(0), T(1)), T(1));
 }
 
+TYPED_TEST(PidTest, TryUpdateReportsRejectedSteps) {
+    using api = ezc_test::pid_api<TypeParam>;
+    using T = TypeParam;
+    const T nan = std::numeric_limits<T>::quiet_NaN();
+
+    typename api::context_type ctx{};
+    typename api::config_type cfg = api::make_config();
+    typename api::callback_sink sink;
+    cfg.kp = T(1);
+    cfg.ki = T(1);
+    cfg.callback = &api::callback;
+    cfg.callback_ctx = &sink;
+    ASSERT_EQ(api::init(&ctx, &cfg), EZC_OK);
+
+    T output = T(-7);
+    ASSERT_EQ(api::try_update(&ctx, T(1), T(0), T(1), &output), EZC_OK);
+    EXPECT_EQ(output, T(2));
+    EXPECT_EQ(ctx.output, T(2));
+    EXPECT_EQ(sink.calls, 1);
+    EXPECT_EQ(sink.output, T(2));
+
+    /* A rejection is reported: output, state and callback are untouched. */
+    output = T(-7);
+    EXPECT_EQ(api::try_update(&ctx, T(1), T(0), T(0), &output), EZC_ERR_INVALID_ARG);
+    EXPECT_EQ(api::try_update(&ctx, nan, T(0), T(1), &output), EZC_ERR_INVALID_ARG);
+    EXPECT_EQ(output, T(-7));
+    EXPECT_EQ(ctx.pid.integral, T(1));
+    EXPECT_EQ(sink.calls, 1);
+
+    EXPECT_EQ(api::try_update(&ctx, T(1), T(0), T(1), nullptr), EZC_ERR_INVALID_ARG);
+    EXPECT_EQ(api::try_update(nullptr, T(1), T(0), T(1), &output), EZC_ERR_INVALID_ARG);
+    EXPECT_EQ(ctx.pid.integral, T(1));
+    EXPECT_EQ(sink.calls, 1);
+
+    /* A zero-initialized context works with try_update as well. */
+    typename api::context_type fresh{};
+    EXPECT_EQ(api::try_update(&fresh, T(1), T(0), T(1), &output), EZC_OK);
+    EXPECT_EQ(output, T(0));
+}
+
 TYPED_TEST(PidTest, ReverseActingGainsDriveACoolingActuator) {
     using api = ezc_test::pid_api<TypeParam>;
     using T = TypeParam;
