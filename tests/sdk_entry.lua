@@ -91,6 +91,14 @@ function main()
     local targets = project.targets()
     assert(targets["xhive_host::deps"])
     assert(targets["xhive_host::base64"])
+    for _, library in ipairs({"linears", "filters", "fieldctrl"}) do
+        assert(targets["xhive_host::" .. library])
+        assert(#table.wrap(targets["xhive_host::" .. library]:get("packages")) == 0)
+        assert(table.contains(table.wrap(targets["xhive_host::" .. library]:get("languages")), "c99"))
+    end
+    assert(targets["xhive_host::filters"]:extraconf("deps", "linears", "public"))
+    assert(targets["xhive_host::fieldctrl"]:extraconf("deps", "linears", "public"))
+    assert(targets["xhive_host::fieldctrl"]:extraconf("deps", "filters", "public"))
     assert(targets["xhive_host::heatshrink"])
     assert(targets["xhive_host::micro-ecc"])
     assert(targets["xhive_host::mbedtls"])
@@ -108,7 +116,7 @@ function main()
         end
     end
     local deps = table.wrap(targets["xhive_host::libs"]:get("deps"))
-    for _, name in ipairs({"base64", "bitmap", "ezctrl", "heatshrink", "micro-ecc", "cjson"}) do
+    for _, name in ipairs({"base64", "bitmap", "ezctrl", "linears", "filters", "fieldctrl", "heatshrink", "micro-ecc", "cjson"}) do
         assert(table.contains(deps, name), name)
     end
     if config.get("plat") == "linux" or config.get("plat") == "windows" or config.get("plat") == "macosx" then
@@ -133,14 +141,26 @@ function main()
     end
     assert(#table.wrap(project.get("xhive_host::requires")) == 0)
 ]])
-            print("PASS: disabling tests removes tests and GoogleTest requirement")
+            print("PASS: disabling tests removes tests and test-package requirements")
 
-            for _, library in ipairs({"base64", "bitmap", "divsufsort", "ezctrl"}) do
+            for _, library in ipairs({"base64", "bitmap", "divsufsort", "ezctrl", "linears", "filters", "fieldctrl"}) do
                 _probe(path.join(work, library), path.join(sdkdir, "libs", library), string.format([[
     local targets = project.targets()
     local library = %q
     assert(targets[library])
     assert(not targets[library]:get("tests"))
+    local numerical = library == "linears" or library == "filters" or library == "fieldctrl"
+    if numerical then
+        assert(#table.wrap(targets[library]:get("packages")) == 0)
+    end
+    if library == "filters" or library == "fieldctrl" then
+        assert(targets.linears)
+        assert(targets[library]:extraconf("deps", "linears", "public"))
+    end
+    if library == "fieldctrl" then
+        assert(targets.filters)
+        assert(targets[library]:extraconf("deps", "filters", "public"))
+    end
     local count = 0
     for name, target in pairs(targets) do
         if target:get("tests") then
@@ -149,6 +169,10 @@ function main()
             assert(target:kind() == "binary", name)
             assert(#table.wrap(target:get("tests")) == 1, name)
             assert(not name:find("_main$"), name)
+            if numerical then
+                assert(table.contains(table.wrap(target:get("languages")), "c++17"), name)
+                assert(table.contains(table.wrap(target:get("packages")), "eigen"), name)
+            end
             count = count + 1
         end
     end
@@ -163,6 +187,9 @@ function main()
         end
     end
     assert(discovered > 0 and count >= discovered, library)
+    if numerical then
+        assert(count == discovered, "Dependency tests leaked into " .. library)
+    end
 ]], library))
             end
             print("PASS: standalone libraries declare independent non-default test binaries")
@@ -281,6 +308,31 @@ CONFIG_LIBS_ADD_BASE64=y
 ]])
             assert(not os.isfile(path.join(appdir, "build", "xhive_config.h")))
             print("PASS: external includes retain application config and isolate host/embed tests")
+
+            local base_config = io.readfile(path.join(appdir, ".config"))
+            io.writefile(path.join(appdir, ".config"), base_config .. "CONFIG_LIBS_ADD_FIELDCTRL=y\n")
+            _probe(path.join(work, "application-fieldctrl"), appdir, [[
+    import("core.cache.memcache")
+    memcache.set("xhive", "header_on_load_" .. os.projectdir(), true)
+    memcache.set("xhive", "header_before_build_" .. os.projectdir(), true)
+    config.set("xhive_tests", false)
+    local targets = project.targets()
+    local selected = {}
+    for _, dep in ipairs(targets.firmware:orderdeps()) do
+        selected[dep:fullname()] = true
+    end
+    for _, library in ipairs({"fieldctrl", "filters", "linears"}) do
+        assert(selected["xhive_embed::" .. library], library)
+        assert(#table.wrap(targets["xhive_embed::" .. library]:get("packages")) == 0)
+    end
+    for name, target in pairs(targets) do
+        assert(not target:get("tests"), name)
+    end
+    assert(#table.wrap(project.get("xhive_host::requires")) == 0)
+    assert(#table.wrap(project.get("xhive_embed::requires")) == 0)
+]])
+            io.writefile(path.join(appdir, ".config"), base_config)
+            print("PASS: fieldctrl selection retains both numeric dependencies without test packages")
 
             -- Use disposable SDK-shaped data to exercise the real embed rule.
             -- Same-prefix siblings must be external, while root and nested SDK

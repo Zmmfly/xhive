@@ -16,19 +16,31 @@ directly.
 
 ## Build and run
 
-From the repository root (POSIX shell). The library is an object library, so
-the scalar implementation is compiled right next to the example:
+From the repository root (POSIX shell). The libraries are object libraries,
+so the ezctrl scalar implementation is compiled next to the example together
+with the fieldctrl PID it delegates to and fieldctrl's numeric dependencies,
+filters and linears:
 
 ```sh
 # C
-cc -std=c99 -Wall -Wextra -I libs/ezctrl/inc \
-   libs/ezctrl/examples/pid_c.c libs/ezctrl/src/pid_f32.c -o /tmp/pid_c
+cc -std=c99 -Wall -Wextra -I libs/ezctrl/inc -I libs/fieldctrl/include \
+   -I libs/filters/include -I libs/linears/include \
+   libs/ezctrl/examples/pid_c.c libs/ezctrl/src/pid_f32.c \
+   libs/fieldctrl/src/*.c libs/filters/src/*.c libs/linears/src/*.c \
+   -lm -o /tmp/pid_c
 /tmp/pid_c
 
-# C++ (the C implementation is compiled as C, then linked)
-cc -std=c99 -I libs/ezctrl/inc -c libs/ezctrl/src/pid_f32.c -o /tmp/pid_f32.o
-c++ -std=c++11 -Wall -Wextra -I libs/ezctrl/inc \
-    libs/ezctrl/examples/pid_cpp.cpp /tmp/pid_f32.o -o /tmp/pid_cpp
+# C++ (the C sources are compiled as C into a scratch directory, then linked)
+root=$PWD
+mkdir -p /tmp/ezctrl_obj
+(cd /tmp/ezctrl_obj && cc -std=c99 -c \
+    -I "$root/libs/ezctrl/inc" -I "$root/libs/fieldctrl/include" \
+    -I "$root/libs/filters/include" -I "$root/libs/linears/include" \
+    "$root/libs/ezctrl/src/pid_f32.c" "$root"/libs/fieldctrl/src/*.c \
+    "$root"/libs/filters/src/*.c "$root"/libs/linears/src/*.c)
+c++ -std=c++11 -Wall -Wextra -I libs/ezctrl/inc -I libs/fieldctrl/include \
+    -I libs/linears/include libs/ezctrl/examples/pid_cpp.cpp /tmp/ezctrl_obj/*.o \
+    -lm -o /tmp/pid_cpp
 /tmp/pid_cpp
 ```
 

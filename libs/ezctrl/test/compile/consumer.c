@@ -56,24 +56,21 @@ static int check_f32(void)
     if (out != 1.5f || callback_output != out) {
         return 1;
     }
-    /* The limiter clips the output while the integral keeps accumulating. */
+    /* P = 10 saturates the limit alone, so anti-windup holds the integral. */
     if (ezc_pid_f32_set_limit(&ctx, -1.0f, 1.0f) != EZC_OK) {
         return 1;
     }
     out = ezc_pid_f32_update(&ctx, 10.0f, 0.0f, 1.0f);
-    if (out != 1.0f || ctx.integral != 5.5f) {
+    if (out != 1.0f || ctx.pid.integral != 0.5f) {
         return 1;
     }
-    /* Anti-windup holds the integral at the saturation boundary. */
-    if (ezc_pid_f32_set_anti_windup(&ctx, true) != EZC_OK) {
-        return 1;
-    }
+    /* The integral is bounded by the output range. */
     if (ezc_pid_f32_set_gains(&ctx, 0.0f, 1.0f, 0.0f) != EZC_OK) {
         return 1;
     }
     ezc_pid_f32_reset(&ctx);
     out = ezc_pid_f32_update(&ctx, 10.0f, 0.0f, 1.0f);
-    if (out != 1.0f || ctx.integral != 1.0f) {
+    if (out != 1.0f || ctx.pid.integral != 1.0f) {
         return 1;
     }
     if (ezc_pid_f32_clear_limit(&ctx) != EZC_OK) {
@@ -81,6 +78,22 @@ static int check_f32(void)
     }
     out = ezc_pid_f32_update(&ctx, 0.0f, 0.0f, 1.0f);
     if (out != 1.0f) {
+        return 1;
+    }
+    /* A rejected step (dt = 0) returns the last output. */
+    if (ezc_pid_f32_update(&ctx, 5.0f, 0.0f, 0.0f) != 1.0f) {
+        return 1;
+    }
+    /* try_update reports the same rejection and leaves its output alone. */
+    if (ezc_pid_f32_try_update(&ctx, 5.0f, 0.0f, 0.0f, &out) != EZC_ERR_INVALID_ARG ||
+        out != 1.0f) {
+        return 1;
+    }
+    /* A bumpless restart from a manual command of 0.25. */
+    if (ezc_pid_f32_reset_to(&ctx, 0.25f) != EZC_OK || ctx.pid.integral != 0.25f) {
+        return 1;
+    }
+    if (ezc_pid_f32_try_update(&ctx, 0.0f, 0.0f, 1.0f, &out) != EZC_OK || out != 0.25f) {
         return 1;
     }
     /* The optional features are reachable from C as well. */
@@ -134,9 +147,6 @@ static int check_f64(void)
     if (ezc_pid_f64_set_callback(&ctx, f64_callback, &callback_output) != EZC_OK) {
         return 1;
     }
-    if (ezc_pid_f64_set_anti_windup(&ctx, true) != EZC_OK) {
-        return 1;
-    }
     if (ezc_pid_f64_set_gains(&ctx, 2.0, 1.0, 0.0) != EZC_OK) {
         return 1;
     }
@@ -148,16 +158,16 @@ static int check_f64(void)
     if (out != 3.0 || callback_output != out) {
         return 1;
     }
-    /* Integrator-only saturation, held at the upper limit. */
+    /* Integrator-only saturation, bounded by the output range. */
     if (ezc_pid_f64_set_gains(&ctx, 0.0, 1.0, 0.0) != EZC_OK) {
         return 1;
     }
     out = ezc_pid_f64_update(&ctx, 100.0, 0.0, 1.0);
-    if (out != 4.0 || ctx.integral != 4.0) {
+    if (out != 4.0 || ctx.pid.integral != 4.0) {
         return 1;
     }
     ezc_pid_f64_reset(&ctx);
-    if (ctx.integral != 0.0 || ctx.prev_error != 0.0) {
+    if (ctx.pid.integral != 0.0 || ctx.pid.history != 0) {
         return 1;
     }
     if (ezc_pid_f64_clear_limit(&ctx) != EZC_OK) {
@@ -166,6 +176,16 @@ static int check_f64(void)
     /* Half a second advances half the integral and returns P + I. */
     out = ezc_pid_f64_update(&ctx, 2.0, 0.0, 0.5);
     if (out != 1.0) {
+        return 1;
+    }
+    if (ezc_pid_f64_try_update(&ctx, 2.0, 0.0, -1.0, &out) != EZC_ERR_INVALID_ARG ||
+        out != 1.0) {
+        return 1;
+    }
+    if (ezc_pid_f64_reset_to(&ctx, -2.0) != EZC_OK) {
+        return 1;
+    }
+    if (ezc_pid_f64_try_update(&ctx, 0.0, 0.0, 1.0, &out) != EZC_OK || out != -2.0) {
         return 1;
     }
     /* The optional features are reachable from the double API as well. */

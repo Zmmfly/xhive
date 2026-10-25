@@ -73,9 +73,34 @@ config LIBS_ADD_BITMAP
 config LIBS_ADD_EZCTRL
     bool "Add ezctrl Control Library"
     default n
+    select LIBS_ADD_FIELDCTRL
     help
         Add the ezctrl control library (PID controller and other control
-        primitives).
+        primitives). Its PID is computed by the fieldctrl library.
+
+config LIBS_ADD_LINEARS
+    bool "Add linears Matrix Library"
+    default n
+    help
+        Add allocation-free matrix operations in f32, f64, q15, and q31.
+        Fixed-point data uses raw Q1.15 or Q1.31 integers without exponents.
+
+config LIBS_ADD_FILTERS
+    bool "Add filters Signal Processing Library"
+    default n
+    select LIBS_ADD_LINEARS
+    help
+        Add allocation-free streaming filters and Kalman estimation in
+        f32, f64, q15, and q31, using the linears numeric kernel.
+
+config LIBS_ADD_FIELDCTRL
+    bool "Add fieldctrl Motor Control Library"
+    default n
+    select LIBS_ADD_LINEARS
+    select LIBS_ADD_FILTERS
+    help
+        Add allocation-free VVVF, FOC/SMO, and DTC software algorithms in
+        f32, f64, q15, and q31. Hardware protection is application-owned.
 
 config LIBS_ADD_LLHTTP
     bool "Add llhttp Library"

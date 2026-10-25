@@ -5,6 +5,10 @@
  * so the fixture and the type-parameter list may live in this header and be
  * used by all suites. The type parameter runs each suite once per scalar
  * variant, which keeps the expectations of f32 and f64 identical.
+ *
+ * The arithmetic itself belongs to fieldctrl and is covered by its own suites;
+ * these suites check what the ezctrl adapter adds or maps: the zero context,
+ * the optional output limit, the setters, the callback and rejected steps.
  */
 #ifndef EZCTRL_TEST_PID_TEST_TYPES_H
 #define EZCTRL_TEST_PID_TEST_TYPES_H
@@ -87,9 +91,6 @@ struct pid_api<float> {
     static ezc_status_t clear_limit(context_type *ctx) {
         return ezc_pid_f32_clear_limit(ctx);
     }
-    static ezc_status_t set_anti_windup(context_type *ctx, bool enable) {
-        return ezc_pid_f32_set_anti_windup(ctx, enable);
-    }
     static ezc_status_t set_callback(context_type *ctx, callback_type callback, void *user_ctx) {
         return ezc_pid_f32_set_callback(ctx, callback, user_ctx);
     }
@@ -116,6 +117,13 @@ struct pid_api<float> {
         return ezc_pid_f32_set_setpoint_weight(ctx, weight);
     }
     static void reset(context_type *ctx) { ezc_pid_f32_reset(ctx); }
+    static ezc_status_t reset_to(context_type *ctx, value_type integral) {
+        return ezc_pid_f32_reset_to(ctx, integral);
+    }
+    static ezc_status_t try_update(context_type *ctx, value_type setpoint, value_type measure,
+                                   value_type dt, value_type *output) {
+        return ezc_pid_f32_try_update(ctx, setpoint, measure, dt, output);
+    }
 
     /*
      * One update step with a one-second sample period. The per-step arithmetic
@@ -186,9 +194,6 @@ struct pid_api<double> {
     static ezc_status_t clear_limit(context_type *ctx) {
         return ezc_pid_f64_clear_limit(ctx);
     }
-    static ezc_status_t set_anti_windup(context_type *ctx, bool enable) {
-        return ezc_pid_f64_set_anti_windup(ctx, enable);
-    }
     static ezc_status_t set_callback(context_type *ctx, callback_type callback, void *user_ctx) {
         return ezc_pid_f64_set_callback(ctx, callback, user_ctx);
     }
@@ -215,6 +220,13 @@ struct pid_api<double> {
         return ezc_pid_f64_set_setpoint_weight(ctx, weight);
     }
     static void reset(context_type *ctx) { ezc_pid_f64_reset(ctx); }
+    static ezc_status_t reset_to(context_type *ctx, value_type integral) {
+        return ezc_pid_f64_reset_to(ctx, integral);
+    }
+    static ezc_status_t try_update(context_type *ctx, value_type setpoint, value_type measure,
+                                   value_type dt, value_type *output) {
+        return ezc_pid_f64_try_update(ctx, setpoint, measure, dt, output);
+    }
 
     /*
      * One update step with a one-second sample period. The per-step arithmetic

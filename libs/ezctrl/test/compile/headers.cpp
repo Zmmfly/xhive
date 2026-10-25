@@ -27,6 +27,11 @@ static_assert(std::is_same<decltype(ezc_pid_f64_update(nullptr, 0.0, 0.0, 0.0)),
               "ezc_pid_f64_update must return double");
 static_assert(std::is_same<decltype(ezc_pid_f64_set_limit(nullptr, 0.0, 0.0)), ezc_status_t>::value,
               "ezc_pid_f64_set_limit must return ezc_status_t");
+static_assert(std::is_same<decltype(ezc_pid_f32_try_update(nullptr, 0.0f, 0.0f, 0.0f, nullptr)),
+                           ezc_status_t>::value,
+              "ezc_pid_f32_try_update must return ezc_status_t");
+static_assert(std::is_same<decltype(ezc_pid_f64_reset_to(nullptr, 0.0)), ezc_status_t>::value,
+              "ezc_pid_f64_reset_to must return ezc_status_t");
 
 /* The scalar variants share names but never types. */
 static_assert(!std::is_same<ezc_pid_f32_t, ezc_pid_f64_t>::value,
@@ -43,6 +48,12 @@ static_assert(std::is_same<ezc::pid<double>::context_type, ezc_pid_f64_t>::value
               "ezc::pid<double> must wrap the f64 C API");
 static_assert(std::is_same<ezc::pid<double>::callback_type, ezc_pid_f64_cb_t>::value,
               "ezc::pid<double> must reuse the f64 callback type");
+
+/* Each C context embeds the fieldctrl controller of the same scalar type. */
+static_assert(std::is_same<decltype(ezc_pid_f32_t::pid), fieldctrl_f32_pid_t>::value,
+              "the f32 context must be computed by fieldctrl_f32_pid");
+static_assert(std::is_same<decltype(ezc_pid_f64_t::pid), fieldctrl_f64_pid_t>::value,
+              "the f64 context must be computed by fieldctrl_f64_pid");
 
 static_assert(std::is_same<decltype(std::declval<ezc::pid<float> &>().update(1.0f, 0.0f, 1.0f)),
                            float>::value,
@@ -131,6 +142,17 @@ extern "C" int ezctrl_cpp_consumer_check(void) {
     }
     f32.reset();
     if (f32.update(10.0f, 0.0f, 1.0f) != 0.0f) {
+        return 1;
+    }
+
+    /* Status-returning step and bumpless restart through the wrapper. */
+    double f64_output_checked = 0.0;
+    if (f64.reset_to(0.5) != EZC_OK ||
+        f64.try_update(0.0, 0.0, 1.0, f64_output_checked) != EZC_OK ||
+        f64_output_checked != 0.5) {
+        return 1;
+    }
+    if (f64.try_update(0.0, 0.0, 0.0, f64_output_checked) != EZC_ERR_INVALID_ARG) {
         return 1;
     }
     return 0;
