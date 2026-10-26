@@ -8,5 +8,9 @@
 #define FILTERS_EXPORT linears_fixed_to_q31
 #define FILTERS_ACCUM_EXPORT linears_accum_to_q31
 #define FILTERS_MEAN linears_accum_mean_q31
+#define FILTERS_HZ float
+#define FILTERS_REAL double
+#define FILTERS_REAL_FN(name) name
 #include "filters_scalar_impl.h"
 #include "filters_impl.h"
+#include "filters_design_impl.h"

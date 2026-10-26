@@ -1,9 +1,9 @@
 /* Shared fixed-binary-point recurrence for Q filters and observer work state. */
-#include "filters_lowpass.h"
+#include "filters_ema.h"
 
-linears_status_t filters_lowpass_work_step(linears_fixed_t *state,
-                                          linears_q31_t alpha,
-                                          linears_fixed_t input)
+linears_status_t filters_ema_work_step(linears_fixed_t *state,
+                                       linears_q31_t alpha,
+                                       linears_fixed_t input)
 {
     linears_accum_t sum = {0, 0};
     linears_fixed_t result;

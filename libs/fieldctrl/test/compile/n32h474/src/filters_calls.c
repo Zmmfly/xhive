@@ -8,7 +8,7 @@
 static int probe_##suffix(void) { \
     const scalar_type zero = 0; \
     const coefficient_type gain = gain_half; \
-    filters_lowpass_##suffix##_t lowpass; \
+    filters_ema_##suffix##_t ema; \
     filters_kalman_scalar_##suffix##_t scalar; \
     scalar_type filtered = zero; \
     raw_type estimate[1] = {0}, covariance[1] = {0}; \
@@ -28,8 +28,8 @@ static int probe_##suffix(void) { \
     linears_workspace_unit_t basic[LINEARS_WORKSPACE_UNITS(basic_bytes)]; \
     work_type decomp[FILTERS_KALMAN_UPDATE_DECOMP_STORAGE(1, 1)]; \
     filters_kalman_matrix_##suffix##_workspace_t workspace = {intermediate, storage_count, basic, sizeof(basic), {decomp, FILTERS_KALMAN_UPDATE_DECOMP_STORAGE(1, 1)}}; \
-    int result = filters_lowpass_##suffix##_init(&lowpass, half, zero); \
-    result |= filters_lowpass_##suffix##_step(&lowpass, quarter, &filtered); \
+    int result = filters_ema_##suffix##_init(&ema, half, zero); \
+    result |= filters_ema_##suffix##_step(&ema, quarter, &filtered); \
     result |= filters_kalman_scalar_##suffix##_reset(&scalar, eighth, quarter); \
     result |= filters_kalman_scalar_##suffix##_predict(&scalar, gain, noise); \
     result |= filters_kalman_scalar_##suffix##_update(&scalar, eighth, gain, eighth); \

@@ -18,9 +18,9 @@ static linears_status_t F_LOCAL(array_size)(size_t count, size_t element_size, s
     return LINEARS_OK;
 }
 
-linears_status_t F_FN(lowpass, init)(F_CTX(lowpass) *ctx, F_S alpha, F_S initial)
+linears_status_t F_FN(ema, init)(F_CTX(ema) *ctx, F_S alpha, F_S initial)
 {
-    F_CTX(lowpass) result;
+    F_CTX(ema) result;
     if (ctx == NULL) return LINEARS_ERROR_ARGUMENT;
     F_TRY(F_LOCAL(weight)(alpha, &result.alpha));
     F_TRY(F_LOCAL(load)(initial, &result.value));
@@ -28,7 +28,7 @@ linears_status_t F_FN(lowpass, init)(F_CTX(lowpass) *ctx, F_S alpha, F_S initial
     return LINEARS_OK;
 }
 
-linears_status_t F_FN(lowpass, reset)(F_CTX(lowpass) *ctx, F_S initial)
+linears_status_t F_FN(ema, reset)(F_CTX(ema) *ctx, F_S initial)
 {
     F_W value;
     if (ctx == NULL) return LINEARS_ERROR_ARGUMENT;
@@ -37,7 +37,7 @@ linears_status_t F_FN(lowpass, reset)(F_CTX(lowpass) *ctx, F_S initial)
     return LINEARS_OK;
 }
 
-linears_status_t F_FN(lowpass, step)(F_CTX(lowpass) *ctx, F_S input, F_S *output)
+linears_status_t F_FN(ema, step)(F_CTX(ema) *ctx, F_S input, F_S *output)
 {
     F_W alpha, previous, sample, candidate;
     F_S result;
@@ -47,83 +47,6 @@ linears_status_t F_FN(lowpass, step)(F_CTX(lowpass) *ctx, F_S input, F_S *output
     previous = ctx->value;
     F_TRY(F_LOCAL(blend)(alpha, previous, sample, &candidate));
     F_TRY(F_LOCAL(store)(candidate, &result));
-    ctx->value = candidate;
-    *output = result;
-    return LINEARS_OK;
-}
-
-linears_status_t F_FN(ema, init)(F_CTX(ema) *ctx, F_S alpha, F_S initial)
-{
-    return F_FN(lowpass, init)(ctx, alpha, initial);
-}
-
-linears_status_t F_FN(ema, reset)(F_CTX(ema) *ctx, F_S initial)
-{
-    return F_FN(lowpass, reset)(ctx, initial);
-}
-
-linears_status_t F_FN(ema, step)(F_CTX(ema) *ctx, F_S input, F_S *output)
-{
-    return F_FN(lowpass, step)(ctx, input, output);
-}
-
-linears_status_t F_FN(highpass, init)(F_CTX(highpass) *ctx, F_S alpha, F_S initial_input,
-                                     F_S initial_output)
-{
-    F_CTX(highpass) result;
-    if (ctx == NULL) return LINEARS_ERROR_ARGUMENT;
-    F_TRY(F_LOCAL(weight)(alpha, &result.alpha));
-    F_TRY(F_LOCAL(signal)(initial_input, &result.previous_input));
-    F_TRY(F_LOCAL(load)(initial_output, &result.value));
-    *ctx = result;
-    return LINEARS_OK;
-}
-
-linears_status_t F_FN(highpass, reset)(F_CTX(highpass) *ctx, F_S initial_input,
-                                      F_S initial_output)
-{
-    F_S previous;
-    F_W output;
-    if (ctx == NULL) return LINEARS_ERROR_ARGUMENT;
-    F_TRY(F_LOCAL(signal)(initial_input, &previous));
-    F_TRY(F_LOCAL(load)(initial_output, &output));
-    ctx->previous_input = previous;
-    ctx->value = output;
-    return LINEARS_OK;
-}
-
-linears_status_t F_FN(highpass, step)(F_CTX(highpass) *ctx, F_S input, F_S *output)
-{
-    F_W sample, previous_input, previous_output, alpha, candidate;
-#if !FILTERS_FIXED
-    F_W delta, sum;
-#endif
-    F_S stored_input, result;
-    F_TRY(F_LOCAL(output)(ctx, sizeof(*ctx), output));
-    F_TRY(F_LOCAL(load)(input, &sample));
-    stored_input = input;
-    F_TRY(F_LOCAL(load)(ctx->alpha, &alpha));
-    F_TRY(F_LOCAL(load)(ctx->previous_input, &previous_input));
-    previous_output = ctx->value;
-#if FILTERS_FIXED
-    {
-        linears_accum_t accumulator = {0, 0};
-        F_TRY(linears_fixed_mac(&accumulator, alpha, previous_output));
-        F_TRY(linears_fixed_mac(&accumulator, alpha, sample));
-        F_TRY(linears_fixed_msu(&accumulator, alpha, previous_input));
-        F_TRY(FILTERS_ACCUM_EXPORT(accumulator, &result));
-        F_TRY(linears_accum_to_fixed(accumulator, &candidate));
-    }
-#else
-    if (F_CMP(alpha, F_LOCAL(zero)()) == 0) candidate = F_LOCAL(zero)();
-    else {
-        F_TRY(F_SUB(sample, previous_input, &delta));
-        F_TRY(F_ADD(previous_output, delta, &sum));
-        F_TRY(F_MUL(alpha, sum, &candidate));
-    }
-    F_TRY(F_LOCAL(store)(candidate, &result));
-#endif
-    ctx->previous_input = stored_input;
     ctx->value = candidate;
     *output = result;
     return LINEARS_OK;

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -21,6 +22,7 @@ namespace filters_test {
  * representation, not the production linears import/export implementation. */
 template <typename T, int Bits> struct FixedNumeric {
     using Scalar = T;
+    using Hz = float;
     using Coefficient = linears_fixed_t;
     using State = linears_fixed_t;
     static constexpr bool fixed = true;
@@ -50,6 +52,7 @@ template <typename T, int Bits> struct FixedNumeric {
 
 template <typename T> struct FloatNumeric {
     using Scalar = T;
+    using Hz = T;
     using Coefficient = T;
     using State = T;
     static constexpr bool fixed = false;
@@ -67,8 +70,9 @@ template <typename T> struct FloatNumeric {
 };
 
 #define FILTERS_TEST_BINDINGS(suffix) \
-    using Lowpass = filters_lowpass_##suffix##_t; \
-    using Highpass = filters_highpass_##suffix##_t; \
+    using Lpf = filters_lpf_##suffix##_t; \
+    using Hpf = filters_hpf_##suffix##_t; \
+    using Bpf = filters_bpf_##suffix##_t; \
     using Ema = filters_ema_##suffix##_t; \
     using Fir = filters_fir_##suffix##_t; \
     using Biquad = filters_biquad_##suffix##_t; \
@@ -76,12 +80,23 @@ template <typename T> struct FloatNumeric {
     using Average = filters_moving_average_##suffix##_t; \
     using Median = filters_median_##suffix##_t; \
     using Complementary = filters_complementary_##suffix##_t; \
-    static constexpr auto lowpass_init = filters_lowpass_##suffix##_init; \
-    static constexpr auto lowpass_reset = filters_lowpass_##suffix##_reset; \
-    static constexpr auto lowpass_step = filters_lowpass_##suffix##_step; \
-    static constexpr auto highpass_init = filters_highpass_##suffix##_init; \
-    static constexpr auto highpass_reset = filters_highpass_##suffix##_reset; \
-    static constexpr auto highpass_step = filters_highpass_##suffix##_step; \
+    static constexpr auto lpf_init = filters_lpf_##suffix##_init; \
+    static constexpr auto lpf_set = filters_lpf_##suffix##_set; \
+    static constexpr auto lpf_reset = filters_lpf_##suffix##_reset; \
+    static constexpr auto lpf_step = filters_lpf_##suffix##_step; \
+    static constexpr auto hpf_init = filters_hpf_##suffix##_init; \
+    static constexpr auto hpf_set = filters_hpf_##suffix##_set; \
+    static constexpr auto hpf_reset = filters_hpf_##suffix##_reset; \
+    static constexpr auto hpf_step = filters_hpf_##suffix##_step; \
+    static constexpr auto bpf_init_band = filters_bpf_##suffix##_init_band; \
+    static constexpr auto bpf_init_center = filters_bpf_##suffix##_init_center; \
+    static constexpr auto bpf_set_band = filters_bpf_##suffix##_set_band; \
+    static constexpr auto bpf_set_center = filters_bpf_##suffix##_set_center; \
+    static constexpr auto bpf_reset = filters_bpf_##suffix##_reset; \
+    static constexpr auto bpf_step = filters_bpf_##suffix##_step; \
+    static constexpr auto fir_design_lpf = filters_fir_##suffix##_design_lpf; \
+    static constexpr auto fir_design_hpf = filters_fir_##suffix##_design_hpf; \
+    static constexpr auto fir_design_bpf = filters_fir_##suffix##_design_bpf; \
     static constexpr auto ema_init = filters_ema_##suffix##_init; \
     static constexpr auto ema_reset = filters_ema_##suffix##_reset; \
     static constexpr auto ema_step = filters_ema_##suffix##_step; \
@@ -123,6 +138,41 @@ template <typename A> void expect_close(typename A::Scalar result, double expect
 
 template <typename T> void expect_unchanged(const T &current, const T &before) {
     EXPECT_EQ(std::memcmp(&current, &before, sizeof(T)), 0);
+}
+
+/* Steady-state complex gain at DFT bin `bin` of `period` samples. The phase
+ * restarts every period, so the quantized input is exactly periodic and, once
+ * settled, the output bin equals H(omega) times the input bin up to output
+ * rounding. */
+template <typename A, typename Step>
+std::complex<double> measure_gain(Step step, int bin, int period, double amplitude, int settle) {
+    const double omega = 2 * std::acos(-1.0) * bin / period;
+    std::complex<double> output_sum(0, 0), input_sum(0, 0);
+    for (int i = 0; i < settle + period; ++i) {
+        const auto input = A::make(amplitude * std::sin(omega * (i % period)));
+        typename A::Scalar output{};
+        EXPECT_EQ(step(input, &output), LINEARS_OK);
+        if (i >= settle) {
+            const auto basis = std::polar(1.0, -omega * (i % period));
+            output_sum += A::real(output) * basis;
+            input_sum += A::real(input) * basis;
+        }
+    }
+    return output_sum / input_sum;
+}
+
+/* Sum of |h| for the all-pole part 1/(1 + a1*z^-1 + a2*z^-2) of a stored
+ * section: the factor by which per-step rounding can accumulate in DF-I. */
+template <typename A, typename Section> double feedback_noise_gain(const Section &section) {
+    const double a1 = A::real_coefficient(section.a1), a2 = A::real_coefficient(section.a2);
+    double y1 = 0, y2 = 0, sum = 0;
+    for (int i = 0; i < 1 << 16; ++i) {
+        const double y = (i == 0 ? 1.0 : 0.0) - a1 * y1 - a2 * y2;
+        sum += std::abs(y);
+        y2 = y1;
+        y1 = y;
+    }
+    return sum;
 }
 
 template <typename A, bool Work = false> struct Guards {

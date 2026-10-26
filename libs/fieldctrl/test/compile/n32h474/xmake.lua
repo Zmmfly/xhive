@@ -27,11 +27,24 @@ namespace("app", function()
                 add_ldflags("-Wl,--require-defined=linears_" .. operation .. "_" .. variant,
                             {force = true})
             end
-            for _, filter in ipairs({"fir", "biquad", "lowpass", "highpass",
-                "moving_average", "ema", "median", "complementary"}) do
+            for _, filter in ipairs({"fir", "biquad", "moving_average", "ema", "median",
+                "complementary"}) do
                 for _, operation in ipairs({"init", "reset", "step"}) do
                     add_ldflags("-Wl,--require-defined=filters_" .. filter .. "_" ..
                                 variant .. "_" .. operation, {force = true})
+                end
+            end
+            -- Every variant of the frequency-designed filters does not fit the
+            -- 256 KiB ROM; retain the f32 and q31 variants.
+            if variant == "f32" or variant == "q31" then
+                for _, entry in ipairs({{"lpf", "init"}, {"lpf", "set"}, {"lpf", "reset"},
+                    {"lpf", "step"}, {"hpf", "init"}, {"hpf", "set"}, {"hpf", "reset"},
+                    {"hpf", "step"}, {"bpf", "init_band"}, {"bpf", "init_center"},
+                    {"bpf", "set_band"}, {"bpf", "set_center"}, {"bpf", "reset"},
+                    {"bpf", "step"}, {"fir", "design_lpf"}, {"fir", "design_hpf"},
+                    {"fir", "design_bpf"}}) do
+                    add_ldflags("-Wl,--require-defined=filters_" .. entry[1] .. "_" ..
+                                variant .. "_" .. entry[2], {force = true})
                 end
             end
             for _, filter in ipairs({"kalman_scalar", "kalman_matrix"}) do

@@ -6,9 +6,10 @@ permission to flash/run hardware. The separate top-level `host_benchmark.c` is
 a Linux host comparison tool; it is not included by the firmware's `src/*.c`
 rule. None of these `.c` files adds a `test/**.cc` GoogleTest entry.
 
-The firmware makes real calls in all four formats and uses 296
+The firmware makes real calls in all four formats and uses 310
 `--require-defined` roots to retain every public algorithm variant while
-collecting unused vendor code. It uses caller-owned fixed-size storage, SDK
+collecting unused vendor code. The frequency-designed filters (LPF/HPF/BPF and
+FIR tap design) are the exception: only their f32 and q31 variants are retained. It uses caller-owned fixed-size storage, SDK
 startup/linker templates, no RTOS, 256 KiB ROM and 96 KiB RAM. Empty `_init`/
 `_fini` hooks satisfy the C-only Newlib `-nostartfiles` contract; no algorithm
 implementation is stubbed.
@@ -64,6 +65,17 @@ xHive Arm GNU 14.3.1 toolchain, the image used **246,300 ROM bytes** against
 1,128 bytes and all 12 PID roots survived collection. The largest fieldctrl
 frame became `fieldctrl_f64_speed_foc_step` at 480 bytes (previously 320), as
 the speed cascade now embeds the larger PID context.
+
+The frequency-designed filter change removed the alpha `lowpass`/`highpass`
+roots and added f32/q31 roots for `lpf`, `hpf`, `bpf` and the FIR design
+helpers (300 to 310 roots, counting the later `pid_retune` roots). Retaining all
+four variants of those families overflowed ROM by 6,044 bytes, so their f64/q15
+roots are not required; do not enlarge the region to restore them. Re-linked
+with the same xHive Arm GNU 14.3.1 toolchain, the image used **256,588 ROM
+bytes** against 248,364 for the preceding source in the same environment;
+data+bss stayed 1,128 bytes and all 310 roots survived collection. The largest
+frames stayed 656 (linears), 488 (filters) and 480 (fieldctrl) bytes across 484
+static library `.su` entries.
 
 `-fstack-usage`, VLA/alloca errors and a 4096-byte frame-warning threshold are
 enabled. The measured 392 library `.su` entries were static; largest individual
@@ -158,9 +170,11 @@ The six firmware inputs match the successful external run at
 `fixed-q-xhive-arm-9b2DGw` byte-for-byte. The host program matches the measured
 `fixed-q-xhive-comparison-ut5dAw/benchmark.c`. These hashes identify source inputs,
 not identical ELF debug/link layout across directories. No generated artifacts
-are checked in. `xmake.lua` has since changed only in its PID root list; its
-current SHA-256 is
-`494ce203c5191a646e0f1bdb2020c7aebefa4e0b5413e3591d0b2e773ea1289c`.
+are checked in. `xmake.lua` has since changed only in its PID and filter root
+lists, and `src/filters_calls.c` only in probing the EMA API instead of the
+removed alpha low-pass. Their current SHA-256 values are
+`e37e9d3906d5934ed65af4143005229a02696e971c23ba24cd8a8583bb96d805` and
+`0b8332ec062827cceafe12a47c2fc48dad00c42308ea206eb12d6940f5389597`.
 
 | Relative path | SHA-256 |
 | --- | --- |

@@ -27,7 +27,7 @@
 #define FIELDCTRL_SMO_H
 
 #include "fieldctrl_types.h"
-#include "filters_lowpass.h"
+#include "filters_ema.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -76,9 +76,9 @@ typedef struct {
         float alpha; /**< Predicted next-sample alpha current, A. */
         float beta; /**< Predicted next-sample beta current, A. */
     } current_hat; /**< Current predictor at working precision. */
-    filters_lowpass_f32_t emf_alpha_filter; /**< Alpha switching-injection history, V. */
-    filters_lowpass_f32_t emf_beta_filter; /**< Beta switching-injection history, V. */
-    filters_lowpass_f32_t speed_filter; /**< Electrical-frequency history, turn/s. */
+    filters_ema_f32_t emf_alpha_filter; /**< Alpha switching-injection history, V. */
+    filters_ema_f32_t emf_beta_filter; /**< Beta switching-injection history, V. */
+    filters_ema_f32_t speed_filter; /**< Electrical-frequency history, turn/s. */
     float previous_angle; /**< Previous uncorrected EMF-derived angle, turns. */
     float angle; /**< Last compensated angle, turns in [0,1). */
     uint32_t lock_count; /**< Saturating count of consecutive observable samples. */
@@ -183,9 +183,9 @@ typedef struct {
         double alpha; /**< Predicted next-sample alpha current, A. */
         double beta; /**< Predicted next-sample beta current, A. */
     } current_hat; /**< Current predictor at working precision. */
-    filters_lowpass_f64_t emf_alpha_filter; /**< Alpha switching-injection history, V. */
-    filters_lowpass_f64_t emf_beta_filter; /**< Beta switching-injection history, V. */
-    filters_lowpass_f64_t speed_filter; /**< Electrical-frequency history, turn/s. */
+    filters_ema_f64_t emf_alpha_filter; /**< Alpha switching-injection history, V. */
+    filters_ema_f64_t emf_beta_filter; /**< Beta switching-injection history, V. */
+    filters_ema_f64_t speed_filter; /**< Electrical-frequency history, turn/s. */
     double previous_angle; /**< Previous uncorrected EMF-derived angle, turns. */
     double angle; /**< Last compensated angle, turns in [0,1). */
     uint32_t lock_count; /**< Saturating count of consecutive observable samples. */
@@ -292,9 +292,9 @@ typedef struct {
         linears_fixed_t alpha; /**< int64_t/F31 next-sample current prediction, Ipu. */
         linears_fixed_t beta; /**< int64_t/F31 next-sample current prediction, Ipu. */
     } current_hat; /**< Fixed F31 predictor; successful exported components fit Q1. */
-    filters_lowpass_q31_t emf_alpha_filter; /**< Alpha injection history, F31 Vpu. */
-    filters_lowpass_q31_t emf_beta_filter; /**< Beta injection history, F31 Vpu. */
-    filters_lowpass_q31_t speed_filter; /**< Frequency history, F31 f*Tbase; may exceed Q1. */
+    filters_ema_q31_t emf_alpha_filter; /**< Alpha injection history, F31 Vpu. */
+    filters_ema_q31_t emf_beta_filter; /**< Beta injection history, F31 Vpu. */
+    filters_ema_q31_t speed_filter; /**< Frequency history, F31 f*Tbase; may exceed Q1. */
     linears_fixed_t previous_angle; /**< Uncorrected previous angle, F31 electrical turns. */
     linears_fixed_t angle; /**< Compensated angle, F31 electrical turns in [0,1). */
     uint32_t lock_count; /**< Saturating consecutive observable-sample counter. */
@@ -402,9 +402,9 @@ typedef struct {
         linears_fixed_t alpha; /**< int64_t/F31 next-sample current prediction, Ipu. */
         linears_fixed_t beta; /**< int64_t/F31 next-sample current prediction, Ipu. */
     } current_hat; /**< Fixed F31 predictor; successful exported components fit Q1. */
-    filters_lowpass_q31_t emf_alpha_filter; /**< Alpha injection history, F31 Vpu. */
-    filters_lowpass_q31_t emf_beta_filter; /**< Beta injection history, F31 Vpu. */
-    filters_lowpass_q31_t speed_filter; /**< Frequency history, F31 f*Tbase; may exceed Q1. */
+    filters_ema_q31_t emf_alpha_filter; /**< Alpha injection history, F31 Vpu. */
+    filters_ema_q31_t emf_beta_filter; /**< Beta injection history, F31 Vpu. */
+    filters_ema_q31_t speed_filter; /**< Frequency history, F31 f*Tbase; may exceed Q1. */
     linears_fixed_t previous_angle; /**< Uncorrected previous angle, F31 electrical turns. */
     linears_fixed_t angle; /**< Compensated angle, F31 electrical turns in [0,1). */
     uint32_t lock_count; /**< Saturating consecutive observable-sample counter. */

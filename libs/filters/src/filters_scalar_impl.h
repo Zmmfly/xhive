@@ -110,15 +110,6 @@ static linears_status_t F_LOCAL(count)(size_t count, F_W *out)
 
 #endif
 
-/* Validate an external signal once; raw Q storage requires no conversion. */
-static linears_status_t F_LOCAL(signal)(F_S value, F_S *out)
-{
-    F_W working;
-    F_TRY(F_LOCAL(load)(value, &working));
-    *out = value;
-    return LINEARS_OK;
-}
-
 static linears_status_t F_LOCAL(weight)(F_S value, F_S *out)
 {
     F_W working;
@@ -138,7 +129,7 @@ static linears_status_t F_LOCAL(blend)(F_W alpha, F_W previous, F_W input, F_W *
 {
 #if FILTERS_FIXED
     /* The initialized raw alpha is nonnegative and at most INT32_MAX. */
-    F_TRY(filters_lowpass_work_step(&previous, (linears_q31_t)alpha, input));
+    F_TRY(filters_ema_work_step(&previous, (linears_q31_t)alpha, input));
     *out = previous;
     return LINEARS_OK;
 #else

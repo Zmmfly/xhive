@@ -101,7 +101,7 @@ i_hat[n+1] = i_hat[n] + dt/L * (v[n] - R*i_hat[n] - z[n])
 e_hat[n] = (1-alpha)*e_hat[n-1] + alpha*z[n]
 ```
 
-`e_hat` 直接使用 filters 的一阶低通实现，不另造滤波内核。Q SMO 用 `filters_lowpass_q31_t` 持有固定的 Q1.31 alpha/F31 history，调用 `filters_lowpass_work_step(&state, alpha, input)`：该共用内核执行精确 F62 两项积和，再一次舍入到 F31，允许未锁频率超出 Q1 而不丢失诊断。f32/f64 继续调用原生低通入口。
+`e_hat` 直接使用 filters 的 EMA（按 alpha 参数化的一阶低通）实现，不另造滤波内核。Q SMO 用 `filters_ema_q31_t` 持有固定的 Q1.31 alpha/F31 history，调用 `filters_ema_work_step(&state, alpha, input)`：该共用内核执行精确 F62 两项积和，再一次舍入到 F31，允许未锁频率超出 Q1 而不丢失诊断。f32/f64 继续调用原生 EMA 入口。
 
 Q 注入先与 `+/-boundary` 比较，只有在线性区才做除法；f32/f64 保留原有除法与溢出失败行为。这样 Q 路径中合法的 `i_hat=+1`、`i=-1`、Q31 `boundary=1 raw` 不会先形成不可表示的 `2^32` 商；正确的 `sat` 本来就是 `+1`。
 

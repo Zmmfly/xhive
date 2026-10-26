@@ -1,17 +1,17 @@
 /* Reused by four C99 instantiations. Fixed variants retain int64_t/F31 state;
  * public Q1 conversion happens only at the API boundary. */
 #if FC_VARIANT == 32
-#define FC_LP_INIT filters_lowpass_f32_init
-#define FC_LP_RESET filters_lowpass_f32_reset
-#define FC_LP_STEP filters_lowpass_f32_step
+#define FC_LP_INIT filters_ema_f32_init
+#define FC_LP_RESET filters_ema_f32_reset
+#define FC_LP_STEP filters_ema_f32_step
 #elif FC_VARIANT == 64
-#define FC_LP_INIT filters_lowpass_f64_init
-#define FC_LP_RESET filters_lowpass_f64_reset
-#define FC_LP_STEP filters_lowpass_f64_step
+#define FC_LP_INIT filters_ema_f64_init
+#define FC_LP_RESET filters_ema_f64_reset
+#define FC_LP_STEP filters_ema_f64_step
 #else
 /* Only bridge storage formats here. The exact F62 low-pass recurrence belongs
  * to filters and is shared with its public Q APIs. */
-static linears_status_t FC_N(smo_lowpass_init)(filters_lowpass_q31_t *ctx,
+static linears_status_t FC_N(smo_lowpass_init)(filters_ema_q31_t *ctx,
     linears_fixed_t alpha, linears_fixed_t initial)
 {
     linears_q31_t a, value;
@@ -19,22 +19,22 @@ static linears_status_t FC_N(smo_lowpass_init)(filters_lowpass_q31_t *ctx,
     if (status != LINEARS_OK) return status;
     status = linears_fixed_to_q31(initial, &value);
     if (status != LINEARS_OK) return status;
-    return filters_lowpass_q31_init(ctx, a, value);
+    return filters_ema_q31_init(ctx, a, value);
 }
 
-static linears_status_t FC_N(smo_lowpass_reset)(filters_lowpass_q31_t *ctx,
+static linears_status_t FC_N(smo_lowpass_reset)(filters_ema_q31_t *ctx,
     linears_fixed_t initial)
 {
     linears_q31_t value;
     linears_status_t status = linears_fixed_to_q31(initial, &value);
     if (status != LINEARS_OK) return status;
-    return filters_lowpass_q31_reset(ctx, value);
+    return filters_ema_q31_reset(ctx, value);
 }
 
-static linears_status_t FC_N(smo_lowpass_step)(filters_lowpass_q31_t *ctx,
+static linears_status_t FC_N(smo_lowpass_step)(filters_ema_q31_t *ctx,
     linears_fixed_t input, linears_fixed_t *output)
 {
-    linears_status_t status = filters_lowpass_work_step(&ctx->value, ctx->alpha, input);
+    linears_status_t status = filters_ema_work_step(&ctx->value, ctx->alpha, input);
     if (status == LINEARS_OK) *output = ctx->value;
     return status;
 }

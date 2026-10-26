@@ -1,23 +1,24 @@
 /**
- * @file filters_lowpass.h
- * @brief First-order low-pass filtering with explicit caller-owned state.
+ * @file filters_ema.h
+ * @brief Exponential moving average (alpha-weighted one-pole low-pass).
  *
  * A successful step computes y[n] = (1-alpha)*y[n-1] + alpha*x[n].
  * Floating alpha is dimensionless in [0,1]; one passes through and zero holds.
  * Fixed alpha is raw Q1.15/Q1.31 in [0,1); MAX is 1-LSB, not exact one.
  * For a backward-Euler RC low-pass, select alpha = dt/(tau+dt), with dt and
- * tau in the same time unit. This API does not perform that conversion.
+ * tau in the same time unit. This API does not perform that conversion;
+ * filters_lpf.h designs a low-pass from a cutoff frequency and sample rate.
  * Fixed signals are int16_t/F15 or int32_t/F31. Recursive state is int64_t/F31
  * with an invariant binary point; Q15 outputs do not truncate that state.
  *
  * Contexts must be initialized before step/reset. Do not manually edit fields;
- * filters_lowpass_work_step may explicitly advance a Q context's value field.
+ * filters_ema_work_step may explicitly advance a Q context's value field.
  * Calls on one context require serialization, including interrupts.
  * Distinct contexts are reentrant. No allocation, locks, I/O or MMIO occurs.
  * On every failure the context and output retain their prior values.
  */
-#ifndef FILTERS_LOWPASS_H
-#define FILTERS_LOWPASS_H
+#ifndef FILTERS_EMA_H
+#define FILTERS_EMA_H
 
 #include "linears.h"
 #include "linears_numeric.h"
@@ -27,15 +28,15 @@ extern "C" {
 #endif
 
 /**
- * @brief Single-precision low-pass state, owned and kept alive by the caller.
+ * @brief Single-precision EMA state, owned and kept alive by the caller.
  */
 typedef struct {
     float alpha; /**< Dimensionless input weight in [0,1]; immutable after init. */
     float value; /**< Last output, in the same physical unit as the input. */
-} filters_lowpass_f32_t;
+} filters_ema_f32_t;
 
 /**
- * @brief Initialize a single-precision low-pass without external storage.
+ * @brief Initialize a single-precision EMA without external storage.
  *
  * @param[out] ctx Non-NULL caller-owned context; no prior initialization needed.
  * @param[in] alpha Dimensionless input weight in [0,1].
@@ -50,10 +51,10 @@ typedef struct {
  *
  * @note On failure ctx is unchanged; serialize concurrent use of ctx.
  */
-linears_status_t filters_lowpass_f32_init(filters_lowpass_f32_t *ctx, float alpha, float initial);
+linears_status_t filters_ema_f32_init(filters_ema_f32_t *ctx, float alpha, float initial);
 
 /**
- * @brief Replace a single-precision low-pass output history, preserving alpha.
+ * @brief Replace a single-precision EMA output history, preserving alpha.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
  * @param[in] initial New initial output in input units; must be finite.
@@ -66,7 +67,7 @@ linears_status_t filters_lowpass_f32_init(filters_lowpass_f32_t *ctx, float alph
  *
  * @note Failure leaves ctx unchanged. Serialize concurrent use of ctx.
  */
-linears_status_t filters_lowpass_f32_reset(filters_lowpass_f32_t *ctx, float initial);
+linears_status_t filters_ema_f32_reset(filters_ema_f32_t *ctx, float initial);
 
 /**
  * @brief Filter one single-precision sample and atomically commit its output.
@@ -84,18 +85,18 @@ linears_status_t filters_lowpass_f32_reset(filters_lowpass_f32_t *ctx, float ini
  *
  * @note Failure leaves state and output unchanged. Serialize use of ctx.
  */
-linears_status_t filters_lowpass_f32_step(filters_lowpass_f32_t *ctx, float input, float *output);
+linears_status_t filters_ema_f32_step(filters_ema_f32_t *ctx, float input, float *output);
 
 /**
- * @brief Double-precision low-pass state, owned and kept alive by the caller.
+ * @brief Double-precision EMA state, owned and kept alive by the caller.
  */
 typedef struct {
     double alpha; /**< Dimensionless input weight in [0,1]; immutable after init. */
     double value; /**< Last output, in the same physical unit as the input. */
-} filters_lowpass_f64_t;
+} filters_ema_f64_t;
 
 /**
- * @brief Initialize a double-precision low-pass without external storage.
+ * @brief Initialize a double-precision EMA without external storage.
  *
  * @param[out] ctx Non-NULL caller-owned context; no prior initialization needed.
  * @param[in] alpha Dimensionless input weight in [0,1].
@@ -110,10 +111,10 @@ typedef struct {
  *
  * @note On failure ctx is unchanged; serialize concurrent use of ctx.
  */
-linears_status_t filters_lowpass_f64_init(filters_lowpass_f64_t *ctx, double alpha, double initial);
+linears_status_t filters_ema_f64_init(filters_ema_f64_t *ctx, double alpha, double initial);
 
 /**
- * @brief Replace a double-precision low-pass output history, preserving alpha.
+ * @brief Replace a double-precision EMA output history, preserving alpha.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
  * @param[in] initial New initial output in input units; must be finite.
@@ -126,7 +127,7 @@ linears_status_t filters_lowpass_f64_init(filters_lowpass_f64_t *ctx, double alp
  *
  * @note Failure leaves ctx unchanged. Serialize concurrent use of ctx.
  */
-linears_status_t filters_lowpass_f64_reset(filters_lowpass_f64_t *ctx, double initial);
+linears_status_t filters_ema_f64_reset(filters_ema_f64_t *ctx, double initial);
 
 /**
  * @brief Filter one double-precision sample and atomically commit its output.
@@ -144,10 +145,10 @@ linears_status_t filters_lowpass_f64_reset(filters_lowpass_f64_t *ctx, double in
  *
  * @note Failure leaves state and output unchanged. Serialize use of ctx.
  */
-linears_status_t filters_lowpass_f64_step(filters_lowpass_f64_t *ctx, double input, double *output);
+linears_status_t filters_ema_f64_step(filters_ema_f64_t *ctx, double input, double *output);
 
 /**
- * @brief Caller-owned Q1.15 low-pass with a fixed F31 recursive state.
+ * @brief Caller-owned Q1.15 EMA with a fixed F31 recursive state.
  *
  * Signals and alpha are raw signed integers divided by 2^15. The state is
  * int64_t divided by 2^31; no scaling metadata or floating conversion is used.
@@ -157,10 +158,10 @@ linears_status_t filters_lowpass_f64_step(filters_lowpass_f64_t *ctx, double inp
 typedef struct {
     linears_q15_t alpha; /**< Input weight raw/2^15, in [0,1); MAX is not one. */
     linears_fixed_t value; /**< Private recursive value, int64_t raw/2^31 in input units. */
-} filters_lowpass_q15_t;
+} filters_ema_q15_t;
 
 /**
- * @brief Initialize a Q1.15 low-pass with caller-selected history.
+ * @brief Initialize a Q1.15 EMA with caller-selected history.
  *
  * @param[out] ctx Non-NULL caller-owned context; unchanged on failure.
  * @param[in] alpha Nonnegative raw Q1.15 input weight; MAX represents 1-2^-15.
@@ -173,10 +174,10 @@ typedef struct {
  *
  * @note Retain ctx for its lifetime and serialize all calls, including interrupts.
  */
-linears_status_t filters_lowpass_q15_init(filters_lowpass_q15_t *ctx, linears_q15_t alpha, linears_q15_t initial);
+linears_status_t filters_ema_q15_init(filters_ema_q15_t *ctx, linears_q15_t alpha, linears_q15_t initial);
 
 /**
- * @brief Replace Q1.15 low-pass history without changing alpha.
+ * @brief Replace Q1.15 EMA history without changing alpha.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
  * @param[in] initial Raw Q1.15 initial signal, converted exactly to F31 state.
@@ -187,7 +188,7 @@ linears_status_t filters_lowpass_q15_init(filters_lowpass_q15_t *ctx, linears_q1
  *
  * @note Caller serializes shared use; no allocation, locking or hardware access.
  */
-linears_status_t filters_lowpass_q15_reset(filters_lowpass_q15_t *ctx, linears_q15_t initial);
+linears_status_t filters_ema_q15_reset(filters_ema_q15_t *ctx, linears_q15_t initial);
 
 /**
  * @brief Filter a Q1.15 sample with F31 state and pure integer arithmetic.
@@ -206,10 +207,10 @@ linears_status_t filters_lowpass_q15_reset(filters_lowpass_q15_t *ctx, linears_q
  *       Raw init/reset/step alone keep the convex state in the signal interval;
  *       work_step may retain wider history. MAX alpha is not exact one.
  */
-linears_status_t filters_lowpass_q15_step(filters_lowpass_q15_t *ctx, linears_q15_t input, linears_q15_t *output);
+linears_status_t filters_ema_q15_step(filters_ema_q15_t *ctx, linears_q15_t input, linears_q15_t *output);
 
 /**
- * @brief Caller-owned Q1.31 low-pass with a fixed F31 recursive state.
+ * @brief Caller-owned Q1.31 EMA with a fixed F31 recursive state.
  *
  * Signals and alpha are raw signed integers divided by 2^31. The state is
  * int64_t divided by 2^31; no scaling metadata or floating conversion is used.
@@ -219,10 +220,10 @@ linears_status_t filters_lowpass_q15_step(filters_lowpass_q15_t *ctx, linears_q1
 typedef struct {
     linears_q31_t alpha; /**< Input weight raw/2^31, in [0,1); MAX is not one. */
     linears_fixed_t value; /**< Private recursive value, int64_t raw/2^31 in input units. */
-} filters_lowpass_q31_t;
+} filters_ema_q31_t;
 
 /**
- * @brief Initialize a Q1.31 low-pass with caller-selected history.
+ * @brief Initialize a Q1.31 EMA with caller-selected history.
  *
  * @param[out] ctx Non-NULL caller-owned context; unchanged on failure.
  * @param[in] alpha Nonnegative raw Q1.31 input weight; MAX represents 1-2^-31.
@@ -235,10 +236,10 @@ typedef struct {
  *
  * @note Retain ctx for its lifetime and serialize all calls, including interrupts.
  */
-linears_status_t filters_lowpass_q31_init(filters_lowpass_q31_t *ctx, linears_q31_t alpha, linears_q31_t initial);
+linears_status_t filters_ema_q31_init(filters_ema_q31_t *ctx, linears_q31_t alpha, linears_q31_t initial);
 
 /**
- * @brief Replace Q1.31 low-pass history without changing alpha.
+ * @brief Replace Q1.31 EMA history without changing alpha.
  *
  * @param[in,out] ctx Non-NULL successfully initialized context.
  * @param[in] initial Raw Q1.31 initial signal, converted exactly to F31 state.
@@ -249,7 +250,7 @@ linears_status_t filters_lowpass_q31_init(filters_lowpass_q31_t *ctx, linears_q3
  *
  * @note Caller serializes shared use; no allocation, locking or hardware access.
  */
-linears_status_t filters_lowpass_q31_reset(filters_lowpass_q31_t *ctx, linears_q31_t initial);
+linears_status_t filters_ema_q31_reset(filters_ema_q31_t *ctx, linears_q31_t initial);
 
 /**
  * @brief Filter a Q1.31 sample with F31 state and pure integer arithmetic.
@@ -268,12 +269,12 @@ linears_status_t filters_lowpass_q31_reset(filters_lowpass_q31_t *ctx, linears_q
  *       Raw init/reset/step alone keep the convex state in the signal interval;
  *       work_step may retain wider history. MAX alpha is not exact one.
  */
-linears_status_t filters_lowpass_q31_step(filters_lowpass_q31_t *ctx, linears_q31_t input, linears_q31_t *output);
+linears_status_t filters_ema_q31_step(filters_ema_q31_t *ctx, linears_q31_t input, linears_q31_t *output);
 
 /**
- * @brief Advance a wide F31 low-pass history without narrowing it to Q1.
+ * @brief Advance a wide F31 EMA history without narrowing it to Q1.
  *
- * This is the common integer recurrence used by both Q low-pass APIs and
+ * This is the common integer recurrence used by both Q EMA APIs and
  * observer working states. It computes (1-alpha)*state + alpha*input with an
  * exact F62 product sum, then rounds once to the invariant F31 binary point.
  *
@@ -292,9 +293,9 @@ linears_status_t filters_lowpass_q31_step(filters_lowpass_q31_t *ctx, linears_q3
  *       including interrupt callers; disjoint states are reentrant. No I/O,
  *       allocation, lock or hardware access occurs. Input is passed by value.
  */
-linears_status_t filters_lowpass_work_step(linears_fixed_t *state,
-                                          linears_q31_t alpha,
-                                          linears_fixed_t input);
+linears_status_t filters_ema_work_step(linears_fixed_t *state,
+                                       linears_q31_t alpha,
+                                       linears_fixed_t input);
 
 #ifdef __cplusplus
 }
