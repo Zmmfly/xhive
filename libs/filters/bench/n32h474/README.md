@@ -6,8 +6,9 @@ configured as ordinary GPIO timing markers, **not complementary PWM**. Disconnec
 all power stages, actuators and other output drivers before using it; only the
 logic analyzer may be attached to these pins.
 
-The four images use identical 240 MHz HSI/PLL clock setup, GCC 14.2.1,
-`-O3 -fno-fast-math -ffp-contract=off`, no LTO, and the same mathematical inputs:
+The images use identical 240 MHz HSI/PLL clock setup, GCC 14.2.1,
+`-O3 -fno-fast-math -ffp-contract=off`, no LTO, and the same mathematical inputs.
+Without an explicit `--fpu` option, the modes are:
 
 | Image | Compiler ABI | Runtime CPACR CP10/11 | Arithmetic limitation |
 | --- | --- | --- | --- |
@@ -16,8 +17,11 @@ The four images use identical 240 MHz HSI/PLL clock setup, GCC 14.2.1,
 | q15 | `soft` | Disabled | Integer Q work with required software-float boundaries |
 | q31 | `soft` | Disabled | Integer Q work with required software-double boundaries |
 
-`build.py` checks that the *entire linked* q15/q31 image contains no VFP
-instructions, including the selected newlib/libgcc libraries. Runtime mailbox
+For f32/f64, `--fpu off` selects the soft ABI, matching software libraries and
+CPACR=0; use that option consistently for **build, run and capture**. The default
+floating mode remains `--fpu on`. Q images only support FPU off. `build.py`
+checks that *every entire linked FPU-off image* contains no VFP instructions,
+including the selected newlib/libgcc libraries. Runtime mailbox
 and live SWD CPACR reads must agree. These Q implementations are mixed arithmetic,
 not claims of completely integer callbacks, decompositions or exponentials.
 
@@ -117,7 +121,84 @@ Every J-Link operation has a 30-second process timeout. No interactive debugger
 or background debug server is left behind. The firmware waits for another
 explicit mailbox command after completing; all marker pins are then low.
 
-## Latest round: proposal cores and diagonal density paths
+## FPU-on versus FPU-off supplement
+
+The earlier rounds measured f32/f64 **only with FPU enabled**. They did not
+establish software-only floating-point performance. [`fpu-modes.csv`](fpu-modes.csv)
+and [`fpu-modes.json`](fpu-modes.json) fill that gap: **six newly built and
+captured images, 120 cases**, including fresh q15/q31 controls. No timing rows
+were copied from an earlier round.
+
+All images use production commit `4f53c23` and the same recorded source hashes;
+only scalar format and FPU/ABI selection differ. Fixture commit `5397140`
+contains all 87 recorded build inputs and both measurement scripts, each
+verified against its recorded SHA-256. The four original modes' loadable
+binaries are byte-identical to `pipeline.json`, despite the explicit mode
+selection added to the platform. The f32/f64 off images use
+`-mfloat-abi=soft`, matching newlib/libgcc, CPACR=0 from reset, and **zero VFP
+instructions in the entire ELF**. Mailbox and live CPACR readbacks agree.
+This is not a hard-ABI binary with CPACR merely cleared at runtime.
+
+Quadratic model, `n=m=4`, `N=128` for PF/UPF; median of nine transactions after
+two warmups, in **milliseconds**:
+
+| Format | FPU | UKF predict + update | PF predict + update + estimate | UPF step |
+| --- | --- | ---: | ---: | ---: |
+| f32 | on | 0.209796 | 1.383400 | 20.593992 |
+| f32 | off | 0.694758 | 5.742775 | 87.349083 |
+| f64 | on | 1.103225 | 10.054654 | 145.931967 |
+| f64 | off | 1.099208 | 10.041767 | 145.589688 |
+| q15 | off | 0.627304 | 4.751529 | 82.606933 |
+| q31 | off | 1.013358 | 8.969454 | 140.681750 |
+
+- f32 off/on time ratios here are **3.312x / 4.151x / 4.241x** for UKF/PF/UPF.
+  Across all 20 cases the ratio is 2.086–4.241x.
+- f64 off/on ratios across all 20 cases are **0.991944–1.000630**: less than
+  1% difference. This M4 has no hardware double arithmetic in either mode.
+  Switching modes also switches the calling ABI and library multilibs, so this
+  is not an isolated measurement of toggling CPACR in an unchanged binary.
+- With both sides FPU-off, q15 is faster than f32 in **14/20** cases, and q31
+  is faster than f64 in **14/20**. Neither Q format wins every case. Against
+  hardware f32, q15 still wins 0/20. These are the existing diagonal-Q/R,
+  fixed-input workload cases, not a claim about all filter workloads.
+
+Validation and retained evidence:
+
+- All 120 cases returned `OK`, with repeatable hashes/checksums, 240 MHz clock
+  readback and no recorded processor fault. All **1080 measured GPIO pulses**
+  passed the existing DWT comparison; warmup pulses were counted separately.
+- The 40 paired FP on/off cases have identical output hashes, binary64
+  checksums and public memory counts. For each floating format, the largest
+  UPF output was also read in full: **2688 elements, byte-identical on/off**.
+  The existing small host-versus-board libm weight differences are preserved
+  in JSON; these checks do not claim a new independent mathematical oracle.
+- Static RAM is unchanged by the FPU mode. The 256 KiB Flash / 96 KiB RAM
+  limits and 8 KiB reserved stack are unchanged; stack high-water is unmeasured.
+- `python3 -B libs/filters/bench/n32h474/test_scripts.py -v`: 38 offline tests.
+  `xmake b`: passed. `xmake test -g xhive -v 'filters_test_*/*'`: 24 registered
+  host entries passed. No production algorithm code changed in this supplement.
+
+To reproduce the missing software-only mode, use the same explicit option at
+all three stages; replace the ELF, J-Link and empty output-directory paths:
+
+```sh
+python3 libs/filters/bench/n32h474/build.py --format f32 --fpu off \
+  --revision 4f53c23 --label fpu-off
+python3 libs/filters/bench/n32h474/run.py /path/to/benchmark.elf \
+  --jlink /path/to/JLinkExe --fpu off --flash --prepare-only \
+  --output /path/to/prepare-artifacts
+python3 libs/filters/bench/n32h474/capture.py /path/to/benchmark.elf \
+  --jlink /path/to/JLinkExe --fpu off --seconds 28 \
+  --output /path/to/capture-artifacts
+```
+
+Repeat with `--format f64`; use `--fpu on` at all three stages for the floating
+controls. Detailed logs, images and raw waveforms are retained under
+`/tmp/filters-xhive-fpu-modes-o2uupkiy/` and its indexed build directories.
+The final idle read confirmed the q31/FPU-off image in phase 1, command 0,
+CPACR=0, and all twelve marker output latches low. No PWM runs.
+
+## Previous round: proposal cores and diagonal density paths
 
 [`baseline-c334fdc.csv`](baseline-c334fdc.csv) and
 [`pipeline.csv`](pipeline.csv) record the next 80-case before/after sweep.
