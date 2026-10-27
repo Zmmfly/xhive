@@ -1,22 +1,27 @@
 /* Floating unscented particle filters; included by pf.c once per filter
  * tag after pf_filter_impl.h so the PF state helpers of the same tag exist. */
+#include "ukf_private.h"
 #define U_JOIN_INNER(a, b) a##b
 #define U_JOIN(a, b) U_JOIN_INNER(a, b)
 #define U_API(name) U_JOIN(U_JOIN(filters_upf_, U_TAG), U_JOIN(_, name))
 #define U_PF_API(name) U_JOIN(U_JOIN(filters_pf_, U_TAG), U_JOIN(_, name))
 #define U_KERNEL_API(name) U_JOIN(U_JOIN(filters_pf_, U_KERNEL), U_JOIN(_, name))
 #define U_UKF_API(name) U_JOIN(U_JOIN(filters_ukf_, U_KERNEL), U_JOIN(_, name))
+#define U_CORE(name) U_JOIN(U_JOIN(ukf_work_, U_KERNEL), U_JOIN(_, name))
 #define U_LOCAL(name) U_JOIN(U_JOIN(upf_filter_, U_TAG), U_JOIN(_, name))
 #define U_PF_LOCAL(name) U_JOIN(U_JOIN(pf_filter_, U_TAG), U_JOIN(_, name))
 #define U_WORK_LOCAL(name) U_JOIN(U_JOIN(ukf_work_, U_KERNEL), U_JOIN(_, name))
-#define U_LINEAR(name) U_JOIN(U_JOIN(linears_, name), U_JOIN(_, U_KERNEL))
+#define U_PF_WORK_LOCAL(name) U_JOIN(U_JOIN(pf_work_, U_KERNEL), U_JOIN(_, name))
+#define U_CHOLESKY U_JOIN(ukf_cholesky_, U_KERNEL)
+#define U_WEIGHTS_VALID U_JOIN(ukf_weights_valid_, U_KERNEL)
 #define U_SYMMETRIC U_JOIN(ukf_symmetric_, U_TAG)
+#define U_FN U_JOIN(U_JOIN(filters_ukf_, U_KERNEL), _fn)
+#define U_RESIDUAL_FN U_JOIN(U_JOIN(filters_ukf_, U_KERNEL), _residual_fn)
 #define U_TRY(expression) do { \
     status = (expression); \
     if (status != LINEARS_OK) return status; \
 } while (0)
 #define U_TAKE(rows, cols) U_WORK_LOCAL(take)(&cursor, (rows), (cols))
-#define U_BASIC workspace.basic, workspace.basic_bytes
 #include "ukf_signal_impl.h"
 #define U_INIT_STORAGE FILTERS_PF_PREDICT_STORAGE
 #define U_STEP_STORAGE FILTERS_UPF_STEP_STORAGE
@@ -92,21 +97,59 @@ linears_status_t U_API(init)(U_STATE *state, U_WORK alpha, U_WORK beta, U_WORK k
     return LINEARS_OK;
 }
 
+/* One callback row view over a contiguous k-vector. */
+static linears_matrix_t U_LOCAL(vector)(U_WORK *data, size_t k)
+{
+    linears_matrix_t result;
+    result.data = data;
+    result.rows = k;
+    result.cols = 1;
+    return result;
+}
+
+/* out = h(point) or f(point) for one particle; the callback sees disjoint
+ * n-by-1 and k-by-1 views and its result must be finite. */
+static linears_status_t U_LOCAL(map)(const linears_matrix_t *point, U_FN fn, void *context, linears_matrix_t *out)
+{
+    linears_status_t status;
+    U_TRY(fn(point, out, context));
+    return U_FINITE(out);
+}
+
+/* out = a (-) b for one row: the residual callback or plain subtraction with
+ * the finite check of the former deviations kernel. */
+static linears_status_t U_LOCAL(residual)(const linears_matrix_t *a, const linears_matrix_t *b,
+                                          U_RESIDUAL_FN fn, void *context, linears_matrix_t *out)
+{
+    linears_status_t status;
+    size_t j;
+    if (fn != NULL) {
+        U_TRY(fn(a, b, out, context));
+        return U_FINITE(out);
+    }
+    for (j = 0; j < out->rows; ++j) {
+        U_WORK value = ((const U_WORK *)a->data)[j] - ((const U_WORK *)b->data)[j];
+        if (!U_JOIN(ukf_isfinite_, U_KERNEL)(value)) return LINEARS_ERROR_RANGE;
+        ((U_WORK *)out->data)[j] = value;
+    }
+    return LINEARS_OK;
+}
+
 linears_status_t U_API(step)(U_STATE *state, const linears_matrix_t *measurement, const U_MODEL *model,
                              U_SAMPLE_FN sample, void *sample_context, U_WORKSPACE workspace)
 {
     linears_status_t status;
     ukf_spans_t spans;
     linears_matrix_t staged_covariances, staged_particles, exponents, staged_weights;
-    linears_matrix_t draw, draw_row, factor, prior_mean, prior_covariance, posterior_mean;
-    linears_matrix_t predicted, predicted_row, delta, measured, innovation, term;
+    linears_matrix_t draw, factor, prior_mean, prior_covariance, posterior_mean;
+    linears_matrix_t predicted, delta, measured, innovation, term;
     linears_matrix_t q_factor, r_factor, reference, q_in, r_in, z_in;
-    linears_matrix_t particle, particle_row, covariance, new_covariance, new_particle, new_row;
-    linears_matrix_t exponent, weight;
+    linears_matrix_t particle, covariance, new_covariance, new_particle;
     U_WORKSPACE kernel;
-    U_WORK *cursor, ratio;
-    const U_WORK *diagonal;
-    size_t count, n, m, i, j;
+    U_WORK *cursor, *w, *e;
+    const U_WORK *diagonal, *xi;
+    size_t count, n, m, i, j, k;
+    int diagonal_q, diagonal_r;
     if (model == NULL || model->transition == NULL || model->observation == NULL || sample == NULL)
         return LINEARS_ERROR_ARGUMENT;
     spans.count = 0;
@@ -143,68 +186,110 @@ linears_status_t U_API(step)(U_STATE *state, const linears_matrix_t *measurement
     staged_weights = U_PF_LOCAL(stage_weights)(&state->base.weights, &cursor);
     U_LOCAL(particle_slots)(n, &cursor, &particle, &covariance);
     kernel = U_WORK_LOCAL(remaining)(workspace, cursor);
-    /* Both noise factors are needed for the weights; check them before any callback. */
-    U_TRY(U_LINEAR(cholesky)(&q_in, &q_factor, workspace.decomposition));
-    U_TRY(U_LINEAR(cholesky)(&r_in, &r_factor, workspace.decomposition));
-    draw_row = draw;
-    draw_row.rows = 1;
-    draw_row.cols = n;
-    predicted_row = predicted;
-    predicted_row.rows = 1;
-    predicted_row.cols = n;
-    particle_row = particle;
-    particle_row.rows = 1;
-    particle_row.cols = n;
+    /* Both noise factors are needed for the weights; check them before any
+     * callback. The sigma weights follow, where the first kernel call used
+     * to validate them. */
+    U_TRY(U_CHOLESKY((const U_WORK *)q_in.data, n, (U_WORK *)q_factor.data));
+    U_TRY(U_CHOLESKY((const U_WORK *)r_in.data, m, (U_WORK *)r_factor.data));
+    U_TRY(U_WEIGHTS_VALID(&state->sigma_weights));
+    diagonal_q = U_PF_WORK_LOCAL(diagonal_factor)((const U_WORK *)q_factor.data, n);
+    diagonal_r = U_PF_WORK_LOCAL(diagonal_factor)((const U_WORK *)r_factor.data, m);
     new_covariance.rows = new_covariance.cols = n;
-    exponent.rows = exponent.cols = weight.rows = weight.cols = 1;
     diagonal = (const U_WORK *)factor.data;
+    xi = (const U_WORK *)draw.data;
+    w = (U_WORK *)staged_weights.data;
+    e = (U_WORK *)exponents.data;
     for (i = 0; i < count; ++i) {
+        linears_matrix_t measured_vector = U_LOCAL(vector)((U_WORK *)measured.data, m);
+        linears_matrix_t innovation_vector = U_LOCAL(vector)((U_WORK *)innovation.data, m);
+        linears_matrix_t delta_vector = U_LOCAL(vector)((U_WORK *)delta.data, n);
+        U_WORK *x, exponent, sum;
         U_LOCAL(load_particle)(state, i, &particle, &covariance);
-        particle_row.data = particle.data;
         new_covariance.data = (U_WORK *)staged_covariances.data + i * n * n;
         new_particle = U_WORK_LOCAL(row)(&staged_particles, i);
-        new_row = new_particle;
-        new_row.rows = 1;
-        new_row.cols = n;
-        exponent.data = (U_WORK *)exponents.data + i;
-        weight.data = (U_WORK *)staged_weights.data + i;
+        x = (U_WORK *)new_particle.data;
+        /* The persistent row is caller-owned: it keeps the checks the public
+         * kernel applied to every particle before the shared ones moved to
+         * the step boundary. */
+        U_CHECK_FINITE(&particle);
+        U_CHECK_FINITE(&covariance);
+        U_TRY(U_SYMMETRIC(&covariance, 1));
         /* Gaussian proposal N(M_i, C_i) from one UKF predict/update pair. */
-        U_TRY(U_UKF_API(predict_work)(&particle, &covariance, &q_in, &state->sigma_weights, model->transition,
-                                      model->transition_context, model->state_residual,
-                                      model->state_residual_context, &prior_mean, &prior_covariance, kernel));
-        U_TRY(U_UKF_API(update_work)(&prior_mean, &prior_covariance, &r_in, &z_in, &state->sigma_weights,
-                                     model->observation, model->observation_context,
-                                     model->measurement_residual, model->measurement_residual_context,
-                                     &posterior_mean, &new_covariance, kernel));
-        U_TRY(U_LINEAR(cholesky)(&new_covariance, &factor, workspace.decomposition));
+        U_TRY(U_CORE(predict_core)(&particle, &covariance, &q_in, &state->sigma_weights, model->transition,
+                                   model->transition_context, model->state_residual,
+                                   model->state_residual_context, &prior_mean, &prior_covariance, kernel));
+        /* The prior is exactly symmetric by construction; its diagonal can
+         * still be negative under a negative center weight, which the public
+         * update rejected as DOMAIN before any callback. */
+        U_TRY(U_SYMMETRIC(&prior_covariance, 1));
+        U_TRY(U_CORE(update_core)(&prior_mean, &prior_covariance, &r_in, &z_in, &state->sigma_weights,
+                                  model->observation, model->observation_context,
+                                  model->measurement_residual, model->measurement_residual_context,
+                                  &posterior_mean, &new_covariance, kernel));
+        U_TRY(U_CHOLESKY((const U_WORK *)new_covariance.data, n, (U_WORK *)factor.data));
         U_TRY(sample(&draw, sample_context));
-        U_TRY(U_JOIN(ukf_finite_, U_KERNEL)(&draw));
-        U_TRY(U_LINEAR(mul)(&factor, &draw, &new_particle, U_BASIC));
-        U_TRY(U_LINEAR(add)(&new_particle, &posterior_mean, &new_particle, U_BASIC));
-        /* Proposal density exponent -(1/2)*xi^T*xi; its sqrt(det C_i) enters the
-         * weight as a ratio to particle 0 so the products stay near one. */
-        U_TRY(U_LINEAR(mul)(&draw_row, &draw, &exponent, U_BASIC));
-        U_TRY(U_LINEAR(axpby)((U_WORK)-0.5, &exponent, (U_WORK)0, &exponent, &exponent, U_BASIC));
+        U_TRY(U_FINITE(&draw));
+        /* x = M_i + L_i*xi in the former matrix order: every column of L,
+         * including its exact upper zeros, then the mean. */
         for (j = 0; j < n; ++j) {
+            sum = (U_WORK)0;
+            for (k = 0; k < n; ++k) {
+                U_WORK product = diagonal[j * n + k] * xi[k];
+                sum += product;
+                if (!U_JOIN(ukf_isfinite_, U_KERNEL)(sum)) return LINEARS_ERROR_RANGE;
+            }
+            x[j] = sum;
+        }
+        for (j = 0; j < n; ++j) {
+            U_WORK value = x[j] + ((const U_WORK *)posterior_mean.data)[j];
+            if (!U_JOIN(ukf_isfinite_, U_KERNEL)(value)) return LINEARS_ERROR_RANGE;
+            x[j] = value;
+        }
+        /* Proposal density exponent -(1/2)*xi^T*xi, written as the former
+         * axpby so a zero keeps its sign; its sqrt(det C_i) enters the weight
+         * as a ratio to particle 0 so the products stay near one. */
+        sum = (U_WORK)0;
+        for (k = 0; k < n; ++k) {
+            U_WORK product = xi[k] * xi[k];
+            sum += product;
+            if (!U_JOIN(ukf_isfinite_, U_KERNEL)(sum)) return LINEARS_ERROR_RANGE;
+        }
+        exponent = (U_WORK)-0.5 * sum + (U_WORK)0 * sum;
+        for (j = 0; j < n; ++j) {
+            U_WORK ratio;
             if (i == 0) {
                 ((U_WORK *)reference.data)[j] = diagonal[j * n + j];
                 continue;
             }
             U_TRY(U_LOCAL(divide)(diagonal[j * n + j], ((const U_WORK *)reference.data)[j], &ratio));
-            U_TRY(U_LINEAR(axpby)(ratio, &weight, (U_WORK)0, &weight, &weight, U_BASIC));
+            /* The former axpby formed ratio*w + 0*w. ratio is a quotient of
+             * two positive diagonals, so both terms carry the sign of w and
+             * adding the signed zero leaves ratio*w unchanged, zero or not;
+             * a nonfinite w or product fails the same RANGE check. */
+            w[i] = ratio * w[i];
+            if (!U_JOIN(ukf_isfinite_, U_KERNEL)(w[i])) return LINEARS_ERROR_RANGE;
         }
         /* Likelihood exponent of z given the new particle. */
-        U_TRY(U_UKF_API(propagate)(&new_row, model->observation, model->observation_context, &measured));
-        U_TRY(U_UKF_API(deviations)(&measured, &z_in, model->measurement_residual,
-                                    model->measurement_residual_context, &innovation, workspace));
-        U_TRY(U_KERNEL_API(gaussian_exponent)(&innovation, &r_factor, &term, kernel));
-        U_TRY(U_LINEAR(add)(&exponent, &term, &exponent, U_BASIC));
+        U_TRY(U_LOCAL(map)(&new_particle, model->observation, model->observation_context, &measured_vector));
+        U_TRY(U_LOCAL(residual)(&measured_vector, &z_in, model->measurement_residual,
+                                model->measurement_residual_context, &innovation_vector));
+        if (diagonal_r)
+            U_TRY(U_PF_WORK_LOCAL(gaussian_diagonal)((const U_WORK *)innovation.data,
+                     (const U_WORK *)r_factor.data, m, kernel.data, (U_WORK *)term.data));
+        else U_TRY(U_KERNEL_API(gaussian_exponent)(&innovation, &r_factor, &term, kernel));
+        exponent = exponent + ((const U_WORK *)term.data)[0];
+        if (!U_JOIN(ukf_isfinite_, U_KERNEL)(exponent)) return LINEARS_ERROR_RANGE;
         /* Transition prior exponent of the new particle given the old one. */
-        U_TRY(U_UKF_API(propagate)(&particle_row, model->transition, model->transition_context, &predicted_row));
-        U_TRY(U_UKF_API(deviations)(&new_row, &predicted, model->state_residual, model->state_residual_context,
-                                    &delta, workspace));
-        U_TRY(U_KERNEL_API(gaussian_exponent)(&delta, &q_factor, &term, kernel));
-        U_TRY(U_LINEAR(add)(&exponent, &term, &exponent, U_BASIC));
+        U_TRY(U_LOCAL(map)(&particle, model->transition, model->transition_context, &predicted));
+        U_TRY(U_LOCAL(residual)(&new_particle, &predicted, model->state_residual,
+                                model->state_residual_context, &delta_vector));
+        if (diagonal_q)
+            U_TRY(U_PF_WORK_LOCAL(gaussian_diagonal)((const U_WORK *)delta.data,
+                     (const U_WORK *)q_factor.data, n, kernel.data, (U_WORK *)term.data));
+        else U_TRY(U_KERNEL_API(gaussian_exponent)(&delta, &q_factor, &term, kernel));
+        exponent = exponent + ((const U_WORK *)term.data)[0];
+        if (!U_JOIN(ukf_isfinite_, U_KERNEL)(exponent)) return LINEARS_ERROR_RANGE;
+        e[i] = exponent;
     }
     U_TRY(U_KERNEL_API(reweight)(&staged_weights, &exponents));
     U_FITS(&staged_particles);
@@ -245,14 +330,18 @@ linears_status_t U_API(resample)(U_STATE *state, U_WORK uniform, size_t *indices
 #undef U_FITS
 #undef U_IMPORT_VIEW
 #undef U_CHECK_FINITE
-#undef U_BASIC
 #undef U_TAKE
 #undef U_TRY
 #undef U_SYMMETRIC
-#undef U_LINEAR
+#undef U_RESIDUAL_FN
+#undef U_FN
+#undef U_WEIGHTS_VALID
+#undef U_CHOLESKY
+#undef U_PF_WORK_LOCAL
 #undef U_WORK_LOCAL
 #undef U_PF_LOCAL
 #undef U_LOCAL
+#undef U_CORE
 #undef U_UKF_API
 #undef U_KERNEL_API
 #undef U_PF_API

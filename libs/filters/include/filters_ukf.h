@@ -139,13 +139,15 @@ typedef filters_kalman_matrix_f64_workspace_t filters_ukf_f64_workspace_t;
  * disjoint from state, inputs, outputs and descriptors. Size data, basic,
  * decomposition and signal with the operation's Q storage macros. A zero
  * required prefix accepts NULL. Shared workspaces require serialization.
+ * UKF factors now use data, but the decomposition capacity and aliasing
+ * requirements remain validated; the same type also serves PF decompositions.
  */
 typedef struct {
     float *data; /**< Callback rows, extended samples and small floating matrices. */
     size_t capacity; /**< Available float elements in data. */
     linears_workspace_unit_t *basic; /**< Basic-operation scratch; UKF uses none. */
     size_t basic_bytes; /**< Available bytes in basic. */
-    linears_f32_workspace_t decomposition; /**< Local Cholesky scratch. */
+    linears_f32_workspace_t decomposition; /**< Decomposition scratch; retain the required capacity. */
     int16_t *signal; /**< Raw q15 sample or signal staging array. */
     size_t signal_capacity; /**< Available int16_t elements in signal. */
 } filters_ukf_q15_workspace_t;
@@ -158,7 +160,7 @@ typedef struct {
     size_t capacity; /**< Available double elements in data. */
     linears_workspace_unit_t *basic; /**< Basic-operation scratch; UKF uses none. */
     size_t basic_bytes; /**< Available bytes in basic. */
-    linears_f64_workspace_t decomposition; /**< Local Cholesky scratch. */
+    linears_f64_workspace_t decomposition; /**< Decomposition scratch; retain the required capacity. */
     int32_t *signal; /**< Raw q31 sample or signal staging array. */
     size_t signal_capacity; /**< Available int32_t elements in signal. */
 } filters_ukf_q31_workspace_t;
@@ -367,9 +369,10 @@ typedef struct {
     LINEARS_BASIC_WORKSPACE_BYTES((n), FILTERS_UKF_SIGMA_COUNT(n))
 
 /**
- * @brief Decomposition elements for predict in every format: the Cholesky of P.
+ * @brief Required decomposition capacity for prediction in every format.
  *
  * Allocate float (f32, q15) or double (f64, q31) to match the filter.
+ * The capacity is still validated although the private factor uses data.
  */
 #define FILTERS_UKF_PREDICT_DECOMP_STORAGE(n) LINEARS_CHOLESKY_WORKSPACE(n)
 
@@ -479,7 +482,7 @@ linears_status_t filters_ukf_f32_weights(size_t states, float alpha, float beta,
  *                      _BASIC_BYTES(n) and _DECOMP_STORAGE(n); disjoint from
  *                      every matrix and descriptor.
  * @return linears_status_t OK, ARGUMENT, DIMENSION (shape mismatch or an
- *         asymmetric covariance, reported by the shared Cholesky), SIZE,
+ *         asymmetric scaled covariance), SIZE,
  *         WORKSPACE, ALIAS, RANGE, DOMAIN for nonpositive scale, or
  *         NOT_POSITIVE_DEFINITE when the Cholesky factor does not exist at
  *         working precision.

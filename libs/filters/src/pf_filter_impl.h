@@ -6,6 +6,7 @@
 #define U_UKF_API(name) U_JOIN(U_JOIN(filters_ukf_, U_KERNEL), U_JOIN(_, name))
 #define U_LOCAL(name) U_JOIN(U_JOIN(pf_filter_, U_TAG), U_JOIN(_, name))
 #define U_WORK_LOCAL(name) U_JOIN(U_JOIN(ukf_work_, U_KERNEL), U_JOIN(_, name))
+#define U_PF_WORK_LOCAL(name) U_JOIN(U_JOIN(pf_work_, U_KERNEL), U_JOIN(_, name))
 #define U_LINEAR(name) U_JOIN(U_JOIN(linears_, name), U_JOIN(_, U_KERNEL))
 #define U_SYMMETRIC U_JOIN(ukf_symmetric_, U_TAG)
 #define U_TRY(expression) do { \
@@ -171,7 +172,7 @@ linears_status_t U_API(update)(U_STATE *state, const linears_matrix_t *measureme
     ukf_spans_t spans;
     linears_matrix_t measured, deviations, exponents, staged, factor, r_in, z_in;
     U_WORK *cursor;
-    size_t count, n, m;
+    size_t count, n, m, i;
     if (observation == NULL) return LINEARS_ERROR_ARGUMENT;
     spans.count = 0;
     U_TRY(U_LOCAL(state)(&spans, state, &count, &n, &m));
@@ -193,8 +194,14 @@ linears_status_t U_API(update)(U_STATE *state, const linears_matrix_t *measureme
     U_TRY(U_LINEAR(cholesky)(&r_in, &factor, workspace.decomposition));
     U_TRY(U_LOCAL(propagate)(&state->particles, observation, observation_context, &measured, &cursor));
     U_TRY(U_UKF_API(deviations)(&measured, &z_in, residual, residual_context, &deviations, workspace));
-    U_TRY(U_KERNEL_API(gaussian_exponent)(&deviations, &factor, &exponents,
-                                          U_WORK_LOCAL(remaining)(workspace, cursor)));
+    if (U_PF_WORK_LOCAL(diagonal_factor)((const U_WORK *)factor.data, m)) {
+        for (i = 0; i < count; ++i)
+            U_TRY(U_PF_WORK_LOCAL(gaussian_diagonal)((const U_WORK *)deviations.data + i * m,
+                     (const U_WORK *)factor.data, m, cursor, (U_WORK *)exponents.data + i));
+    } else {
+        U_TRY(U_KERNEL_API(gaussian_exponent)(&deviations, &factor, &exponents,
+                                               U_WORK_LOCAL(remaining)(workspace, cursor)));
+    }
     U_TRY(U_KERNEL_API(reweight)(&staged, &exponents));
     U_LOCAL(store_weights)(&staged, &state->weights);
     return LINEARS_OK;
@@ -274,6 +281,7 @@ linears_status_t U_API(estimate)(const U_STATE *state, U_RESIDUAL_FN residual, v
 #undef U_TRY
 #undef U_SYMMETRIC
 #undef U_LINEAR
+#undef U_PF_WORK_LOCAL
 #undef U_WORK_LOCAL
 #undef U_LOCAL
 #undef U_UKF_API

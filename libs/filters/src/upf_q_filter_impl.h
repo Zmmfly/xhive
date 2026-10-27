@@ -1,15 +1,18 @@
 /* Dedicated Q UPF filters. Include after the matching pf_q_filter_impl.h:
  * its raw-state, Gaussian, weighting and resampling helpers are shared. */
+#include "ukf_private.h"
 #define U_JOIN_INNER(a, b) a##b
 #define U_JOIN(a, b) U_JOIN_INNER(a, b)
 #define U_API(name) U_JOIN(U_JOIN(filters_upf_, U_TAG), U_JOIN(_, name))
-#define U_UKF_API(name) U_JOIN(U_JOIN(filters_ukf_, U_TAG), U_JOIN(_, name))
+#define U_CORE(name) U_JOIN(U_JOIN(ukf_work_, U_TAG), U_JOIN(_, name))
 #define U_FLOAT_UKF(name) U_JOIN(U_JOIN(filters_ukf_, U_KERNEL), U_JOIN(_, name))
 #define U_LOCAL(name) U_JOIN(U_JOIN(upf_q_, U_TAG), U_JOIN(_, name))
 #define U_PF_LOCAL(name) U_JOIN(U_JOIN(pf_q_, U_TAG), U_JOIN(_, name))
 #define U_WORK_LOCAL(name) U_JOIN(U_JOIN(ukf_work_, U_TAG), U_JOIN(_, name))
-#define U_LINEAR(name) U_JOIN(U_JOIN(linears_, name), U_JOIN(_, U_KERNEL))
+#define U_CHOLESKY U_JOIN(ukf_cholesky_, U_KERNEL)
+#define U_WEIGHTS_VALID U_JOIN(ukf_weights_valid_, U_KERNEL)
 #define U_SYMMETRIC U_JOIN(ukf_symmetric_, U_TAG)
+#define U_FLOAT_SYMMETRIC U_JOIN(ukf_symmetric_, U_KERNEL)
 #define U_FINITE U_JOIN(ukf_finite_, U_KERNEL)
 #define U_RESIDUAL_FN U_JOIN(U_JOIN(filters_ukf_, U_KERNEL), _residual_fn)
 #define U_TRY(expression) do { \
@@ -86,7 +89,7 @@ linears_status_t U_API(step)(U_STATE *state, const linears_matrix_t *measurement
     ukf_spans_t spans;
     linears_matrix_t staged_covariances, staged_particles, staged_weights;
     linears_matrix_t particle, covariance, prior_mean, prior_covariance, posterior_mean, draw;
-    linears_matrix_t q_in, r_in, z_in, q_factor, r_factor, measured, innovation;
+    linears_matrix_t q_in, r_in, z_in, q_factor, r_factor, measured, innovation, raw_covariance;
     U_WORKSPACE kernel;
     U_WORK *cursor, *exponents, exponent, term, log_determinant;
     U_SIGNAL *signal_cursor;
@@ -101,7 +104,6 @@ linears_status_t U_API(step)(U_STATE *state, const linears_matrix_t *measurement
                                   FILTERS_UPF_Q_STEP_SIGNAL_STORAGE(count, n, m)));
     U_TRY(U_SYMMETRIC(&state->base.process_noise, 1));
     U_TRY(U_SYMMETRIC(&state->base.measurement_noise, 0));
-    workspace.decomposition.capacity = FILTERS_UPF_Q_STEP_DECOMP_STORAGE(n, m);
     cursor = workspace.data;
     signal_cursor = workspace.signal;
     staged_covariances = U_TAKE_SIGNAL(count, n * n);
@@ -123,27 +125,37 @@ linears_status_t U_API(step)(U_STATE *state, const linears_matrix_t *measurement
     measured = U_TAKE(m, 1);
     innovation = U_TAKE(m, 1);
     kernel = U_WORK_LOCAL(remaining)(workspace, cursor, signal_cursor);
-    /* Both noise factors are required by the importance density. */
-    U_TRY(U_LINEAR(cholesky)(&q_in, &q_factor, workspace.decomposition));
-    U_TRY(U_LINEAR(cholesky)(&r_in, &r_factor, workspace.decomposition));
+    /* Both noise factors are required by the importance density; check them
+     * before any callback. The sigma weights follow, where the first kernel
+     * call used to validate them. */
+    U_TRY(U_CHOLESKY((const U_WORK *)q_in.data, n, (U_WORK *)q_factor.data));
+    U_TRY(U_CHOLESKY((const U_WORK *)r_in.data, m, (U_WORK *)r_factor.data));
+    U_TRY(U_WEIGHTS_VALID(&state->sigma_weights));
+    raw_covariance.rows = raw_covariance.cols = n;
     for (i = 0; i < count; ++i) {
+        raw_covariance.data = (U_SIGNAL *)state->covariances.data + i * n * n;
+        /* The persistent row is caller-owned: the public kernel rejected an
+         * asymmetric or negative-diagonal covariance before any callback. */
+        U_TRY(U_SYMMETRIC(&raw_covariance, 1));
         U_JOIN(ukf_widen_, U_TAG)((const U_SIGNAL *)state->base.particles.data + i * n,
                                   n, (U_WORK *)particle.data);
-        U_JOIN(ukf_widen_, U_TAG)((const U_SIGNAL *)state->covariances.data + i * n * n,
-                                  n * n, (U_WORK *)covariance.data);
+        U_JOIN(ukf_widen_, U_TAG)((const U_SIGNAL *)raw_covariance.data, n * n, (U_WORK *)covariance.data);
         /* Keep the prior in its extended range. Only the posterior will be
          * narrowed: a prior outside [-1,+1] can have a valid Q posterior. */
-        U_TRY(U_UKF_API(predict_work)(&particle, &covariance, &q_in, &state->sigma_weights,
-                                      model->transition, model->transition_context,
-                                      model->state_residual, model->state_residual_context,
-                                      &prior_mean, &prior_covariance, kernel));
-        U_TRY(U_UKF_API(update_work)(&prior_mean, &prior_covariance, &r_in, &z_in, &state->sigma_weights,
-                                     model->observation, model->observation_context,
-                                     model->measurement_residual, model->measurement_residual_context,
-                                     &posterior_mean, &covariance, kernel));
+        U_TRY(U_CORE(predict_core)(&particle, &covariance, &q_in, &state->sigma_weights,
+                                   model->transition, model->transition_context,
+                                   model->state_residual, model->state_residual_context,
+                                   &prior_mean, &prior_covariance, kernel));
+        /* The prior is exactly symmetric by construction; a negative diagonal
+         * under a negative center weight was DOMAIN in the public update. */
+        U_TRY(U_FLOAT_SYMMETRIC(&prior_covariance, 1));
+        U_TRY(U_CORE(update_core)(&prior_mean, &prior_covariance, &r_in, &z_in, &state->sigma_weights,
+                                  model->observation, model->observation_context,
+                                  model->measurement_residual, model->measurement_residual_context,
+                                  &posterior_mean, &covariance, kernel));
         /* The old covariance is now the posterior; the prior covariance
          * slot becomes its factor and the prior mean slot the new particle. */
-        U_TRY(U_LINEAR(cholesky)(&covariance, &prior_covariance, workspace.decomposition));
+        U_TRY(U_CHOLESKY((const U_WORK *)covariance.data, n, (U_WORK *)prior_covariance.data));
         U_TRY(sample(&draw, sample_context));
         U_TRY(U_FINITE(&draw));
         for (j = 0; j < n; ++j)
@@ -216,13 +228,15 @@ linears_status_t U_API(resample)(U_STATE *state, U_WORK uniform, size_t *indices
 #undef U_TRY
 #undef U_RESIDUAL_FN
 #undef U_FINITE
+#undef U_FLOAT_SYMMETRIC
 #undef U_SYMMETRIC
-#undef U_LINEAR
+#undef U_WEIGHTS_VALID
+#undef U_CHOLESKY
 #undef U_WORK_LOCAL
 #undef U_PF_LOCAL
 #undef U_LOCAL
 #undef U_FLOAT_UKF
-#undef U_UKF_API
+#undef U_CORE
 #undef U_API
 #undef U_JOIN
 #undef U_JOIN_INNER

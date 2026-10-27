@@ -7,11 +7,12 @@
 #define U_LOCAL(name) U_JOIN(U_JOIN(ukf_work_, U_TAG), U_JOIN(_, name))
 #define U_LINEAR(name) U_JOIN(U_JOIN(linears_, name), U_JOIN(_, U_TAG))
 #define U_SYMMETRIC U_JOIN(ukf_symmetric_, U_TAG)
+#define U_CHOLESKY U_JOIN(ukf_cholesky_, U_TAG)
+#define U_WEIGHTS_VALID U_JOIN(ukf_weights_valid_, U_TAG)
 #define U_TRY(expression) do { \
     status = (expression); \
     if (status != LINEARS_OK) return status; \
 } while (0)
-#define U_BASIC workspace.basic, workspace.basic_bytes
 #define U_BASIC_MEMBER_f32 f32
 #define U_BASIC_MEMBER_f64 floating
 #define U_BASIC_MEMBER U_JOIN(U_BASIC_MEMBER_, U_TAG)
@@ -40,62 +41,73 @@ linears_status_t U_API(weights)(size_t states, U_WORK alpha, U_WORK beta, U_WORK
     return LINEARS_OK;
 }
 
-linears_status_t U_API(sigma_points)(const linears_matrix_t *mean, const linears_matrix_t *covariance,
-                                     U_WORK scale, linears_matrix_t *points, U_WORKSPACE workspace)
+/* The cores below compute on views their caller has validated: exact shapes,
+ * finite values, exactly symmetric covariances, valid weights and disjoint
+ * scratch. They keep the per-element RANGE checks of the former basic matrix
+ * calls and stage each result row in the basic scratch before committing it,
+ * but register no spans and rescan no input. Each public kernel is its
+ * validation followed by one core; the UPF calls the cores directly. */
+
+/* Stage k finite values in basic[0..k) and copy them to target: a row is
+ * committed only after every element has passed, as the basic kernels did. */
+static void U_LOCAL(commit)(const linears_workspace_unit_t *basic, size_t k, U_WORK *target)
 {
-    linears_status_t status;
-    ukf_spans_t spans;
-    linears_matrix_t scaled, factor, center, row, column;
-    U_WORK *cursor;
-    size_t n, count, i;
-    spans.count = 0;
-    U_TRY(ukf_matrix(&spans, mean, 0, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    n = mean->rows;
-    U_TRY(ukf_matrix(&spans, covariance, n, n, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    count = FILTERS_UKF_SIGMA_COUNT(n);
-    if (count == SIZE_MAX) return LINEARS_ERROR_SIZE;
-    U_TRY(ukf_matrix(&spans, points, count, n, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
-    U_TRY(U_LOCAL(workspace)(&spans, workspace, FILTERS_UKF_SIGMA_POINTS_STORAGE(n),
-                             FILTERS_UKF_SIGMA_POINTS_BASIC_BYTES(n),
-                             FILTERS_UKF_SIGMA_POINTS_DECOMP_STORAGE(n)));
-    U_CHECK_FINITE(mean);
-    U_CHECK_FINITE(covariance);
-    if (!isfinite(scale)) return LINEARS_ERROR_RANGE;
-    if (!(scale > 0)) return LINEARS_ERROR_DOMAIN;
-    workspace.basic_bytes = FILTERS_UKF_SIGMA_POINTS_BASIC_BYTES(n);
-    workspace.decomposition.capacity = FILTERS_UKF_SIGMA_POINTS_DECOMP_STORAGE(n);
-    cursor = workspace.data;
-    scaled = U_LOCAL(take)(&cursor, n, n);
-    factor = U_LOCAL(take)(&cursor, n, n);
-    U_TRY(U_LINEAR(axpby)(scale, covariance, (U_WORK)0, covariance, &scaled, U_BASIC));
-    U_TRY(U_LINEAR(cholesky)(&scaled, &factor, workspace.decomposition));
-    /* Rows of the transposed factor are the columns of L. */
-    U_TRY(U_LINEAR(transpose)(&factor, &scaled, U_BASIC));
-    center = U_LOCAL(row)(points, 0);
-    memcpy(center.data, mean->data, n * sizeof(U_WORK));
-    for (i = 0; i < n; ++i) {
-        column = U_LOCAL(row)(&scaled, i);
-        row = U_LOCAL(row)(points, 1 + i);
-        U_TRY(U_LINEAR(add)(mean, &column, &row, U_BASIC));
-        row = U_LOCAL(row)(points, 1 + n + i);
-        U_TRY(U_LINEAR(sub)(mean, &column, &row, U_BASIC));
+    size_t j;
+    for (j = 0; j < k; ++j) target[j] = basic[j].U_BASIC_MEMBER;
+}
+
+/* scaled = scale*covariance. The former axpby computed scale*p + 0*p; for
+ * finite p and a finite positive scale the second term is a zero carrying the
+ * first term's sign, so the sum, its sign and its overflow are those of
+ * scale*p alone. */
+static linears_status_t U_LOCAL(scale_core)(const linears_matrix_t *covariance, U_WORK scale, U_WORK *scaled)
+{
+    const U_WORK *p = (const U_WORK *)covariance->data;
+    size_t i, count = covariance->rows * covariance->cols;
+    for (i = 0; i < count; ++i) {
+        U_WORK value = scale * p[i];
+        if (!U_ISFINITE(value)) return LINEARS_ERROR_RANGE;
+        scaled[i] = value;
     }
     return LINEARS_OK;
 }
 
-linears_status_t U_API(propagate)(const linears_matrix_t *points, U_FN fn, void *context,
-                                  linears_matrix_t *out)
+/* Sigma points of mean and the scaled covariance: row 0 the mean, rows 1..n
+ * mean + L column, rows n+1..2n mean - L column, L*L^T = scaled. factor is
+ * an n*n scratch block. */
+static linears_status_t U_LOCAL(sigma_core)(const linears_matrix_t *mean, const U_WORK *scaled,
+                                            linears_matrix_t *points, U_WORK *factor,
+                                            linears_workspace_unit_t *basic)
 {
     linears_status_t status;
-    ukf_spans_t spans;
+    const U_WORK *center = (const U_WORK *)mean->data;
+    U_WORK *rows = (U_WORK *)points->data;
+    size_t n = mean->rows, i, j;
+    U_TRY(U_CHOLESKY(scaled, n, factor));
+    memcpy(rows, center, n * sizeof(U_WORK));
+    for (i = 0; i < n; ++i) {
+        for (j = 0; j < n; ++j) {
+            U_WORK value = center[j] + factor[j * n + i];
+            if (!U_ISFINITE(value)) return LINEARS_ERROR_RANGE;
+            basic[j].U_BASIC_MEMBER = value;
+        }
+        U_LOCAL(commit)(basic, n, rows + (1 + i) * n);
+        for (j = 0; j < n; ++j) {
+            U_WORK value = center[j] - factor[j * n + i];
+            if (!U_ISFINITE(value)) return LINEARS_ERROR_RANGE;
+            basic[j].U_BASIC_MEMBER = value;
+        }
+        U_LOCAL(commit)(basic, n, rows + (1 + n + i) * n);
+    }
+    return LINEARS_OK;
+}
+
+static linears_status_t U_LOCAL(propagate_core)(const linears_matrix_t *points, U_FN fn, void *context,
+                                                linears_matrix_t *out)
+{
+    linears_status_t status;
     linears_matrix_t in, result;
     size_t i;
-    if (fn == NULL) return LINEARS_ERROR_ARGUMENT;
-    spans.count = 0;
-    U_TRY(ukf_matrix(&spans, points, 0, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    U_TRY(ukf_matrix(&spans, out, points->rows, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
-    U_TRY(ukf_disjoint(&spans));
-    U_CHECK_FINITE(points);
     for (i = 0; i < points->rows; ++i) {
         in = U_LOCAL(row)(points, i);
         result = U_LOCAL(row)(out, i);
@@ -105,28 +117,25 @@ linears_status_t U_API(propagate)(const linears_matrix_t *points, U_FN fn, void 
     return LINEARS_OK;
 }
 
-linears_status_t U_API(deviations)(const linears_matrix_t *points, const linears_matrix_t *mean,
-                                   U_RESIDUAL_FN residual, void *context, linears_matrix_t *out,
-                                   U_WORKSPACE workspace)
+static linears_status_t U_LOCAL(deviations_core)(const linears_matrix_t *points, const linears_matrix_t *mean,
+                                                 U_RESIDUAL_FN residual, void *context, linears_matrix_t *out,
+                                                 linears_workspace_unit_t *basic)
 {
     linears_status_t status;
-    ukf_spans_t spans;
     linears_matrix_t in, result;
-    size_t i, k;
-    spans.count = 0;
-    U_TRY(ukf_matrix(&spans, points, 0, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    k = points->cols;
-    U_TRY(ukf_matrix(&spans, mean, k, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    U_TRY(ukf_matrix(&spans, out, points->rows, k, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
-    U_TRY(U_LOCAL(workspace)(&spans, workspace, 0, FILTERS_UKF_DEVIATIONS_BASIC_BYTES(k), 0));
-    U_CHECK_FINITE(points);
-    U_CHECK_FINITE(mean);
-    workspace.basic_bytes = FILTERS_UKF_DEVIATIONS_BASIC_BYTES(k);
+    const U_WORK *center = (const U_WORK *)mean->data;
+    size_t i, j, k = points->cols;
     for (i = 0; i < points->rows; ++i) {
         in = U_LOCAL(row)(points, i);
         result = U_LOCAL(row)(out, i);
         if (residual == NULL) {
-            U_TRY(U_LINEAR(sub)(&in, mean, &result, U_BASIC));
+            const U_WORK *point = (const U_WORK *)in.data;
+            for (j = 0; j < k; ++j) {
+                U_WORK value = point[j] - center[j];
+                if (!U_ISFINITE(value)) return LINEARS_ERROR_RANGE;
+                basic[j].U_BASIC_MEMBER = value;
+            }
+            U_LOCAL(commit)(basic, k, (U_WORK *)result.data);
         } else {
             U_TRY(residual(&in, mean, &result, context));
             U_CHECK_FINITE(&result);
@@ -135,38 +144,27 @@ linears_status_t U_API(deviations)(const linears_matrix_t *points, const linears
     return LINEARS_OK;
 }
 
-linears_status_t U_API(mean)(const linears_matrix_t *points, const linears_matrix_t *weights,
-                             U_RESIDUAL_FN residual, void *context, linears_matrix_t *out,
-                             U_WORKSPACE workspace)
+/* Weighted mean; with a residual, averages residuals about row 0 in the
+ * s-by-k deviation scratch and moves back, which is exact for linear parts. */
+static linears_status_t U_LOCAL(mean_core)(const linears_matrix_t *points, const U_WORK *w,
+                                           U_RESIDUAL_FN residual, void *context, linears_matrix_t *out,
+                                           U_WORK *deviation_scratch, linears_workspace_unit_t *basic)
 {
     linears_status_t status;
-    ukf_spans_t spans;
     linears_matrix_t deviations, reference;
     const linears_matrix_t *source = points;
-    const U_WORK *values, *w;
-    U_WORK *cursor;
-    size_t s, k, i, j;
-    spans.count = 0;
-    U_TRY(ukf_matrix(&spans, points, 0, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    s = points->rows;
-    k = points->cols;
-    U_TRY(ukf_matrix(&spans, weights, s, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    U_TRY(ukf_matrix(&spans, out, k, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
-    U_TRY(U_LOCAL(workspace)(&spans, workspace, FILTERS_UKF_MEAN_STORAGE(s, k),
-                             FILTERS_UKF_MEAN_BASIC_BYTES(s, k), 0));
-    U_CHECK_FINITE(points);
-    U_CHECK_FINITE(weights);
-    workspace.basic_bytes = FILTERS_UKF_MEAN_BASIC_BYTES(s, k);
-    cursor = workspace.data;
+    const U_WORK *values;
+    U_WORK *result = (U_WORK *)out->data;
+    size_t s = points->rows, k = points->cols, i, j;
     if (residual != NULL) {
-        /* Average residuals about row 0, then move back; exact for linear parts. */
-        deviations = U_LOCAL(take)(&cursor, s, k);
+        deviations.data = deviation_scratch;
+        deviations.rows = s;
+        deviations.cols = k;
         reference = U_LOCAL(row)(points, 0);
-        U_TRY(U_API(deviations)(points, &reference, residual, context, &deviations, workspace));
+        U_TRY(U_LOCAL(deviations_core)(points, &reference, residual, context, &deviations, basic));
         source = &deviations;
     }
     values = (const U_WORK *)source->data;
-    w = (const U_WORK *)weights->data;
     /* Read columns directly, retaining the transposed product's reduction order. */
     for (j = 0; j < k; ++j) {
         U_WORK sum = (U_WORK)0;
@@ -175,40 +173,34 @@ linears_status_t U_API(mean)(const linears_matrix_t *points, const linears_matri
             sum += product;
             if (!U_ISFINITE(sum)) return LINEARS_ERROR_RANGE;
         }
-        workspace.basic[j].U_BASIC_MEMBER = sum;
+        basic[j].U_BASIC_MEMBER = sum;
     }
-    for (j = 0; j < k; ++j)
-        ((U_WORK *)out->data)[j] = workspace.basic[j].U_BASIC_MEMBER;
-    if (residual != NULL) return U_LINEAR(add)(&reference, out, out, U_BASIC);
+    U_LOCAL(commit)(basic, k, result);
+    if (residual != NULL) {
+        const U_WORK *center = (const U_WORK *)reference.data;
+        for (j = 0; j < k; ++j) {
+            U_WORK value = center[j] + result[j];
+            if (!U_ISFINITE(value)) return LINEARS_ERROR_RANGE;
+            basic[j].U_BASIC_MEMBER = value;
+        }
+        U_LOCAL(commit)(basic, k, result);
+    }
     return LINEARS_OK;
 }
 
-linears_status_t U_API(weighted_covariance)(const linears_matrix_t *a, const linears_matrix_t *b,
-                                            const linears_matrix_t *weights, linears_matrix_t *out,
-                                            U_WORKSPACE workspace)
+/* out = a^T * diag(w) * b through the s-by-q scaled scratch. With a staging
+ * array the result is committed only after every sum is finite, as the
+ * public kernel and the predicted covariance always were; without one each
+ * sum is written as it completes, which the update uses for its S and C
+ * scratch. The staged form needs p*q units, which the update storage macro,
+ * max(n,m)*(2n+1) units, does not cover for S when m exceeds 2n+1. */
+static linears_status_t U_LOCAL(weighted_covariance_core)(const linears_matrix_t *a, const linears_matrix_t *b,
+                                                          const U_WORK *w, linears_matrix_t *out, U_WORK *scaled,
+                                                          linears_workspace_unit_t *basic)
 {
-    linears_status_t status;
-    ukf_spans_t spans;
-    const U_WORK *av, *bv, *w;
-    U_WORK *scaled;
-    size_t s, p, q, i, j, k;
-    spans.count = 0;
-    U_TRY(ukf_matrix(&spans, a, 0, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    s = a->rows;
-    p = a->cols;
-    U_TRY(ukf_matrix(&spans, b, s, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    q = b->cols;
-    U_TRY(ukf_matrix(&spans, weights, s, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    U_TRY(ukf_matrix(&spans, out, p, q, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
-    U_TRY(U_LOCAL(workspace)(&spans, workspace, FILTERS_UKF_WEIGHTED_COVARIANCE_STORAGE(s, p, q),
-                             FILTERS_UKF_WEIGHTED_COVARIANCE_BASIC_BYTES(s, p, q), 0));
-    U_CHECK_FINITE(a);
-    U_CHECK_FINITE(b);
-    U_CHECK_FINITE(weights);
-    scaled = workspace.data;
-    av = (const U_WORK *)a->data;
-    bv = (const U_WORK *)b->data;
-    w = (const U_WORK *)weights->data;
+    const U_WORK *av = (const U_WORK *)a->data, *bv = (const U_WORK *)b->data;
+    U_WORK *result = (U_WORK *)out->data;
+    size_t s = a->rows, p = a->cols, q = b->cols, i, j, k;
     for (i = 0; i < s; ++i) {
         for (j = 0; j < q; ++j) {
             U_WORK left = w[i] * bv[i * q + j];
@@ -227,21 +219,46 @@ linears_status_t U_API(weighted_covariance)(const linears_matrix_t *a, const lin
                 sum += product;
                 if (!U_ISFINITE(sum)) return LINEARS_ERROR_RANGE;
             }
-            workspace.basic[i * q + j].U_BASIC_MEMBER = sum;
+            if (basic != NULL) basic[i * q + j].U_BASIC_MEMBER = sum;
+            else result[i * q + j] = sum;
         }
     }
-    for (i = 0; i < p * q; ++i)
-        ((U_WORK *)out->data)[i] = workspace.basic[i].U_BASIC_MEMBER;
+    if (basic != NULL) U_LOCAL(commit)(basic, p * q, result);
     return LINEARS_OK;
 }
 
-static linears_status_t U_LOCAL(weights_valid)(const U_WEIGHTS *weights)
+/* out = out + addend elementwise; a public output is committed through the
+ * basic staging after every element is finite, scratch is written directly. */
+static linears_status_t U_LOCAL(add_core)(linears_matrix_t *out, const linears_matrix_t *addend,
+                                          linears_workspace_unit_t *basic)
 {
-    if (weights == NULL) return LINEARS_ERROR_ARGUMENT;
-    if (!isfinite(weights->scale) || !isfinite(weights->mean0) ||
-        !isfinite(weights->covariance0) || !isfinite(weights->other))
-        return LINEARS_ERROR_RANGE;
-    return weights->scale > 0 ? LINEARS_OK : LINEARS_ERROR_DOMAIN;
+    U_WORK *target = (U_WORK *)out->data;
+    const U_WORK *source = (const U_WORK *)addend->data;
+    size_t i, count = out->rows * out->cols;
+    for (i = 0; i < count; ++i) {
+        U_WORK value = target[i] + source[i];
+        if (!U_ISFINITE(value)) return LINEARS_ERROR_RANGE;
+        if (basic != NULL) basic[i].U_BASIC_MEMBER = value;
+        else target[i] = value;
+    }
+    if (basic != NULL) U_LOCAL(commit)(basic, count, target);
+    return LINEARS_OK;
+}
+
+/* 0.5*M + 0.5*M^T in place. Both mirrored sums are the same two rounded
+ * products added in commuted order, so they are bitwise equal and finite. */
+static void U_LOCAL(symmetrize)(linears_matrix_t *matrix)
+{
+    U_WORK *m = (U_WORK *)matrix->data;
+    size_t n = matrix->rows, i, j;
+    for (i = 0; i < n; ++i) {
+        for (j = 0; j < i; ++j) {
+            U_WORK left = (U_WORK)0.5 * m[i * n + j], right = (U_WORK)0.5 * m[j * n + i];
+            m[i * n + j] = left + right;
+            m[j * n + i] = right + left;
+        }
+        m[i * n + i] = (U_WORK)0.5 * m[i * n + i] + (U_WORK)0.5 * m[i * n + i];
+    }
 }
 
 static void U_LOCAL(expand_weights)(const U_WEIGHTS *weights, linears_matrix_t *mean,
@@ -257,12 +274,152 @@ static void U_LOCAL(expand_weights)(const U_WEIGHTS *weights, linears_matrix_t *
     }
 }
 
-static linears_status_t U_LOCAL(symmetrize)(linears_matrix_t *matrix, linears_matrix_t *scratch,
+linears_status_t U_API(sigma_points)(const linears_matrix_t *mean, const linears_matrix_t *covariance,
+                                     U_WORK scale, linears_matrix_t *points, U_WORKSPACE workspace)
+{
+    linears_status_t status;
+    ukf_spans_t spans;
+    linears_matrix_t scaled, factor;
+    U_WORK *cursor;
+    size_t n, count;
+    spans.count = 0;
+    U_TRY(ukf_matrix(&spans, mean, 0, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    n = mean->rows;
+    U_TRY(ukf_matrix(&spans, covariance, n, n, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    count = FILTERS_UKF_SIGMA_COUNT(n);
+    if (count == SIZE_MAX) return LINEARS_ERROR_SIZE;
+    U_TRY(ukf_matrix(&spans, points, count, n, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
+    U_TRY(U_LOCAL(workspace)(&spans, workspace, FILTERS_UKF_SIGMA_POINTS_STORAGE(n),
+                             FILTERS_UKF_SIGMA_POINTS_BASIC_BYTES(n),
+                             FILTERS_UKF_SIGMA_POINTS_DECOMP_STORAGE(n)));
+    U_CHECK_FINITE(mean);
+    U_CHECK_FINITE(covariance);
+    if (!isfinite(scale)) return LINEARS_ERROR_RANGE;
+    if (!(scale > 0)) return LINEARS_ERROR_DOMAIN;
+    cursor = workspace.data;
+    scaled = U_LOCAL(take)(&cursor, n, n);
+    factor = U_LOCAL(take)(&cursor, n, n);
+    U_TRY(U_LOCAL(scale_core)(covariance, scale, (U_WORK *)scaled.data));
+    /* The shared decomposition reported an asymmetric input as DIMENSION
+     * after loading it, so the check applies to the scaled copy it loaded:
+     * mirrored elements that differ only below the scaled rounding threshold
+     * still pass. The private factor assumes symmetry. */
+    if (U_SYMMETRIC(&scaled, 0) != LINEARS_OK) return LINEARS_ERROR_DIMENSION;
+    return U_LOCAL(sigma_core)(mean, (const U_WORK *)scaled.data, points, (U_WORK *)factor.data,
+                               workspace.basic);
+}
+
+linears_status_t U_API(propagate)(const linears_matrix_t *points, U_FN fn, void *context,
+                                  linears_matrix_t *out)
+{
+    linears_status_t status;
+    ukf_spans_t spans;
+    if (fn == NULL) return LINEARS_ERROR_ARGUMENT;
+    spans.count = 0;
+    U_TRY(ukf_matrix(&spans, points, 0, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    U_TRY(ukf_matrix(&spans, out, points->rows, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
+    U_TRY(ukf_disjoint(&spans));
+    U_CHECK_FINITE(points);
+    return U_LOCAL(propagate_core)(points, fn, context, out);
+}
+
+linears_status_t U_API(deviations)(const linears_matrix_t *points, const linears_matrix_t *mean,
+                                   U_RESIDUAL_FN residual, void *context, linears_matrix_t *out,
+                                   U_WORKSPACE workspace)
+{
+    linears_status_t status;
+    ukf_spans_t spans;
+    size_t k;
+    spans.count = 0;
+    U_TRY(ukf_matrix(&spans, points, 0, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    k = points->cols;
+    U_TRY(ukf_matrix(&spans, mean, k, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    U_TRY(ukf_matrix(&spans, out, points->rows, k, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
+    U_TRY(U_LOCAL(workspace)(&spans, workspace, 0, FILTERS_UKF_DEVIATIONS_BASIC_BYTES(k), 0));
+    U_CHECK_FINITE(points);
+    U_CHECK_FINITE(mean);
+    return U_LOCAL(deviations_core)(points, mean, residual, context, out, workspace.basic);
+}
+
+linears_status_t U_API(mean)(const linears_matrix_t *points, const linears_matrix_t *weights,
+                             U_RESIDUAL_FN residual, void *context, linears_matrix_t *out,
+                             U_WORKSPACE workspace)
+{
+    linears_status_t status;
+    ukf_spans_t spans;
+    size_t s, k;
+    spans.count = 0;
+    U_TRY(ukf_matrix(&spans, points, 0, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    s = points->rows;
+    k = points->cols;
+    U_TRY(ukf_matrix(&spans, weights, s, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    U_TRY(ukf_matrix(&spans, out, k, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
+    U_TRY(U_LOCAL(workspace)(&spans, workspace, FILTERS_UKF_MEAN_STORAGE(s, k),
+                             FILTERS_UKF_MEAN_BASIC_BYTES(s, k), 0));
+    U_CHECK_FINITE(points);
+    U_CHECK_FINITE(weights);
+    return U_LOCAL(mean_core)(points, (const U_WORK *)weights->data, residual, context, out,
+                              workspace.data, workspace.basic);
+}
+
+linears_status_t U_API(weighted_covariance)(const linears_matrix_t *a, const linears_matrix_t *b,
+                                            const linears_matrix_t *weights, linears_matrix_t *out,
                                             U_WORKSPACE workspace)
 {
     linears_status_t status;
-    U_TRY(U_LINEAR(transpose)(matrix, scratch, U_BASIC));
-    return U_LINEAR(axpby)((U_WORK)0.5, matrix, (U_WORK)0.5, scratch, matrix, U_BASIC);
+    ukf_spans_t spans;
+    size_t s, p, q;
+    spans.count = 0;
+    U_TRY(ukf_matrix(&spans, a, 0, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    s = a->rows;
+    p = a->cols;
+    U_TRY(ukf_matrix(&spans, b, s, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    q = b->cols;
+    U_TRY(ukf_matrix(&spans, weights, s, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    U_TRY(ukf_matrix(&spans, out, p, q, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
+    U_TRY(U_LOCAL(workspace)(&spans, workspace, FILTERS_UKF_WEIGHTED_COVARIANCE_STORAGE(s, p, q),
+                             FILTERS_UKF_WEIGHTED_COVARIANCE_BASIC_BYTES(s, p, q), 0));
+    U_CHECK_FINITE(a);
+    U_CHECK_FINITE(b);
+    U_CHECK_FINITE(weights);
+    return U_LOCAL(weighted_covariance_core)(a, b, (const U_WORK *)weights->data, out, workspace.data,
+                                             workspace.basic);
+}
+
+linears_status_t U_LOCAL(predict_core)(const linears_matrix_t *mean, const linears_matrix_t *covariance,
+                                       const linears_matrix_t *process_noise, const U_WEIGHTS *weights,
+                                       U_FN transition, void *transition_context,
+                                       U_RESIDUAL_FN residual, void *residual_context,
+                                       linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
+                                       U_WORKSPACE workspace)
+{
+    linears_status_t status;
+    linears_matrix_t tmp, wm, wc, points, scratch, propagated;
+    U_WORK *cursor;
+    size_t n = mean->rows, s = FILTERS_UKF_SIGMA_COUNT(n);
+    cursor = workspace.data;
+    tmp = U_LOCAL(take)(&cursor, n, n);
+    wm = U_LOCAL(take)(&cursor, s, 1);
+    wc = U_LOCAL(take)(&cursor, s, 1);
+    points = U_LOCAL(take)(&cursor, s, n);
+    scratch = U_LOCAL(take)(&cursor, s, n);
+    propagated = U_LOCAL(take)(&cursor, s, n);
+    (void)tmp;
+    U_LOCAL(expand_weights)(weights, &wm, &wc);
+    /* Each step borrows the dead s-by-n blocks adjacent to its inputs. */
+    U_TRY(U_LOCAL(scale_core)(covariance, weights->scale, (U_WORK *)scratch.data));
+    U_TRY(U_LOCAL(sigma_core)(mean, (const U_WORK *)scratch.data, &points, (U_WORK *)scratch.data + n * n,
+                              workspace.basic));
+    U_TRY(U_LOCAL(propagate_core)(&points, transition, transition_context, &propagated));
+    U_TRY(U_LOCAL(mean_core)(&propagated, (const U_WORK *)wm.data, residual, residual_context, out_mean,
+                             (U_WORK *)points.data, workspace.basic));
+    U_TRY(U_LOCAL(deviations_core)(&propagated, out_mean, residual, residual_context, &points,
+                                   workspace.basic));
+    U_TRY(U_LOCAL(weighted_covariance_core)(&points, &points, (const U_WORK *)wc.data, out_covariance,
+                                            (U_WORK *)scratch.data, workspace.basic));
+    U_TRY(U_LOCAL(add_core)(out_covariance, process_noise, workspace.basic));
+    U_LOCAL(symmetrize)(out_covariance);
+    return LINEARS_OK;
 }
 
 linears_status_t U_API(predict_work)(const linears_matrix_t *mean, const linears_matrix_t *covariance,
@@ -274,12 +431,9 @@ linears_status_t U_API(predict_work)(const linears_matrix_t *mean, const linears
 {
     linears_status_t status;
     ukf_spans_t spans;
-    linears_matrix_t tmp, wm, wc, points, scratch, propagated;
-    U_WORKSPACE sub;
-    U_WORK *cursor;
-    size_t n, s, basic_bytes, decomposition_count;
+    size_t n, basic_bytes, decomposition_count;
     if (transition == NULL) return LINEARS_ERROR_ARGUMENT;
-    U_TRY(U_LOCAL(weights_valid)(weights));
+    U_TRY(U_WEIGHTS_VALID(weights));
     spans.count = 0;
     U_TRY(ukf_matrix(&spans, mean, 0, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
     n = mean->rows;
@@ -287,7 +441,6 @@ linears_status_t U_API(predict_work)(const linears_matrix_t *mean, const linears
     U_TRY(ukf_matrix(&spans, process_noise, n, n, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
     U_TRY(ukf_matrix(&spans, out_mean, n, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
     U_TRY(ukf_matrix(&spans, out_covariance, n, n, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
-    s = FILTERS_UKF_SIGMA_COUNT(n);
     basic_bytes = FILTERS_UKF_PREDICT_BASIC_BYTES(n);
     decomposition_count = FILTERS_UKF_PREDICT_DECOMP_STORAGE(n);
     U_TRY(U_LOCAL(workspace)(&spans, workspace, FILTERS_UKF_PREDICT_WORK_STORAGE(n), basic_bytes,
@@ -297,74 +450,26 @@ linears_status_t U_API(predict_work)(const linears_matrix_t *mean, const linears
     U_CHECK_FINITE(process_noise);
     U_TRY(U_SYMMETRIC(covariance, 1));
     U_TRY(U_SYMMETRIC(process_noise, 1));
-    /* Pass only the used prefixes; unused supplied capacity stays untouched. */
-    workspace.basic_bytes = basic_bytes;
-    workspace.decomposition.capacity = decomposition_count;
-    cursor = workspace.data;
-    tmp = U_LOCAL(take)(&cursor, n, n);
-    wm = U_LOCAL(take)(&cursor, s, 1);
-    wc = U_LOCAL(take)(&cursor, s, 1);
-    points = U_LOCAL(take)(&cursor, s, n);
-    scratch = U_LOCAL(take)(&cursor, s, n);
-    propagated = U_LOCAL(take)(&cursor, s, n);
-    U_LOCAL(expand_weights)(weights, &wm, &wc);
-    /* Each step borrows the two dead s-by-n blocks adjacent to its inputs. */
-    sub = workspace;
-    sub.capacity = 2 * s * n;
-    sub.data = (U_WORK *)scratch.data;
-    U_TRY(U_API(sigma_points)(mean, covariance, weights->scale, &points, sub));
-    U_TRY(U_API(propagate)(&points, transition, transition_context, &propagated));
-    sub.data = (U_WORK *)points.data;
-    U_TRY(U_API(mean)(&propagated, &wm, residual, residual_context, out_mean, sub));
-    U_TRY(U_API(deviations)(&propagated, out_mean, residual, residual_context, &points, workspace));
-    sub.data = (U_WORK *)scratch.data;
-    U_TRY(U_API(weighted_covariance)(&points, &points, &wc, out_covariance, sub));
-    U_TRY(U_LINEAR(add)(out_covariance, process_noise, out_covariance, U_BASIC));
-    return U_LOCAL(symmetrize)(out_covariance, &tmp, workspace);
+    return U_LOCAL(predict_core)(mean, covariance, process_noise, weights, transition, transition_context,
+                                 residual, residual_context, out_mean, out_covariance, workspace);
 }
 
-linears_status_t U_API(update_work)(const linears_matrix_t *mean, const linears_matrix_t *covariance,
-                                    const linears_matrix_t *measurement_noise,
-                                    const linears_matrix_t *measurement, const U_WEIGHTS *weights,
-                                    U_FN observation, void *observation_context,
-                                    U_RESIDUAL_FN residual, void *residual_context,
-                                    linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
-                                    U_WORKSPACE workspace)
+linears_status_t U_LOCAL(update_core)(const linears_matrix_t *mean, const linears_matrix_t *covariance,
+                                      const linears_matrix_t *measurement_noise,
+                                      const linears_matrix_t *measurement, const U_WEIGHTS *weights,
+                                      U_FN observation, void *observation_context,
+                                      U_RESIDUAL_FN residual, void *residual_context,
+                                      linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
+                                      U_WORKSPACE workspace)
 {
     linears_status_t status;
-    ukf_spans_t spans;
     linears_matrix_t tmp, wm, wc, innovation_covariance, factor, cross, cross_t, gain_t, gain;
     linears_matrix_t reduction, innovation, zbar, points, measured, dx, dz, scratch;
     linears_matrix_t z_row, innovation_row;
-    U_WORKSPACE sub;
-    U_WORK *cursor;
-    size_t n, m, s, k, basic_bytes, decomposition_count;
-    if (observation == NULL) return LINEARS_ERROR_ARGUMENT;
-    U_TRY(U_LOCAL(weights_valid)(weights));
-    spans.count = 0;
-    U_TRY(ukf_matrix(&spans, mean, 0, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    n = mean->rows;
-    U_TRY(ukf_matrix(&spans, covariance, n, n, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    U_TRY(ukf_matrix(&spans, measurement_noise, 0, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    m = measurement_noise->rows;
-    if (measurement_noise->cols != m) return LINEARS_ERROR_DIMENSION;
-    U_TRY(ukf_matrix(&spans, measurement, m, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    U_TRY(ukf_matrix(&spans, out_mean, n, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
-    U_TRY(ukf_matrix(&spans, out_covariance, n, n, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
-    s = FILTERS_UKF_SIGMA_COUNT(n);
-    k = FILTERS_KALMAN_MAX_SIZE(n, m);
-    basic_bytes = FILTERS_UKF_UPDATE_BASIC_BYTES(n, m);
-    decomposition_count = FILTERS_UKF_UPDATE_DECOMP_STORAGE(n, m);
-    U_TRY(U_LOCAL(workspace)(&spans, workspace, FILTERS_UKF_UPDATE_WORK_STORAGE(n, m), basic_bytes,
-                             decomposition_count));
-    U_CHECK_FINITE(mean);
-    U_CHECK_FINITE(covariance);
-    U_CHECK_FINITE(measurement_noise);
-    U_CHECK_FINITE(measurement);
-    U_TRY(U_SYMMETRIC(covariance, 1));
-    U_TRY(U_SYMMETRIC(measurement_noise, 0));
-    workspace.basic_bytes = basic_bytes;
-    workspace.decomposition.capacity = decomposition_count;
+    const U_WORK *x, *p, *kt, *ct, *dy;
+    U_WORK *cursor, *xout, *pout, *red, *c;
+    size_t n = mean->rows, m = measurement_noise->rows, s = FILTERS_UKF_SIGMA_COUNT(n);
+    size_t k = FILTERS_KALMAN_MAX_SIZE(n, m), i, j, r;
     cursor = workspace.data;
     tmp = U_LOCAL(take)(&cursor, n, n);
     wm = U_LOCAL(take)(&cursor, s, 1);
@@ -383,42 +488,130 @@ linears_status_t U_API(update_work)(const linears_matrix_t *mean, const linears_
     dx = U_LOCAL(take)(&cursor, s, n);
     dz = U_LOCAL(take)(&cursor, s, m);
     scratch = U_LOCAL(take)(&cursor, s, m + k);
+    (void)tmp;
+    (void)gain;
     U_LOCAL(expand_weights)(weights, &wm, &wc);
-    /* Validate R itself before any callback: S can be SPD when R is not. */
-    U_TRY(U_LINEAR(cholesky)(measurement_noise, &factor, workspace.decomposition));
-    sub = workspace;
-    sub.data = (U_WORK *)measured.data;
-    sub.capacity = (size_t)(((U_WORK *)scratch.data + s * (m + k)) - (U_WORK *)measured.data);
-    U_TRY(U_API(sigma_points)(mean, covariance, weights->scale, &points, sub));
-    U_TRY(U_API(propagate)(&points, observation, observation_context, &measured));
-    sub.data = (U_WORK *)scratch.data;
-    sub.capacity = s * (m + k);
-    U_TRY(U_API(mean)(&measured, &wm, residual, residual_context, &zbar, sub));
-    U_TRY(U_API(deviations)(&measured, &zbar, residual, residual_context, &dz, workspace));
+    /* The sigma factor borrows the dead sample blocks that follow points. */
+    U_TRY(U_LOCAL(scale_core)(covariance, weights->scale, (U_WORK *)measured.data));
+    U_TRY(U_LOCAL(sigma_core)(mean, (const U_WORK *)measured.data, &points, (U_WORK *)measured.data + n * n,
+                              workspace.basic));
+    U_TRY(U_LOCAL(propagate_core)(&points, observation, observation_context, &measured));
+    U_TRY(U_LOCAL(mean_core)(&measured, (const U_WORK *)wm.data, residual, residual_context, &zbar,
+                             (U_WORK *)scratch.data, workspace.basic));
+    U_TRY(U_LOCAL(deviations_core)(&measured, &zbar, residual, residual_context, &dz, workspace.basic));
     /* Regenerated sigma points differ from the mean by exactly +-L columns. */
-    U_TRY(U_API(deviations)(&points, mean, NULL, NULL, &dx, workspace));
-    U_TRY(U_API(weighted_covariance)(&dz, &dz, &wc, &innovation_covariance, sub));
-    U_TRY(U_LINEAR(add)(&innovation_covariance, measurement_noise, &innovation_covariance, U_BASIC));
-    U_TRY(U_LOCAL(symmetrize)(&innovation_covariance, &factor, workspace));
-    U_TRY(U_LINEAR(cholesky)(&innovation_covariance, &factor, workspace.decomposition));
-    U_TRY(U_API(weighted_covariance)(&dx, &dz, &wc, &cross, sub));
-    U_TRY(U_LINEAR(transpose)(&cross, &cross_t, U_BASIC));
+    U_TRY(U_LOCAL(deviations_core)(&points, mean, NULL, NULL, &dx, workspace.basic));
+    U_TRY(U_LOCAL(weighted_covariance_core)(&dz, &dz, (const U_WORK *)wc.data, &innovation_covariance,
+                                            (U_WORK *)scratch.data, NULL));
+    U_TRY(U_LOCAL(add_core)(&innovation_covariance, measurement_noise, NULL));
+    U_LOCAL(symmetrize)(&innovation_covariance);
+    U_TRY(U_CHOLESKY((const U_WORK *)innovation_covariance.data, m, (U_WORK *)factor.data));
+    U_TRY(U_LOCAL(weighted_covariance_core)(&dx, &dz, (const U_WORK *)wc.data, &cross,
+                                            (U_WORK *)scratch.data, NULL));
+    c = (U_WORK *)cross.data;
+    ct = (const U_WORK *)cross_t.data;
+    for (i = 0; i < n; ++i)
+        for (j = 0; j < m; ++j) ((U_WORK *)cross_t.data)[j * n + i] = c[i * m + j];
     /* S*K^T = C^T through the shared pivoted solve; no explicit inverse. */
     U_TRY(U_LINEAR(solve)(&innovation_covariance, &cross_t, &gain_t, workspace.decomposition));
-    U_TRY(U_LINEAR(transpose)(&gain_t, &gain, U_BASIC));
     z_row = *measurement;
     z_row.rows = 1;
     z_row.cols = m;
     innovation_row = innovation;
     innovation_row.rows = 1;
     innovation_row.cols = m;
-    U_TRY(U_API(deviations)(&z_row, &zbar, residual, residual_context, &innovation_row, workspace));
-    U_TRY(U_LINEAR(mul)(&gain, &innovation, out_mean, U_BASIC));
-    U_TRY(U_LINEAR(add)(mean, out_mean, out_mean, U_BASIC));
+    U_TRY(U_LOCAL(deviations_core)(&z_row, &zbar, residual, residual_context, &innovation_row,
+                                   workspace.basic));
+    /* K is read as the transpose of the solved m-by-n block. */
+    kt = (const U_WORK *)gain_t.data;
+    dy = (const U_WORK *)innovation.data;
+    x = (const U_WORK *)mean->data;
+    p = (const U_WORK *)covariance->data;
+    xout = (U_WORK *)out_mean->data;
+    pout = (U_WORK *)out_covariance->data;
+    red = (U_WORK *)reduction.data;
+    for (i = 0; i < n; ++i) {
+        U_WORK sum = (U_WORK)0;
+        for (j = 0; j < m; ++j) {
+            U_WORK product = kt[j * n + i] * dy[j];
+            sum += product;
+            if (!U_ISFINITE(sum)) return LINEARS_ERROR_RANGE;
+        }
+        workspace.basic[i].U_BASIC_MEMBER = sum;
+    }
+    for (i = 0; i < n; ++i) {
+        U_WORK value = x[i] + workspace.basic[i].U_BASIC_MEMBER;
+        if (!U_ISFINITE(value)) return LINEARS_ERROR_RANGE;
+        workspace.basic[i].U_BASIC_MEMBER = value;
+    }
+    U_LOCAL(commit)(workspace.basic, n, xout);
     /* P - K*S*K^T equals P - K*C^T because S*K^T = C^T. */
-    U_TRY(U_LINEAR(mul)(&gain, &cross_t, &reduction, U_BASIC));
-    U_TRY(U_LINEAR(sub)(covariance, &reduction, out_covariance, U_BASIC));
-    return U_LOCAL(symmetrize)(out_covariance, &tmp, workspace);
+    for (i = 0; i < n; ++i) {
+        for (r = 0; r < n; ++r) {
+            U_WORK sum = (U_WORK)0;
+            for (j = 0; j < m; ++j) {
+                U_WORK product = kt[j * n + i] * ct[j * n + r];
+                sum += product;
+                if (!U_ISFINITE(sum)) return LINEARS_ERROR_RANGE;
+            }
+            red[i * n + r] = sum;
+        }
+    }
+    for (i = 0; i < n * n; ++i) {
+        U_WORK value = p[i] - red[i];
+        if (!U_ISFINITE(value)) return LINEARS_ERROR_RANGE;
+        workspace.basic[i].U_BASIC_MEMBER = value;
+    }
+    U_LOCAL(commit)(workspace.basic, n * n, pout);
+    U_LOCAL(symmetrize)(out_covariance);
+    return LINEARS_OK;
+}
+
+linears_status_t U_API(update_work)(const linears_matrix_t *mean, const linears_matrix_t *covariance,
+                                    const linears_matrix_t *measurement_noise,
+                                    const linears_matrix_t *measurement, const U_WEIGHTS *weights,
+                                    U_FN observation, void *observation_context,
+                                    U_RESIDUAL_FN residual, void *residual_context,
+                                    linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
+                                    U_WORKSPACE workspace)
+{
+    linears_status_t status;
+    ukf_spans_t spans;
+    U_WORK *factor;
+    size_t n, m, s, basic_bytes, decomposition_count;
+    if (observation == NULL) return LINEARS_ERROR_ARGUMENT;
+    U_TRY(U_WEIGHTS_VALID(weights));
+    spans.count = 0;
+    U_TRY(ukf_matrix(&spans, mean, 0, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    n = mean->rows;
+    U_TRY(ukf_matrix(&spans, covariance, n, n, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    U_TRY(ukf_matrix(&spans, measurement_noise, 0, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    m = measurement_noise->rows;
+    if (measurement_noise->cols != m) return LINEARS_ERROR_DIMENSION;
+    U_TRY(ukf_matrix(&spans, measurement, m, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    U_TRY(ukf_matrix(&spans, out_mean, n, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
+    U_TRY(ukf_matrix(&spans, out_covariance, n, n, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
+    s = FILTERS_UKF_SIGMA_COUNT(n);
+    basic_bytes = FILTERS_UKF_UPDATE_BASIC_BYTES(n, m);
+    decomposition_count = FILTERS_UKF_UPDATE_DECOMP_STORAGE(n, m);
+    U_TRY(U_LOCAL(workspace)(&spans, workspace, FILTERS_UKF_UPDATE_WORK_STORAGE(n, m), basic_bytes,
+                             decomposition_count));
+    U_CHECK_FINITE(mean);
+    U_CHECK_FINITE(covariance);
+    U_CHECK_FINITE(measurement_noise);
+    U_CHECK_FINITE(measurement);
+    U_TRY(U_SYMMETRIC(covariance, 1));
+    U_TRY(U_SYMMETRIC(measurement_noise, 0));
+    /* Pass only the used solve prefix; unused supplied capacity stays untouched. */
+    workspace.decomposition.capacity = decomposition_count;
+    /* Validate R itself before any callback: S can be SPD when R is not. The
+     * factor lands in the core's S-factor slot (after tmp, wm, wc and S) and
+     * is overwritten there. */
+    factor = workspace.data + n * n + 2 * s + m * m;
+    U_TRY(U_CHOLESKY((const U_WORK *)measurement_noise->data, m, factor));
+    return U_LOCAL(update_core)(mean, covariance, measurement_noise, measurement, weights, observation,
+                                observation_context, residual, residual_context, out_mean, out_covariance,
+                                workspace);
 }
 
 #undef U_CHECK_FINITE
@@ -426,8 +619,9 @@ linears_status_t U_API(update_work)(const linears_matrix_t *mean, const linears_
 #undef U_BASIC_MEMBER
 #undef U_BASIC_MEMBER_f64
 #undef U_BASIC_MEMBER_f32
-#undef U_BASIC
 #undef U_TRY
+#undef U_WEIGHTS_VALID
+#undef U_CHOLESKY
 #undef U_SYMMETRIC
 #undef U_LINEAR
 #undef U_LOCAL

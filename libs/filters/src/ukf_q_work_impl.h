@@ -6,9 +6,11 @@
 #define Q_JOIN_INNER(a, b) a##b
 #define Q_JOIN(a, b) Q_JOIN_INNER(a, b)
 #define Q_API(name) Q_JOIN(Q_JOIN(filters_ukf_, U_TAG), Q_JOIN(_, name))
+#define Q_CORE(name) Q_JOIN(Q_JOIN(ukf_work_, U_TAG), Q_JOIN(_, name))
 #define Q_LOCAL(name) Q_JOIN(Q_JOIN(ukf_q_, U_TAG), Q_JOIN(_, name))
 #define Q_SCRATCH(name) Q_JOIN(Q_JOIN(ukf_work_, U_TAG), Q_JOIN(_, name))
-#define Q_LINEAR(name) Q_JOIN(Q_JOIN(linears_, name), Q_JOIN(_, U_FLOAT_TAG))
+#define Q_CHOLESKY Q_JOIN(ukf_cholesky_, U_FLOAT_TAG)
+#define Q_WEIGHTS_VALID Q_JOIN(ukf_weights_valid_, U_FLOAT_TAG)
 #define Q_TRY(expression) do { status = (expression); if (status != LINEARS_OK) return status; } while (0)
 
 #if U_BITS == 15
@@ -86,18 +88,18 @@ static void Q_LOCAL(columns)(const linears_matrix_t *points, U_WORK first_weight
         maximum[j] = error[j] = (U_WORK)0;
         valid[j] = (U_WORK)1;
         for (i = 0; i < count; ++i) {
-            U_WORK value = values[i * k + j], magnitude = U_ABS(value);
-            if (magnitude > maximum[j]) maximum[j] = magnitude;
+            U_WORK value = values[i * k + j];
+            if (Q_JOIN(ukf_abs_greater_, U_FLOAT_TAG)(value, maximum[j])) maximum[j] = U_ABS(value);
             if (!U_IN_UNIT(value)) {
                 valid[j] = (U_WORK)0;
                 raw[i * k + j] = 0;
             } else {
                 U_WORK difference;
                 Q_JOIN(ukf_store_, U_TAG)(&value, 1, raw + i * k + j);
-                difference = U_ABS(value - Q_JOIN(ukf_widen_value_, U_TAG)(raw[i * k + j]));
+                difference = Q_JOIN(ukf_quantization_error_, U_TAG)(value, raw[i * k + j]);
                 /* A nonzero sub-LSB deviation must not collapse a positive
                  * working covariance needed by the next UPF solve. */
-                if (value != (U_WORK)0 && raw[i * k + j] == 0) valid[j] = (U_WORK)0;
+                if (raw[i * k + j] == 0 && value != (U_WORK)0) valid[j] = (U_WORK)0;
                 error[j] += U_ABS(i == 0 ? first_weight : other_weight) * difference;
             }
         }
@@ -160,12 +162,12 @@ static linears_status_t Q_LOCAL(mean)(const linears_matrix_t *points, const U_WE
                 if (!U_IN_UNIT(delta)) valid = 0;
                 else {
                     Q_JOIN(ukf_store_, U_TAG)(&delta, 1, raw + i * k + j);
-                    if (delta != (U_WORK)0 && raw[i * k + j] == 0) valid = 0;
+                    if (raw[i * k + j] == 0 && delta != (U_WORK)0) valid = 0;
                     if (bounded_error) {
                         if (raw[i * k + j] == Q_SIGNAL_MAX) has_maximum = 1;
                     } else {
                         error += U_ABS(weights->other) *
-                                 U_ABS(delta - Q_JOIN(ukf_widen_value_, U_TAG)(raw[i * k + j]));
+                                 Q_JOIN(ukf_quantization_error_, U_TAG)(delta, raw[i * k + j]);
                     }
                 }
             }
@@ -176,7 +178,7 @@ static linears_status_t Q_LOCAL(mean)(const linears_matrix_t *points, const U_WE
                 for (i = 1; i < count; ++i) {
                     U_WORK delta = values[i * k + j] - values[j];
                     error += U_ABS(weights->other) *
-                             U_ABS(delta - Q_JOIN(ukf_widen_value_, U_TAG)(raw[i * k + j]));
+                             Q_JOIN(ukf_quantization_error_, U_TAG)(delta, raw[i * k + j]);
                 }
             }
             if (valid && error <= U_LSB * (U_WORK)0.5) {
@@ -245,17 +247,8 @@ static linears_status_t Q_LOCAL(covariance)(const linears_matrix_t *deviations, 
     return LINEARS_OK;
 }
 
-static linears_status_t Q_LOCAL(weights)(const U_WEIGHTS *weights)
-{
-    if (weights == NULL) return LINEARS_ERROR_ARGUMENT;
-    if (!U_ISFINITE(weights->scale) || !U_ISFINITE(weights->mean0) ||
-        !U_ISFINITE(weights->covariance0) || !U_ISFINITE(weights->other)) return LINEARS_ERROR_RANGE;
-    return weights->scale > (U_WORK)0 ? LINEARS_OK : LINEARS_ERROR_DOMAIN;
-}
-
 static linears_status_t Q_LOCAL(factor)(const linears_matrix_t *covariance, U_WORK scale,
-                                        linears_matrix_t *scaled, linears_matrix_t *factor,
-                                        U_WORKSPACE workspace)
+                                        linears_matrix_t *scaled, linears_matrix_t *factor)
 {
     size_t i, count = covariance->rows * covariance->cols;
     const U_WORK *values = (const U_WORK *)covariance->data;
@@ -264,7 +257,8 @@ static linears_status_t Q_LOCAL(factor)(const linears_matrix_t *covariance, U_WO
         target[i] = scale * values[i];
         if (!U_ISFINITE(target[i])) return LINEARS_ERROR_RANGE;
     }
-    return Q_LINEAR(cholesky)(scaled, factor, workspace.decomposition);
+    /* Exact symmetry of the scaled input follows from the validated input. */
+    return Q_CHOLESKY(target, covariance->rows, (U_WORK *)factor->data);
 }
 
 static linears_status_t Q_LOCAL(propagate)(const linears_matrix_t *mean, const linears_matrix_t *factor,
@@ -288,6 +282,33 @@ static linears_status_t Q_LOCAL(propagate)(const linears_matrix_t *mean, const l
     return LINEARS_OK;
 }
 
+linears_status_t Q_CORE(predict_core)(const linears_matrix_t *mean, const linears_matrix_t *covariance,
+                                      const linears_matrix_t *process_noise, const U_WEIGHTS *weights,
+                                      U_FN transition, void *transition_context,
+                                      U_RESIDUAL_FN residual, void *residual_context,
+                                      linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
+                                      U_WORKSPACE workspace)
+{
+    linears_status_t status;
+    linears_matrix_t scaled, factor, samples;
+    U_WORK *cursor, *row, *temporary, *metadata;
+    size_t n = mean->rows, s = FILTERS_UKF_SIGMA_COUNT(n);
+    cursor = workspace.data;
+    scaled = Q_SCRATCH(take)(&cursor, n, n);
+    factor = Q_SCRATCH(take)(&cursor, n, n);
+    samples = Q_SCRATCH(take)(&cursor, s, n);
+    row = cursor; cursor += n;
+    temporary = cursor; cursor += n;
+    metadata = cursor;
+    Q_TRY(Q_LOCAL(factor)(covariance, weights->scale, &scaled, &factor));
+    Q_TRY(Q_LOCAL(propagate)(mean, &factor, transition, transition_context, &samples, row));
+    Q_TRY(Q_LOCAL(mean)(&samples, weights, residual, residual_context, out_mean,
+                         workspace.signal, temporary));
+    Q_TRY(Q_LOCAL(deviations)(&samples, out_mean, residual, residual_context, temporary));
+    Q_LOCAL(columns)(&samples, weights->covariance0, weights->other, workspace.signal, metadata);
+    return Q_LOCAL(covariance)(&samples, workspace.signal, metadata, weights, process_noise, out_covariance);
+}
+
 linears_status_t Q_API(predict_work)(const linears_matrix_t *mean, const linears_matrix_t *covariance,
                                      const linears_matrix_t *process_noise, const U_WEIGHTS *weights,
                                      U_FN transition, void *transition_context,
@@ -297,11 +318,9 @@ linears_status_t Q_API(predict_work)(const linears_matrix_t *mean, const linears
 {
     linears_status_t status;
     ukf_spans_t spans;
-    linears_matrix_t scaled, factor, samples;
-    U_WORK *cursor, *row, *temporary, *metadata;
-    size_t n, s;
+    size_t n;
     if (transition == NULL) return LINEARS_ERROR_ARGUMENT;
-    Q_TRY(Q_LOCAL(weights)(weights));
+    Q_TRY(Q_WEIGHTS_VALID(weights));
     spans.count = 0;
     Q_TRY(ukf_matrix(&spans, mean, 0, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
     n = mean->rows;
@@ -314,22 +333,8 @@ linears_status_t Q_API(predict_work)(const linears_matrix_t *mean, const linears
     Q_TRY(U_FINITE(mean)); Q_TRY(U_FINITE(covariance)); Q_TRY(U_FINITE(process_noise));
     Q_TRY(Q_JOIN(ukf_symmetric_, U_FLOAT_TAG)(covariance, 1));
     Q_TRY(Q_JOIN(ukf_symmetric_, U_FLOAT_TAG)(process_noise, 1));
-    workspace.decomposition.capacity = FILTERS_UKF_Q_PREDICT_DECOMP_STORAGE(n);
-    s = FILTERS_UKF_SIGMA_COUNT(n);
-    cursor = workspace.data;
-    scaled = Q_SCRATCH(take)(&cursor, n, n);
-    factor = Q_SCRATCH(take)(&cursor, n, n);
-    samples = Q_SCRATCH(take)(&cursor, s, n);
-    row = cursor; cursor += n;
-    temporary = cursor; cursor += n;
-    metadata = cursor;
-    Q_TRY(Q_LOCAL(factor)(covariance, weights->scale, &scaled, &factor, workspace));
-    Q_TRY(Q_LOCAL(propagate)(mean, &factor, transition, transition_context, &samples, row));
-    Q_TRY(Q_LOCAL(mean)(&samples, weights, residual, residual_context, out_mean,
-                         workspace.signal, temporary));
-    Q_TRY(Q_LOCAL(deviations)(&samples, out_mean, residual, residual_context, temporary));
-    Q_LOCAL(columns)(&samples, weights->covariance0, weights->other, workspace.signal, metadata);
-    return Q_LOCAL(covariance)(&samples, workspace.signal, metadata, weights, process_noise, out_covariance);
+    return Q_CORE(predict_core)(mean, covariance, process_noise, weights, transition, transition_context,
+                                residual, residual_context, out_mean, out_covariance, workspace);
 }
 
 /* Cache the untransposed factor in Q. Each row represents the paired state
@@ -342,15 +347,15 @@ static void Q_LOCAL(factor_signals)(const linears_matrix_t *factor, U_WORK other
     for (r = 0; r < n; ++r) {
         U_WORK maximum = 0, error = 0, valid = 1;
         for (j = 0; j <= r; ++j) {
-            U_WORK value = values[r * n + j], magnitude = U_ABS(value);
-            if (magnitude > maximum) maximum = magnitude;
+            U_WORK value = values[r * n + j];
+            if (Q_JOIN(ukf_abs_greater_, U_FLOAT_TAG)(value, maximum)) maximum = U_ABS(value);
             if (!U_IN_UNIT(value)) {
                 valid = 0;
                 raw[r * n + j] = 0;
             } else {
                 Q_JOIN(ukf_store_, U_TAG)(&value, 1, raw + r * n + j);
-                if (value != (U_WORK)0 && raw[r * n + j] == 0) valid = 0;
-                error += U_ABS(value - Q_JOIN(ukf_widen_value_, U_TAG)(raw[r * n + j]));
+                if (raw[r * n + j] == 0 && value != (U_WORK)0) valid = 0;
+                error += Q_JOIN(ukf_quantization_error_, U_TAG)(value, raw[r * n + j]);
             }
         }
         /* Cholesky writes exact zeros above the diagonal. */
@@ -410,43 +415,22 @@ static linears_status_t Q_LOCAL(gain_row)(const linears_matrix_t *factor, const 
     return LINEARS_OK;
 }
 
-linears_status_t Q_API(update_work)(const linears_matrix_t *mean, const linears_matrix_t *covariance,
-                                    const linears_matrix_t *measurement_noise,
-                                    const linears_matrix_t *measurement, const U_WEIGHTS *weights,
-                                    U_FN observation, void *observation_context,
-                                    U_RESIDUAL_FN residual, void *residual_context,
-                                    linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
-                                    U_WORKSPACE workspace)
+linears_status_t Q_CORE(update_core)(const linears_matrix_t *mean, const linears_matrix_t *covariance,
+                                     const linears_matrix_t *measurement_noise,
+                                     const linears_matrix_t *measurement, const U_WEIGHTS *weights,
+                                     U_FN observation, void *observation_context,
+                                     U_RESIDUAL_FN residual, void *residual_context,
+                                     linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
+                                     U_WORKSPACE workspace)
 {
     linears_status_t status;
-    ukf_spans_t spans;
     linears_matrix_t scaled, factor, samples, cross, zbar, innovation, s_matrix;
     U_WORK *cursor, *row, *temporary, *gain, *factor_metadata, *metadata;
     U_SIGNAL *raw_factor, *raw_deviations;
     const U_WORK *x, *p;
     U_WORK *xout, *pout;
-    size_t n, m, s, k, i, j, r;
-    if (observation == NULL) return LINEARS_ERROR_ARGUMENT;
-    Q_TRY(Q_LOCAL(weights)(weights));
-    spans.count = 0;
-    Q_TRY(ukf_matrix(&spans, mean, 0, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    n = mean->rows;
-    Q_TRY(ukf_matrix(&spans, covariance, n, n, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    Q_TRY(ukf_matrix(&spans, measurement_noise, 0, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    m = measurement_noise->rows;
-    if (measurement_noise->cols != m) return LINEARS_ERROR_DIMENSION;
-    Q_TRY(ukf_matrix(&spans, measurement, m, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
-    Q_TRY(ukf_matrix(&spans, out_mean, n, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
-    Q_TRY(ukf_matrix(&spans, out_covariance, n, n, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
-    Q_TRY(Q_SCRATCH(workspace)(&spans, workspace, FILTERS_UKF_Q_UPDATE_WORK_STORAGE(n, m), 0,
-                               FILTERS_UKF_Q_UPDATE_DECOMP_STORAGE(n, m), FILTERS_UKF_Q_UPDATE_SIGNAL_STORAGE(n, m)));
-    Q_TRY(U_FINITE(mean)); Q_TRY(U_FINITE(covariance));
-    Q_TRY(U_FINITE(measurement_noise)); Q_TRY(U_FINITE(measurement));
-    Q_TRY(Q_JOIN(ukf_symmetric_, U_FLOAT_TAG)(covariance, 1));
-    Q_TRY(Q_JOIN(ukf_symmetric_, U_FLOAT_TAG)(measurement_noise, 0));
-    workspace.decomposition.capacity = FILTERS_UKF_Q_UPDATE_DECOMP_STORAGE(n, m);
-    s = FILTERS_UKF_SIGMA_COUNT(n);
-    k = FILTERS_KALMAN_MAX_SIZE(n, m);
+    size_t n = mean->rows, m = measurement_noise->rows, s = FILTERS_UKF_SIGMA_COUNT(n);
+    size_t k = FILTERS_KALMAN_MAX_SIZE(n, m), i, j, r;
     cursor = workspace.data;
     scaled = Q_SCRATCH(take)(&cursor, k, k);
     factor = Q_SCRATCH(take)(&cursor, k, k);
@@ -461,10 +445,8 @@ linears_status_t Q_API(update_work)(const linears_matrix_t *mean, const linears_
     metadata = cursor;
     raw_factor = workspace.signal;
     raw_deviations = workspace.signal + n * n;
-    factor.rows = factor.cols = m;
-    Q_TRY(Q_LINEAR(cholesky)(measurement_noise, &factor, workspace.decomposition));
     scaled.rows = scaled.cols = factor.rows = factor.cols = n;
-    Q_TRY(Q_LOCAL(factor)(covariance, weights->scale, &scaled, &factor, workspace));
+    Q_TRY(Q_LOCAL(factor)(covariance, weights->scale, &scaled, &factor));
     Q_TRY(Q_LOCAL(propagate)(mean, &factor, observation, observation_context, &samples, row));
     Q_TRY(Q_LOCAL(mean)(&samples, weights, residual, residual_context, &zbar, raw_deviations, temporary));
     Q_TRY(Q_LOCAL(deviations)(&samples, &zbar, residual, residual_context, temporary));
@@ -476,7 +458,7 @@ linears_status_t Q_API(update_work)(const linears_matrix_t *mean, const linears_
     s_matrix.rows = s_matrix.cols = m;
     Q_TRY(Q_LOCAL(covariance)(&samples, raw_deviations, metadata, weights, measurement_noise, &s_matrix));
     factor.rows = factor.cols = m;
-    Q_TRY(Q_LINEAR(cholesky)(&s_matrix, &factor, workspace.decomposition));
+    Q_TRY(Q_CHOLESKY((const U_WORK *)s_matrix.data, m, (U_WORK *)factor.data));
     if (residual != NULL) Q_TRY(residual(measurement, &zbar, &innovation, residual_context));
     else for (j = 0; j < m; ++j)
         ((U_WORK *)innovation.data)[j] = ((const U_WORK *)measurement->data)[j] - ((const U_WORK *)zbar.data)[j];
@@ -506,12 +488,52 @@ linears_status_t Q_API(update_work)(const linears_matrix_t *mean, const linears_
     return LINEARS_OK;
 }
 
+linears_status_t Q_API(update_work)(const linears_matrix_t *mean, const linears_matrix_t *covariance,
+                                    const linears_matrix_t *measurement_noise,
+                                    const linears_matrix_t *measurement, const U_WEIGHTS *weights,
+                                    U_FN observation, void *observation_context,
+                                    U_RESIDUAL_FN residual, void *residual_context,
+                                    linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
+                                    U_WORKSPACE workspace)
+{
+    linears_status_t status;
+    ukf_spans_t spans;
+    size_t n, m, k;
+    if (observation == NULL) return LINEARS_ERROR_ARGUMENT;
+    Q_TRY(Q_WEIGHTS_VALID(weights));
+    spans.count = 0;
+    Q_TRY(ukf_matrix(&spans, mean, 0, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    n = mean->rows;
+    Q_TRY(ukf_matrix(&spans, covariance, n, n, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    Q_TRY(ukf_matrix(&spans, measurement_noise, 0, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    m = measurement_noise->rows;
+    if (measurement_noise->cols != m) return LINEARS_ERROR_DIMENSION;
+    Q_TRY(ukf_matrix(&spans, measurement, m, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
+    Q_TRY(ukf_matrix(&spans, out_mean, n, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
+    Q_TRY(ukf_matrix(&spans, out_covariance, n, n, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
+    Q_TRY(Q_SCRATCH(workspace)(&spans, workspace, FILTERS_UKF_Q_UPDATE_WORK_STORAGE(n, m), 0,
+                               FILTERS_UKF_Q_UPDATE_DECOMP_STORAGE(n, m), FILTERS_UKF_Q_UPDATE_SIGNAL_STORAGE(n, m)));
+    Q_TRY(U_FINITE(mean)); Q_TRY(U_FINITE(covariance));
+    Q_TRY(U_FINITE(measurement_noise)); Q_TRY(U_FINITE(measurement));
+    Q_TRY(Q_JOIN(ukf_symmetric_, U_FLOAT_TAG)(covariance, 1));
+    Q_TRY(Q_JOIN(ukf_symmetric_, U_FLOAT_TAG)(measurement_noise, 0));
+    /* Validate R itself before any callback: S can be SPD when R is not. The
+     * factor lands in the core's second k-by-k block and is overwritten. */
+    k = FILTERS_KALMAN_MAX_SIZE(n, m);
+    Q_TRY(Q_CHOLESKY((const U_WORK *)measurement_noise->data, m, workspace.data + k * k));
+    return Q_CORE(update_core)(mean, covariance, measurement_noise, measurement, weights, observation,
+                               observation_context, residual, residual_context, out_mean, out_covariance,
+                               workspace);
+}
+
 #undef Q_ACCUM_ZERO
 #undef Q_SIGNAL_MAX
 #undef Q_TRY
-#undef Q_LINEAR
+#undef Q_WEIGHTS_VALID
+#undef Q_CHOLESKY
 #undef Q_SCRATCH
 #undef Q_LOCAL
+#undef Q_CORE
 #undef Q_API
 #undef Q_JOIN
 #undef Q_JOIN_INNER

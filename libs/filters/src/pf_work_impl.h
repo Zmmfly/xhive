@@ -90,6 +90,39 @@ linears_status_t U_API(perturb)(const linears_matrix_t *points, const linears_ma
     return LINEARS_OK;
 }
 
+/* A successful Cholesky has an exact-zero upper triangle and positive
+ * diagonal. Test the remaining entries once for all density rows. */
+static int U_LOCAL(diagonal_factor)(const U_WORK *lower, size_t k)
+{
+    size_t i, j;
+    for (i = 1; i < k; ++i)
+        for (j = 0; j < i; ++j)
+            if (lower[i * k + j] != (U_WORK)0) return 0;
+    return 1;
+}
+
+/* Trusted state-layer density for a diagonal Cholesky factor and finite
+ * deviation. The quotient and squared-norm order match the general solve.
+ * Do not extend this shortcut to non-diagonal factors: forward substitution
+ * changed accepted f32 accuracy in broad-exponent cancellation cases, even
+ * when it returned OK. Those factors keep the original pivoted LU. */
+static linears_status_t U_LOCAL(gaussian_diagonal)(const U_WORK *deviation, const U_WORK *lower, size_t k,
+                                                   U_WORK *solve, U_WORK *out)
+{
+    U_WORK sum = (U_WORK)0;
+    size_t i;
+    for (i = 0; i < k; ++i) {
+        solve[i] = deviation[i] / lower[i * k + i];
+        if (!U_ISFINITE(solve[i])) return LINEARS_ERROR_RANGE;
+    }
+    for (i = 0; i < k; ++i) {
+        sum += solve[i] * solve[i];
+        if (!U_ISFINITE(sum)) return LINEARS_ERROR_RANGE;
+    }
+    *out = (U_WORK)0.5 * sum + (U_WORK)0 * sum;
+    return LINEARS_OK;
+}
+
 linears_status_t U_API(gaussian_exponent)(const linears_matrix_t *deviations, const linears_matrix_t *factor,
                                           linears_matrix_t *out, U_WORKSPACE workspace)
 {

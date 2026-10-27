@@ -111,10 +111,42 @@ static inline D_SCALAR D_LOCAL(constant)(int64_t value, linears_status_t *status
 }
 #define D_CMP(a, b) linears_fixed_compare((a), (b))
 #else
+/**
+ * @brief Classify native values without soft-float comparisons on known IEEE layouts.
+ *
+ * @param[in] value Any native value, including NaNs and infinities.
+ * @return Nonzero for finite values, including subnormals and signed zeros.
+ * @note Unknown encodings retain the native classification operation.
+ */
+static inline int D_LOCAL(isfinite)(D_SCALAR value)
+{
+#if D_FORMAT == 1 && defined(__GNUC__) && defined(__BYTE_ORDER__) && \
+    defined(__FLOAT_WORD_ORDER__) && __BYTE_ORDER__ == __FLOAT_WORD_ORDER__ && \
+    CHAR_BIT == 8 && defined(__SIZEOF_FLOAT__) && __SIZEOF_FLOAT__ == 4 && \
+    FLT_RADIX == 2 && FLT_MANT_DIG == 24 && FLT_MIN_EXP == -125 && FLT_MAX_EXP == 128 && \
+    ((defined(__FLT_IS_IEC_60559__) && __FLT_IS_IEC_60559__ > 0) || \
+     (defined(__STDC_IEC_559__) && __STDC_IEC_559__))
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    return (bits & UINT32_C(0x7f800000)) != UINT32_C(0x7f800000);
+#elif D_FORMAT == 2 && defined(__GNUC__) && defined(__BYTE_ORDER__) && \
+    defined(__FLOAT_WORD_ORDER__) && __BYTE_ORDER__ == __FLOAT_WORD_ORDER__ && \
+    CHAR_BIT == 8 && defined(__SIZEOF_DOUBLE__) && __SIZEOF_DOUBLE__ == 8 && \
+    FLT_RADIX == 2 && DBL_MANT_DIG == 53 && DBL_MIN_EXP == -1021 && DBL_MAX_EXP == 1024 && \
+    ((defined(__DBL_IS_IEC_60559__) && __DBL_IS_IEC_60559__ > 0) || \
+     (defined(__STDC_IEC_559__) && __STDC_IEC_559__))
+    uint64_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    return (bits & UINT64_C(0x7ff0000000000000)) != UINT64_C(0x7ff0000000000000);
+#else
+    return isfinite(value);
+#endif
+}
+
 /** @brief Reject nonfinite native arithmetic and retain the first failure. */
 static inline D_SCALAR D_LOCAL(finite)(D_SCALAR value, linears_status_t *status)
 {
-    if (!isfinite(value) && *status == LINEARS_OK) *status = LINEARS_ERROR_RANGE;
+    if (!D_LOCAL(isfinite)(value) && *status == LINEARS_OK) *status = LINEARS_ERROR_RANGE;
     return value;
 }
 /** @brief Native binary operation; no widening of the selected floating type. */
@@ -290,7 +322,7 @@ static inline linears_status_t D_LOCAL(output_bounds)(D_SCALAR minimum, D_SCALAR
     if (minimum < -LINEARS_FIXED_ONE || maximum > LINEARS_FIXED_ONE)
         return LINEARS_ERROR_RANGE;
 #else
-    if (!isfinite(minimum) || !isfinite(maximum)) return LINEARS_ERROR_RANGE;
+    if (!D_LOCAL(isfinite)(minimum) || !D_LOCAL(isfinite)(maximum)) return LINEARS_ERROR_RANGE;
 #endif
     return LINEARS_OK;
 }

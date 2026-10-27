@@ -143,14 +143,25 @@ together with the floating UKF kernels:
 | `resample_indices(w, u, idx, cap)` | systematic resampling indices from one uniform draw |
 | `gather(points, idx, count, out)` | `out_i = points[idx[i]]` |
 
+The public `gaussian_exponent` continues to accept general nonsingular dense
+factors. Floating PF/UPF state calls use a private shortcut only when the
+validated Cholesky factor is exactly diagonal: divide each residual by its
+diagonal, then retain the original squared-norm reduction order. Other
+factors keep the pivoted solve. An unrestricted triangular replacement was
+rejected because broad-exponent cancellation cases lost accepted f32
+accuracy even when they returned `OK`; a `RANGE`-only retry did not catch
+those cases. The diagonal test is performed once per shared noise factor,
+not once per particle.
+
 `filters_ukf_f32/f64_*` propagation and statistics supply the remaining
 floating steps. Q PF/UPF use dedicated integer weight, resampling, ESS and
 moment paths rather than widening the complete cloud into those kernels.
-The Q UPF calls `filters_ukf_q15/q31_predict_work` and `update_work`: their
-small float/double matrices preserve a temporary prior that may exceed
-`[-1,+1]`, while the statistics inside are Q integer operations. A prior
-outside the persistent signal range is not itself a commit failure; the
-new particle and posterior covariance must fit when the step commits.
+The Q UPF uses the private cores of `filters_ukf_q15/q31_predict_work` and
+`update_work`: their small float/double matrices preserve a temporary prior
+that may exceed `[-1,+1]`, while the statistics inside are Q integer
+operations. A prior outside the persistent signal range is not itself a
+commit failure; the new particle and posterior covariance must fit when the
+step commits.
 
 ## Fixed-fraction Q contract
 
@@ -205,10 +216,12 @@ complete floating PF kernel:
   forms the float/double result. Systematic resampling uses integer
   cumulative masses and an exact representation of the supplied binary
   uniform draw; it does not allocate a floating weight vector.
-- Mean/covariance loops accumulate raw weighted moments. The `basic` array
-  holds their two-word integer accumulators, not a widened particle cloud.
-  A caller residual outside the signal interval contributes through a local
-  float/double term rather than being clipped.
+- Mean/covariance loops accumulate raw weighted moments. Without a residual
+  callback, each two-word sum stays local across its particle loop and is
+  written to `basic` once, not loaded/stored for every contribution. The
+  accumulator width and particle order are unchanged; no widened particle
+  cloud is retained. A caller residual outside the signal interval contributes
+  through a local float/double term rather than being clipped.
 - Gaussian operations keep Cholesky and scalar divisions in float/double.
   Their mixed dot products use Q integer MACs for bounded operands and
   local floating products for operands needing more range, including
@@ -216,9 +229,17 @@ complete floating PF kernel:
   of running a pivoted LU for each particle.
 
 [`upf_q_filter_impl.h`](src/upf_q_filter_impl.h) combines those helpers with
-the dedicated Q UKF work entries. It retains only one particle's extended
+the dedicated Q UKF cores. It retains only one particle's extended
 prior/posterior in floating scratch and stages the complete new particle
 and covariance sets raw.
+
+Both floating and Q UPF steps validate their shared noise matrices, sigma
+weights and workspace at the step boundary, then use private checked UKF
+cores for each proposal. Each persistent particle covariance is still
+validated before its callbacks; callback outputs and intermediate arithmetic
+retain their range checks. `R` is factored once per step, not again inside
+every proposal update. Each distinct particle, innovation and posterior
+covariance still requires its own positive-definiteness check.
 
 ### Computation changes
 

@@ -121,8 +121,12 @@ filters can reuse them with their own point sets and weights. The `f32` and
 `weighted_covariance` with `a == b` is a covariance; with two deviation sets
 it is a cross covariance; noise is added by the caller. Weights are an
 s-by-1 working vector of any sign; the residual form of `mean` assumes they
-sum to one. The floating `predict_work` and `update_work` compose those
-kernels and the `linears` matrix operations.
+sum to one. The floating `predict_work` and `update_work` share private
+arithmetic cores with those kernels. Public entries validate shapes, aliasing
+and capacities before calling the cores; small matrix operations use direct
+loops rather than repeatedly registering the same scratch views. Cholesky
+uses a private factor routine with the same multiply/subtract order as
+`linears`; the floating gain still uses its pivoted `solve`.
 
 The Q `predict_work` and `update_work` entries are distinct mixed-format
 kernels: their small input/output matrices are float for q15 or double for
@@ -202,6 +206,10 @@ host timing result:
 - The update reuses the Cholesky factor of `S` for gain-row triangular
   solves, rather than factoring `S` again with LU or storing a full
   transposed gain matrix.
+- On verified IEEE layouts, finite magnitude comparisons and the exact
+  error between a working value and its quantized Q value use integer bit
+  operations. The weighted error sum and the decision budget are unchanged;
+  other layouts retain the native floating expressions.
 
 These reduce repeated arithmetic and memory passes; they do not establish
 that an integer operation is faster than an FPU operation on a given MCU.
@@ -220,6 +228,12 @@ The Q workspace fields are:
 - `decomposition`: a float/double `linears` decomposition workspace.
 - `signal` and `signal_capacity`: raw `int16_t`/`int32_t` staging and its
   element count.
+
+The current Q UKF kernels factor into `data` and do not write the
+`decomposition` array. Its public capacity and aliasing requirements are
+still validated: callers must continue supplying the macro-sized buffer.
+Other users of the same workspace type, including PF initialization, still
+use it for decomposition.
 
 Existing `*_Q_*_STORAGE` macros size `data`; the separate
 `*_Q_*_SIGNAL_STORAGE` macros size `signal`. Recompute both capacities for

@@ -220,13 +220,13 @@ static void P_LOCAL(clear_accumulators)(linears_workspace_unit_t *storage, U_WOR
  * q31 rounds the product once to 31 fractional bits BEFORE weighting. The
  * weighted average error is <= half an output LSB, independent of N.
  * q15 retains the full 30-bit product and therefore loses no product bits. */
-static void P_LOCAL(covariance_add)(linears_workspace_unit_t *accumulator, int64_t a, int64_t b, U_SIGNAL weight)
+static uint64_t P_LOCAL(covariance_product)(int64_t a, int64_t b, U_SIGNAL weight)
 {
     uint64_t product = pf_q_magnitude(a) * pf_q_magnitude(b);
 #if U_BITS == 31
     product = (product + UINT64_C(1073741824)) >> 31;
 #endif
-    pf_q_acc_add(accumulator, product * (uint64_t)weight, (a < 0) != (b < 0));
+    return product * (uint64_t)weight;
 }
 
 linears_status_t P_API(estimate)(const U_STATE *state, U_RESIDUAL_FN residual, void *residual_context,
@@ -257,19 +257,31 @@ linears_status_t P_API(estimate)(const U_STATE *state, U_RESIDUAL_FN residual, v
     reference.data = center; reference.rows = n; reference.cols = 1;
     difference.data = delta; difference.rows = n; difference.cols = 1;
     P_LOCAL(clear_accumulators)(workspace.basic, extended, n);
-    if (residual != NULL) P_WIDEN(particles, n, center);
-    for (i = 0; i < count; ++i) {
-        if (residual != NULL) {
+    if (residual == NULL) {
+        /* One exact wide sum stays local across its particle loop. Each
+         * element retains the original particle order, without loading and
+         * storing both workspace limbs for every contribution. */
+        for (j = 0; j < n; ++j) {
+            pf_q_i128_t sum = {0, 0};
+            for (i = 0; i < count; ++i) {
+                int64_t value = particles[i * n + j];
+                pf_q_iadd(&sum, pf_q_magnitude(value) * (uint64_t)weights[i], value < 0);
+            }
+            pf_q_acc_write(workspace.basic + 2 * j, sum);
+        }
+    } else {
+        P_WIDEN(particles, n, center);
+        for (i = 0; i < count; ++i) {
             P_WIDEN(particles + i * n, n, row);
             P_TRY(residual(&input, &reference, &difference, residual_context));
             P_TRY(P_FINITE(&difference));
-        }
-        for (j = 0; j < n; ++j) {
-            if (residual == NULL || P_IN_UNIT(delta[j])) {
-                int64_t value = residual == NULL ? particles[i * n + j] : P_LOCAL(raw)(delta[j]);
-                pf_q_acc_add(workspace.basic + 2 * j, pf_q_magnitude(value) * (uint64_t)weights[i], value < 0);
-            } else {
-                extended[j] += ((U_WORK)weights[i] / denominator) * delta[j];
+            for (j = 0; j < n; ++j) {
+                if (P_IN_UNIT(delta[j])) {
+                    int64_t value = P_LOCAL(raw)(delta[j]);
+                    pf_q_acc_add(workspace.basic + 2 * j, pf_q_magnitude(value) * (uint64_t)weights[i], value < 0);
+                } else {
+                    extended[j] += ((U_WORK)weights[i] / denominator) * delta[j];
+                }
             }
         }
     }
@@ -280,8 +292,22 @@ linears_status_t P_API(estimate)(const U_STATE *state, U_RESIDUAL_FN residual, v
     P_TRY(P_FITS(center, n));
     P_STORE(center, n, mean_stage);
     P_LOCAL(clear_accumulators)(workspace.basic, extended, n * n);
-    for (i = 0; i < count; ++i) {
-        if (residual != NULL) {
+    if (residual == NULL) {
+        for (j = 0; j < n; ++j) {
+            for (k = 0; k <= j; ++k) {
+                pf_q_i128_t sum = {0, 0};
+                for (i = 0; i < count; ++i) {
+                    int64_t a = (int64_t)particles[i * n + j] - mean_stage[j];
+                    int64_t b = (int64_t)particles[i * n + k] - mean_stage[k];
+                    pf_q_iadd(&sum, P_LOCAL(covariance_product)(a, b, weights[i]), (a < 0) != (b < 0));
+                }
+                pf_q_acc_write(workspace.basic + 2 * (j * n + k), sum);
+            }
+        }
+    } else {
+        /* Callback order is observable: residuals retain their row-major
+         * path and extended-range accumulation exactly as before. */
+        for (i = 0; i < count; ++i) {
             P_WIDEN(particles + i * n, n, row);
             P_TRY(residual(&input, &reference, &difference, residual_context));
             P_TRY(P_FINITE(&difference));
@@ -290,21 +316,18 @@ linears_status_t P_API(estimate)(const U_STATE *state, U_RESIDUAL_FN residual, v
                     int64_t value = P_LOCAL(raw)(delta[j]);
                     raw_row[j] = (U_SIGNAL)(value > U_SIGNAL_MAX ? U_SIGNAL_MAX : value);
                 }
-        }
-        for (j = 0; j < n; ++j) {
-            for (k = 0; k <= j; ++k) {
-                size_t element = j * n + k;
-                if (residual == NULL) {
-                    int64_t a = (int64_t)particles[i * n + j] - mean_stage[j];
-                    int64_t b = (int64_t)particles[i * n + k] - mean_stage[k];
-                    P_LOCAL(covariance_add)(workspace.basic + 2 * element, a, b, weights[i]);
-                } else if (P_IN_UNIT(delta[j]) && P_IN_UNIT(delta[k])) {
-                    U_WORK positive_cell = ((U_WORK)U_SIGNAL_MAX + (U_WORK)0.5) / (U_WORK)U_SCALE;
-                    int64_t a = delta[j] >= positive_cell ? (int64_t)U_SCALE : raw_row[j];
-                    int64_t b = delta[k] >= positive_cell ? (int64_t)U_SCALE : raw_row[k];
-                    P_LOCAL(covariance_add)(workspace.basic + 2 * element, a, b, weights[i]);
-                } else {
-                    extended[element] += ((U_WORK)weights[i] / denominator) * delta[j] * delta[k];
+            for (j = 0; j < n; ++j) {
+                for (k = 0; k <= j; ++k) {
+                    size_t element = j * n + k;
+                    if (P_IN_UNIT(delta[j]) && P_IN_UNIT(delta[k])) {
+                        U_WORK positive_cell = ((U_WORK)U_SIGNAL_MAX + (U_WORK)0.5) / (U_WORK)U_SCALE;
+                        int64_t a = delta[j] >= positive_cell ? (int64_t)U_SCALE : raw_row[j];
+                        int64_t b = delta[k] >= positive_cell ? (int64_t)U_SCALE : raw_row[k];
+                        pf_q_acc_add(workspace.basic + 2 * element,
+                                     P_LOCAL(covariance_product)(a, b, weights[i]), (a < 0) != (b < 0));
+                    } else {
+                        extended[element] += ((U_WORK)weights[i] / denominator) * delta[j] * delta[k];
+                    }
                 }
             }
         }

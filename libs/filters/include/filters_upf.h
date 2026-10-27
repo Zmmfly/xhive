@@ -170,8 +170,8 @@ typedef struct {
 /**
  * @brief Decomposition elements for a UPF step: max(n*n + n, m*m + m*n).
  *
- * Covers the per-particle UKF kernels, the Cholesky factors of Q, R and
- * every proposal covariance, and the prior/likelihood exponent solves.
+ * Covers the floating gain solve and the prior/likelihood exponent solves.
+ * Private Cholesky factors use data; the required capacity is unchanged.
  */
 #define FILTERS_UPF_STEP_DECOMP_STORAGE(n, m) \
     FILTERS_KALMAN_MAX_SIZE(LINEARS_SIZE_ADD(LINEARS_SIZE_MUL((n), (n)), (n)), LINEARS_SOLVE_WORKSPACE((m), (n)))
@@ -184,8 +184,9 @@ typedef struct {
 /**
  * @brief Q step decomposition elements: max(n*n,m*m); SIZE_MAX on overflow.
  *
- * Allocate float for q15 and double for q31. The Gaussian density uses
- * direct triangular solves, not a second factorization of each factor.
+ * Allocate float for q15 and double for q31. The step currently factors
+ * into data and does not write this array, but still validates its capacity
+ * and disjointness. The Gaussian density uses direct triangular solves.
  */
 #define FILTERS_UPF_Q_STEP_DECOMP_STORAGE(n, m) FILTERS_UKF_Q_UPDATE_DECOMP_STORAGE((n), (m))
 

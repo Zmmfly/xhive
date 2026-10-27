@@ -16,6 +16,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /**
  * @brief Private C99 alignment carriers, never instantiated as workspace.

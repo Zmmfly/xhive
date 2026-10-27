@@ -1,4 +1,5 @@
 #include "ukf_internal.h"
+#include "ukf_private.h"
 
 U_ALIGNMENT_TYPE(filters_ukf_f32_t);
 U_ALIGNMENT_TYPE(filters_ukf_f64_t);

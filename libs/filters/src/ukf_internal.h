@@ -250,6 +250,18 @@ static inline linears_status_t ukf_finite_f64(const linears_matrix_t *matrix)
     return LINEARS_OK;
 }
 
+/* Private Cholesky factors for both working types; see ukf_cholesky_impl.h. */
+#define U_CHOL_SUFFIX f32
+#define U_CHOL_TYPE float
+#define U_CHOL_SQRT sqrtf
+#define U_CHOL_ISFINITE ukf_isfinite_f32
+#include "ukf_cholesky_impl.h"
+#define U_CHOL_SUFFIX f64
+#define U_CHOL_TYPE double
+#define U_CHOL_SQRT sqrt
+#define U_CHOL_ISFINITE ukf_isfinite_f64
+#include "ukf_cholesky_impl.h"
+
 /* Exact stored symmetry, optionally with a nonnegative diagonal, per element type. */
 #define U_SYMMETRIC_TYPE(suffix, type) \
 static inline linears_status_t ukf_symmetric_##suffix(const linears_matrix_t *matrix, int check_diagonal) \
@@ -415,6 +427,124 @@ static inline void ukf_store_##suffix(const work *values, size_t count, type *ou
 U_NARROW_TYPE(q15, int16_t, float, ukf_in_unit_f32)
 U_NARROW_TYPE(q31, int32_t, double, ukf_in_unit_f64)
 #undef U_NARROW_TYPE
+
+/**
+ * @brief Compute the absolute q15 quantization error without soft subtraction.
+ *
+ * @param[in] value Finite working value in [-1,+1].
+ * @param[in] raw Quantization of value produced by ukf_store_q15.
+ * @return float Exact magnitude of value minus the decoded raw value.
+ * @note Known IEEE layouts align the significand with raw and encode their
+ *       integer difference. Unknown layouts retain the native operation.
+ */
+static inline float ukf_quantization_error_q15(float value, int16_t raw)
+{
+#if UKF_IEEE_BINARY32
+    uint32_t bits, significand, aligned, distance, exponent, shift, top;
+    uint32_t magnitude = raw < 0 ? (uint32_t)-(int32_t)raw : (uint32_t)raw;
+    memcpy(&bits, &value, sizeof(bits));
+    bits &= UINT32_C(0x7fffffff);
+    if (raw == 0) {
+        memcpy(&value, &bits, sizeof(value));
+        return value;
+    }
+    /* Nonzero raw implies |value| >= 2^-16: shift is 8..24. The
+     * absolute aligned difference fits 24 bits and its nonzero value is
+     * normal, so normalization below needs neither rounding nor underflow. */
+    exponent = bits >> 23;
+    shift = 135 - exponent;
+    significand = (bits & UINT32_C(0x7fffff)) | UINT32_C(0x800000);
+    aligned = magnitude << shift;
+    distance = significand > aligned ? significand - aligned : aligned - significand;
+    if (distance == 0) return 0.0f;
+    top = 31 - (uint32_t)__builtin_clz(distance);
+    bits = ((exponent - 23 + top) << 23) | ((distance << (23 - top)) & UINT32_C(0x7fffff));
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+#else
+    return fabsf(value - ukf_widen_value_q15(raw));
+#endif
+}
+
+/**
+ * @brief Compute the absolute q31 quantization error without soft subtraction.
+ *
+ * @param[in] value Finite working value in [-1,+1].
+ * @param[in] raw Quantization of value produced by ukf_store_q31.
+ * @return double Exact magnitude of value minus the decoded raw value.
+ * @note The IEEE path retains all 53 significand bits; it does not quantize
+ *       the error or alter the statistical kernel's error budget.
+ */
+static inline double ukf_quantization_error_q31(double value, int32_t raw)
+{
+#if UKF_IEEE_BINARY64
+    uint64_t bits, significand, aligned, distance;
+    uint32_t exponent, shift, top, high;
+    uint32_t magnitude = raw < 0 ? UINT32_C(0) - (uint32_t)raw : (uint32_t)raw;
+    memcpy(&bits, &value, sizeof(bits));
+    bits &= UINT64_C(0x7fffffffffffffff);
+    if (raw == 0) {
+        memcpy(&value, &bits, sizeof(value));
+        return value;
+    }
+    /* Nonzero raw implies |value| >= 2^-32: shift is 21..53. The
+     * absolute aligned difference fits 53 bits and, unless zero, encodes a
+     * normal double exactly. Split CLZ avoids assumptions about long long. */
+    exponent = (uint32_t)(bits >> 52);
+    shift = 1044 - exponent;
+    significand = (bits & UINT64_C(0xfffffffffffff)) | UINT64_C(0x10000000000000);
+    aligned = (uint64_t)magnitude << shift;
+    distance = significand > aligned ? significand - aligned : aligned - significand;
+    if (distance == 0) return 0.0;
+    high = (uint32_t)(distance >> 32);
+    top = high ? 63 - (uint32_t)__builtin_clz(high) : 31 - (uint32_t)__builtin_clz((uint32_t)distance);
+    bits = ((uint64_t)(exponent - 52 + top) << 52) | ((distance << (52 - top)) & UINT64_C(0xfffffffffffff));
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+#else
+    return fabs(value - ukf_widen_value_q31(raw));
+#endif
+}
+
+/**
+ * @brief Compare finite magnitudes without soft-float comparison calls.
+ *
+ * @param[in] a Finite first operand, including signed zero or a subnormal.
+ * @param[in] b Finite second operand, including signed zero or a subnormal.
+ * @return int Nonzero exactly when abs(a) is greater than abs(b).
+ * @pre The caller has already rejected NaNs and infinities.
+ */
+static inline int ukf_abs_greater_f32(float a, float b)
+{
+#if UKF_IEEE_BINARY32
+    uint32_t av, bv;
+    memcpy(&av, &a, sizeof(av));
+    memcpy(&bv, &b, sizeof(bv));
+    return (av & UINT32_C(0x7fffffff)) > (bv & UINT32_C(0x7fffffff));
+#else
+    return fabsf(a) > fabsf(b);
+#endif
+}
+
+/**
+ * @brief Compare finite double magnitudes without soft-float comparison calls.
+ *
+ * @param[in] a Finite first operand, including signed zero or a subnormal.
+ * @param[in] b Finite second operand, including signed zero or a subnormal.
+ * @return int Nonzero exactly when abs(a) is greater than abs(b).
+ * @pre The caller has already rejected NaNs and infinities.
+ */
+static inline int ukf_abs_greater_f64(double a, double b)
+{
+#if UKF_IEEE_BINARY64
+    uint64_t av, bv;
+    memcpy(&av, &a, sizeof(av));
+    memcpy(&bv, &b, sizeof(bv));
+    return (av & UINT64_C(0x7fffffffffffffff)) > (bv & UINT64_C(0x7fffffffffffffff));
+#else
+    return fabs(a) > fabs(b);
+#endif
+}
 
 /* Gather rows in place for nondecreasing indices (systematic resampling).
  * Forward moves copy from later rows, which no earlier forward move has
