@@ -6,6 +6,9 @@
 #if !defined(BENCH_FORMAT) || BENCH_FORMAT < 0 || BENCH_FORMAT > 3
 #error "BENCH_FORMAT must be 0=f32, 1=f64, 2=q15 or 3=q31"
 #endif
+#if !defined(BENCH_FPU_ENABLED) || (BENCH_FPU_ENABLED != 0 && BENCH_FPU_ENABLED != 1)
+#error "BENCH_FPU_ENABLED must explicitly select 0=off or 1=on"
+#endif
 
 .section .isr_vector,"a",%progbits
 .balign 1024
@@ -39,7 +42,7 @@ Reset_Handler:
     cpsid i
     /* Set CPACR before any C or newlib constructor executes. */
     ldr r0, =0xe000ed88
-#if BENCH_FORMAT < 2
+#if BENCH_FPU_ENABLED
     ldr r1, =0x00f00000
 #else
     movs r1, #0

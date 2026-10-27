@@ -6,6 +6,7 @@ No J-Link, PXView client, hardware, Xmake or third-party packages are used.
 """
 import base64
 import binascii
+import json
 from pathlib import Path
 import random
 import struct
@@ -31,6 +32,7 @@ def load_script(name):
 
 RUN = load_script("run.py")
 CAPTURE = load_script("capture.py")
+BUILD = load_script("build.py")
 MAILBOX_ADDRESS = 0x20000130
 HEADER_WORDS = 12
 CASE_WORDS = 21
@@ -150,6 +152,34 @@ class MailboxTests(OfflineTestCase):
                 with self.subTest(format=format_index, cpacr=cpacr):
                     self.assertIn("CPACR does not match requested floating-point mode",
                                   RUN.validate(RUN.decode(packed_mailbox(words))))
+
+    def test_software_float_requires_explicit_off_expectation(self):
+        for format_index in (0, 1):
+            words = mailbox_words(format_index)
+            words[6] = 0
+            result = RUN.decode(packed_mailbox(words))
+            with self.subTest(format=format_index):
+                self.assertEqual(RUN.validate(result, "off"), [])
+                for mode in (None, "on"):
+                    self.assertIn("CPACR does not match requested floating-point mode",
+                                  RUN.validate(result, mode))
+                for cpacr in (1, 0x300000, 0xF00000):
+                    result["cpacr"] = cpacr
+                    self.assertIn("CPACR does not match requested floating-point mode",
+                                  RUN.validate(result, "off"))
+
+    def test_q_fpu_on_is_not_a_supported_mode(self):
+        for name in ("q15", "q31"):
+            self.assertEqual(RUN.expected_cpacr(name), 0)
+            self.assertEqual(RUN.expected_cpacr(name, "off"), 0)
+            with self.assertRaisesRegex(ValueError, "Q images require --fpu off"):
+                RUN.expected_cpacr(name, "on")
+            with mock.patch.object(sys, "argv", ["build.py", "--format", name, "--fpu", "on"]), \
+                 mock.patch.object(BUILD.tempfile, "mkdtemp") as temporary, \
+                 self.assertRaises(SystemExit) as error:
+                BUILD.main()
+            self.assertEqual(error.exception.code, 2)
+            temporary.assert_not_called()
 
     def test_incomplete_runs_and_processor_faults_are_rejected(self):
         for offset, value, message in ((3, 2, "run did not complete all 20 cases"),
@@ -406,6 +436,46 @@ class MainRejectionTests(OfflineTestCase):
                          [mock.call.execute([f"loadfile {self.elf}", "r", "g", "sleep 250"], "flash"),
                           mock.call.read(MAILBOX_ADDRESS, HEADER_WORDS)])
 
+    def test_wrong_fpu_mode_is_rejected_before_prepare_or_start(self):
+        for mode, cpacr in ((None, 0), ("off", 0xF00000), ("on", 0)):
+            for action in ("--prepare-only", "--start"):
+                probe = mock.Mock(spec=RUN.Probe)
+                ready = mailbox_words()[:HEADER_WORDS]
+                ready[3], ready[6] = 1, cpacr
+                probe.read.return_value = ready
+                extra = [action] + (["--fpu", mode] if mode else [])
+                with self.subTest(mode=mode, action=action), \
+                     mock.patch.object(sys, "argv", self.arguments(*extra)), \
+                     mock.patch.object(RUN, "symbol", return_value=(MAILBOX_ADDRESS, 1728)), \
+                     mock.patch.object(RUN, "Probe", return_value=probe), \
+                     self.assertRaisesRegex(RuntimeError, "CPACR does not match"):
+                    RUN.main()
+                probe.start.assert_not_called()
+                probe.execute.assert_not_called()
+
+    def test_explicit_soft_float_result_records_mode(self):
+        probe = mock.Mock(spec=RUN.Probe)
+        words = mailbox_words(1)
+        words[6] = 0
+        probe.read.return_value = words[:HEADER_WORDS]
+
+        def save_result(commands, label):
+            self.assertEqual(label, "results")
+            (self.output / "mailbox.bin").write_bytes(packed_mailbox(words))
+            return "E000ED88 = 00000000\n"
+
+        probe.execute.side_effect = save_result
+        with mock.patch.object(sys, "argv", self.arguments("--fpu", "off")), \
+             mock.patch.object(RUN, "symbol", return_value=(MAILBOX_ADDRESS, 1728)), \
+             mock.patch.object(RUN, "Probe", return_value=probe), mock.patch("builtins.print"):
+            RUN.main()
+        result = json.loads((self.output / "results.json").read_text())
+        self.assertEqual(result["fpu_mode"], "off")
+        self.assertEqual(result["failures"], [])
+        self.assertTrue(all(case["fpu_mode"] == "off" for case in result["cases"]))
+        self.assertIn("format,fpu_mode,", (self.output / "results.csv").read_text())
+        self.assertNotIn(b"\r", (self.output / "results.csv").read_bytes())
+
     def test_zero_mailbox_after_startup_settle_is_rejected_without_retry(self):
         probe = mock.Mock(spec=RUN.Probe)
         probe.execute.return_value = "Program & Verify speed"
@@ -457,6 +527,73 @@ class MainRejectionTests(OfflineTestCase):
         probe.start.assert_not_called()
         probe.execute.assert_not_called()
         sys.modules["pxview_automation"].McpClient.assert_not_called()
+
+    def test_capture_mode_mismatch_precedes_client_access(self):
+        probe = mock.Mock(spec=RUN.Probe)
+        ready = mailbox_words()[:HEADER_WORDS]
+        ready[3] = 1
+        probe.read.return_value = ready
+        spec = types.SimpleNamespace(loader=types.SimpleNamespace(exec_module=mock.Mock()))
+        with mock.patch.object(sys, "argv", self.arguments("--fpu", "off")), \
+             mock.patch.object(CAPTURE.importlib.util, "spec_from_file_location", return_value=spec), \
+             mock.patch.object(CAPTURE.importlib.util, "module_from_spec", return_value=RUN), \
+             mock.patch.object(RUN, "symbol", return_value=(MAILBOX_ADDRESS, 1728)), \
+             mock.patch.object(RUN, "Probe", return_value=probe), \
+             self.assertRaisesRegex(RuntimeError, "CPACR does not match"):
+            CAPTURE.main()
+        probe.start.assert_not_called()
+        sys.modules["pxview_automation"].McpClient.assert_not_called()
+
+    def test_capture_passes_explicit_mode_to_result_reader(self):
+        for mode in ("on", "off"):
+            output = self.output / mode
+            words = mailbox_words()
+            words[6] = 0xF00000 if mode == "on" else 0
+            result = RUN.decode(packed_mailbox(words))
+            for case in result["cases"]:
+                case["cycles"] = [240] * 9
+                case["median_us"] = 1.0
+            probe = mock.Mock(spec=RUN.Probe)
+            probe.read.return_value = words[:HEADER_WORDS]
+            client = mock.Mock()
+            client.get_devices.return_value = [{"id": 2, "is_active": True, "is_hardware_logic": True}]
+            client.get_supported_work_modes.return_value = [0]
+            client.get_channels.return_value = [{"index": i} for i in range(12)]
+            client.configure_trigger.return_value = {"config_json": '{"enabled": 1}', "stage_count": 1}
+            client.wait_capture.return_value = {"done": True}
+            client.get_capture_status.return_value = {"have_hardware_data": True}
+            client.get_sample_config.return_value = {"sample_rate": 240_000_000, "sample_limit": 100_000}
+
+            def read_packed(_client, channel, count, destination):
+                destination.write_bytes(b"\0")
+                return {"samples": count, "pages": 1, "bytes": 1}
+
+            def read_result(command, **kwargs):
+                self.assertEqual(command[command.index("--fpu") + 1], mode)
+                board = output / "board"
+                board.mkdir()
+                (board / "results.json").write_text(json.dumps(result))
+
+            pulses = [[(i * 1000, i * 1000 + 240) for i in range(count)] for count in (44, 88, 88)]
+            spec = types.SimpleNamespace(loader=types.SimpleNamespace(exec_module=mock.Mock()))
+            argv = ["capture.py", str(self.elf), "--jlink", "unused-jlink", "--fpu", mode,
+                    "--output", str(output)]
+            with self.subTest(mode=mode), mock.patch.object(sys, "argv", argv), \
+                 mock.patch.object(CAPTURE.importlib.util, "spec_from_file_location", return_value=spec), \
+                 mock.patch.object(CAPTURE.importlib.util, "module_from_spec", return_value=RUN), \
+                 mock.patch.object(RUN, "symbol", return_value=(MAILBOX_ADDRESS, 1728)), \
+                 mock.patch.object(RUN, "Probe", return_value=probe), \
+                 mock.patch.object(sys.modules["pxview_automation"], "McpClient", return_value=client), \
+                 mock.patch.object(CAPTURE, "read_packed", side_effect=read_packed), \
+                 mock.patch.object(CAPTURE, "pulse_edges", side_effect=pulses), \
+                 mock.patch.object(subprocess, "run", side_effect=read_result) as reader, \
+                 mock.patch.object(sys, "path", sys.path.copy()), mock.patch("builtins.print"):
+                CAPTURE.main()
+            reader.assert_called_once()
+            probe.start.assert_called_once_with(MAILBOX_ADDRESS, 24)
+            evidence = json.loads((output / "capture.json").read_text())
+            self.assertEqual(evidence["fpu_mode"], mode)
+            self.assertEqual(evidence["failures"], [])
 
 
 if __name__ == "__main__":

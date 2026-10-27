@@ -65,6 +65,8 @@ def main():
     parser.add_argument("elf", type=Path)
     parser.add_argument("--jlink", type=Path, required=True)
     parser.add_argument("--nm", default="arm-none-eabi-nm")
+    parser.add_argument("--fpu", choices=("on", "off"),
+                        help="expected mode; default: on for f32/f64, off for q15/q31")
     parser.add_argument("--python-client", type=Path, default=Path("/usr/share/pxview/python"))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--sample-rate", type=int, default=5_000_000)
@@ -83,6 +85,12 @@ def main():
     if header[:2] != [0x51424E43, 1] or header[3] not in (1, 3):
         raise RuntimeError(f"board not ready: {header}")
     format_index = header[2]
+    if format_index not in range(len(runner.FORMATS)):
+        raise RuntimeError(f"unknown firmware format: {format_index}")
+    requested_cpacr = runner.expected_cpacr(runner.FORMATS[format_index], args.fpu)
+    if header[6] != requested_cpacr:
+        raise RuntimeError("CPACR does not match requested floating-point mode")
+    fpu_mode = "on" if requested_cpacr else "off"
     sys.path.insert(0, str(args.python_client))
     from pxview_automation import McpClient
     client = McpClient(max_retries=1, timeout=60)
@@ -120,10 +128,12 @@ def main():
     export = {str(channel): read_packed(client, channel, config["sample_limit"], raw / f"channel_{channel}.bin")
               for channel in channels}
     subprocess.run([sys.executable, str(Path(__file__).with_name("run.py")), str(args.elf),
-                    "--jlink", str(args.jlink), "--nm", args.nm, "--output", str(directory / "board")], check=True)
+                    "--jlink", str(args.jlink), "--nm", args.nm, "--fpu", fpu_mode,
+                    "--output", str(directory / "board")], check=True)
     result = json.loads((directory / "board/results.json").read_text())
     rate = config["sample_rate"]
     evidence = {"device": device, "sample_config": config, "capture_status": status,
+                "fpu_mode": fpu_mode,
                 "wait_result": capture_status, "export_result": export, "channels": {},
                 "pin_map": dict(enumerate(PINS)), "sample_encoding": "packed lsb0", "failures": []}
     for family, channel in enumerate(channels):

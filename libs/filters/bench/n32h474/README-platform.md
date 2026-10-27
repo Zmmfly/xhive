@@ -25,6 +25,9 @@ python3 libs/filters/bench/n32h474/build.py --format q31 --revision 3ee417a --la
 # Current production working-tree snapshot.
 python3 libs/filters/bench/n32h474/build.py --format q15 --label current
 
+# Floating-point software-only image; pass --fpu off to run.py/capture.py too.
+python3 libs/filters/bench/n32h474/build.py --format f32 --fpu off --label fpu-off
+
 # Explicit platform-only boot/command smoke image. No filter cases or timings.
 python3 libs/filters/bench/n32h474/build.py --format q31 --platform-only --label smoke
 ```
@@ -36,18 +39,26 @@ removed by section garbage collection; no production sources are rewritten.
 All translation units use `-mcpu=cortex-m4 -mthumb -O3 -fno-fast-math
 -ffp-contract=off -fno-lto`, with function/data sections. There is no LTO.
 
-| Workload | Whole-program ABI / library selection | Runtime CPACR |
+| Workload / mode | Whole-program ABI / library selection | Runtime CPACR |
 | --- | --- | --- |
-| f32 / f64 | `-mfpu=fpv4-sp-d16 -mfloat-abi=hard` | `0x00f00000` |
-| q15 / q31 | `-mfloat-abi=soft` (no FPU option) | `0` |
+| f32 / f64, `--fpu on` (default) | `-mfpu=fpv4-sp-d16 -mfloat-abi=hard` | `0x00f00000` |
+| f32 / f64, `--fpu off` | `-mfloat-abi=soft` (no FPU option) | `0` |
+| q15 / q31, `--fpu off` (default, on rejected) | `-mfloat-abi=soft` (no FPU option) | `0` |
 
-The M4 FPU is single precision: f64 is a hard-ABI/FPU-enabled image, not hardware
-double-precision arithmetic. Q kernels can still call their documented local
-floating-point operations, but those operations execute through software float
-helpers. The builder rejects a Q ELF containing a VFP instruction, including
-instructions linked from newlib/libgcc. At runtime NOCP is caught as UsageFault
-or HardFault and reported in the mailbox. `platform.c` additionally uses
-`-mgeneral-regs-only` so fault reporting itself cannot require the FPU.
+`BENCH_FPU_ENABLED=0/1` selects CPACR independently of `BENCH_FORMAT`, in both
+startup assembly and platform initialization. The build metadata records the
+resolved `fpu_mode` and `float_abi`. `run.py` and `capture.py` require the same
+explicit `--fpu off` for software-only f32/f64; they reject a mismatched CPACR
+before starting, rather than inferring permission from the register readback.
+
+The M4 FPU is single precision: an f64/FPU-on image uses the hard ABI, not
+hardware double-precision arithmetic. Q kernels can still call their documented
+local floating-point operations, but those operations execute through software
+float helpers. The builder rejects **any FPU-off ELF** containing a VFP
+instruction, including instructions linked from newlib/libgcc. At runtime NOCP
+is caught as UsageFault or HardFault and reported in the mailbox. `platform.c`
+additionally uses `-mgeneral-regs-only` so fault reporting itself cannot require
+the FPU.
 
 ## Provenance and artifacts
 

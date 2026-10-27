@@ -40,6 +40,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--format", required=True, choices=FORMATS,
                         help="one scalar format per image")
+    parser.add_argument("--fpu", choices=("on", "off"),
+                        help="default: on for f32/f64, off for q15/q31; Q images require off")
     parser.add_argument("--revision", help="Git revision for production filters/linears sources")
     parser.add_argument("--label", default="current", help="artifact directory label")
     parser.add_argument("--platform-only", action="store_true",
@@ -47,6 +49,9 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", args.label):
         parser.error("--label must contain only letters, digits, '_', '.' or '-'")
+    fpu_enabled = args.fpu != "off" if FORMATS[args.format] < 2 else False
+    if FORMATS[args.format] >= 2 and args.fpu == "on":
+        parser.error("Q images require --fpu off")
 
     driver = Path(__file__).resolve().parent
     repo = driver.parents[3]
@@ -65,7 +70,9 @@ def main():
         "ram_bytes": 96 * 1024,
         "stack_reserve_bytes": 8 * 1024,
         "clock": "HSI 8 MHz x30 PLL; SystemCoreClockUpdate readback in mailbox",
-        "fpu": "CP10/CP11 full access" if FORMATS[args.format] < 2 else "CPACR=0; software float ABI",
+        "fpu": "CP10/CP11 full access" if fpu_enabled else "CPACR=0; software float ABI",
+        "fpu_mode": "on" if fpu_enabled else "off",
+        "float_abi": "hard" if fpu_enabled else "soft",
         "commands": commands,
         "build_succeeded": False,
     }
@@ -113,7 +120,7 @@ def main():
         metadata["binutils"] = run([TOOLS["objdump"], "--version"])
         metadata["revision"] = run(["git", "-C", repo, "rev-parse", args.revision or "HEAD"]).strip()
         metadata["working_tree_status"] = run(["git", "-C", repo, "status", "--short"])
-        abi = (["-mfpu=fpv4-sp-d16", "-mfloat-abi=hard"] if FORMATS[args.format] < 2
+        abi = (["-mfpu=fpv4-sp-d16", "-mfloat-abi=hard"] if fpu_enabled
                else ["-mfloat-abi=soft"])
         architecture = ["-mcpu=cortex-m4", "-mthumb", *abi]
         metadata["newlib"] = {}
@@ -158,6 +165,7 @@ def main():
         flags = [*architecture, "-O3", "-g3", "-DNDEBUG", "-fno-fast-math",
                  "-ffp-contract=off", "-fno-lto", "-ffunction-sections", "-fdata-sections",
                  "-fstack-usage", f"-DBENCH_FORMAT={FORMATS[args.format]}",
+                 f"-DBENCH_FPU_ENABLED={int(fpu_enabled)}",
                  "-DSYSCLK_FREQ=240000000", "-DSYSCLK_SRC=2"]
         if args.platform_only:
             flags += ["-DBENCH_PLATFORM_ONLY=1"]
@@ -223,7 +231,7 @@ def main():
         vfp = [line for line in disassembly.splitlines()
                if re.match(r"\s*[0-9a-f]+:\s+(?:[0-9a-f]{4}\s+){1,2}v[a-z]", line)]
         metadata["vfp_instruction_count"] = len(vfp)
-        if FORMATS[args.format] >= 2 and vfp:
+        if not fpu_enabled and vfp:
             raise RuntimeError("soft-ABI image contains VFP instructions")
         metadata["elf_sha256"] = sha256(elf)
         metadata["build_succeeded"] = True

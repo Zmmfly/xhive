@@ -114,12 +114,20 @@ def decode(blob):
     return result
 
 
-def validate(result):
+def expected_cpacr(format_name, fpu=None):
+    """Resolve the requested mode, never infer it from the observed register."""
+    if format_name in ("q15", "q31"):
+        if fpu == "on":
+            raise ValueError("Q images require --fpu off")
+        return 0
+    return 0 if fpu == "off" else 0xF00000
+
+
+def validate(result, fpu=None):
     failures = []
     if result["phase"] != 3 or result["case_count"] != MAX_CASES:
         failures.append("run did not complete all 20 cases")
-    expected_cpacr = 0xF00000 if result["format"] in ("f32", "f64") else 0
-    if result["cpacr"] & 0xF00000 != expected_cpacr:
+    if result["cpacr"] != expected_cpacr(result["format"], fpu):
         failures.append("CPACR does not match requested floating-point mode")
     if result["fault_cfsr"] or result["fault_hfsr"]:
         failures.append("processor fault recorded")
@@ -141,6 +149,8 @@ def main():
     parser.add_argument("elf", type=Path)
     parser.add_argument("--jlink", type=Path, required=True)
     parser.add_argument("--nm", default="arm-none-eabi-nm")
+    parser.add_argument("--fpu", choices=("on", "off"),
+                        help="expected mode; default: on for f32/f64, off for q15/q31")
     parser.add_argument("--flash", action="store_true", help="explicitly authorize image programming")
     parser.add_argument("--start", action="store_true", help="start the ready firmware without reflashing")
     parser.add_argument("--prepare-only", action="store_true", help="leave verified firmware waiting for an external capture/start")
@@ -169,6 +179,11 @@ def main():
         raise RuntimeError(f"firmware mailbox not initialized: {header}")
     if header[3] == 2:
         raise RuntimeError("measurement rejected: initial SWD read reached a running transaction; reset and repeat")
+    if header[2] not in range(len(FORMATS)):
+        raise RuntimeError(f"unknown firmware format: {header[2]}")
+    requested_cpacr = expected_cpacr(FORMATS[header[2]], args.fpu)
+    if header[6] != requested_cpacr:
+        raise RuntimeError("CPACR does not match requested floating-point mode")
     if args.prepare_only:
         if header[3] not in (1, 3):
             raise RuntimeError(f"firmware cannot be prepared in phase {header[3]}")
@@ -195,13 +210,16 @@ def main():
         raise RuntimeError("live CPACR differs from the firmware mailbox")
     result["elf_sha256"] = hashlib.sha256(elf.read_bytes()).hexdigest()
     result["mailbox_address"] = f"0x{address:08x}"
-    result["failures"] = validate(result)
+    result["fpu_mode"] = "on" if requested_cpacr else "off"
+    result["failures"] = validate(result, args.fpu)
+    for case in result["cases"]:
+        case["fpu_mode"] = result["fpu_mode"]
     (output / "results.json").write_text(json.dumps(result, indent=2) + "\n")
-    fields = ["family", "format", "nonlinear", "n", "m", "N", "status", "persistent_bytes",
+    fields = ["family", "format", "fpu_mode", "nonlinear", "n", "m", "N", "status", "persistent_bytes",
               "descriptor_bytes", "workspace_bytes", "output_bytes", "total_bytes", "median_cycles",
               "min_cycles", "max_cycles", "median_us", "checksum", "output_hash"]
     with (output / "results.csv").open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
+        writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
         writer.writerows(result["cases"])
     print((output / "results.csv").read_text(), end="")
