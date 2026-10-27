@@ -91,7 +91,7 @@ sample, allowing 1 microsecond marker/sample uncertainty plus 2% for the separat
 HSI/analyzer clocks. It also rejects any pulse at least one complete DWT wrap
 period long (`2^32/240 MHz`, approximately 17.896 seconds).
 
-Two measurement pitfalls were observed and must not silently produce results:
+Three measurement pitfalls were observed and must not silently produce results:
 
 1. With this debugger connection sequence, DWT once remained stopped despite
    its enable bit reading as set. The direct triggering mechanism is not known.
@@ -107,12 +107,131 @@ Two measurement pitfalls were observed and must not silently produce results:
    `first_sample + sample_count` until every requested sample has been read. It
    validates the packed LSB-first encoding and records the complete waveform
    hash, not the hash of an unnoticed truncated first block.
+3. An immediate debugger reconnect once read an all-zero mailbox before
+   `main` had initialized it. After flash/reset/run, the runner now keeps the
+   same connection for a bounded 250 ms startup interval. The first header
+   read must still validate the ABI and ready phase; there is no retry loop
+   that could hide an unfinished startup or a running measurement.
 
 Every J-Link operation has a 30-second process timeout. No interactive debugger
 or background debug server is left behind. The firmware waits for another
 explicit mailbox command after completing; all marker pins are then low.
 
-## Recorded board results
+## Latest round: proposal cores and diagonal density paths
+
+[`baseline-c334fdc.csv`](baseline-c334fdc.csv) and
+[`pipeline.csv`](pipeline.csv) record the next 80-case before/after sweep.
+Their [baseline](baseline-c334fdc.json) and [optimized](pipeline.json) JSON
+companions retain source/ELF/compiler/library hashes, all nine cycle samples,
+clock/FPU readbacks, memory counts and independently checked waveform data.
+`pipeline.json` was measured from a working-tree snapshot. Its base
+`revision` remains `c334fdc`; `source_commit` now identifies `48c1d53`, whose
+87 recorded compilation-input hashes were checked against Git. The older
+`current.*` records below are left unchanged.
+
+All 80 scenarios became faster, with identical output hashes, binary64
+checksums and public per-instance byte counts. Representative quadratic-model
+results, `n=m=4`, `N=128` for PF/UPF, in **milliseconds**:
+
+| Transaction | f32, FPU on | f64, FPU on | q15, FPU off | q31, FPU off |
+| --- | ---: | ---: | ---: | ---: |
+| UKF predict + update | 0.542 → 0.210 | 2.243 → 1.103 | 0.858 → 0.627 | 1.267 → 1.013 |
+| PF predict + update + estimate | 3.535 → 1.383 | 21.263 → 10.055 | 4.870 → 4.752 | 9.087 → 8.969 |
+| UPF step | 80.185 → 20.594 | 343.230 → 145.932 | 125.720 → 82.607 | 189.095 → 140.682 |
+
+Across the 20 cases of each format, baseline/optimized time ratios are
+2.327–6.867x (f32), 1.663–3.135x (f64), 1.020–1.578x (q15), and
+1.010–1.380x (q31). At `n=m=4, N=128`, PF/UPF ratios are respectively
+2.555/3.894x for f32 and 2.115/2.352x for f64. **The Q PF improvement is small**
+in this round: 2.4% less time for q15 and 1.3% for q31; the larger
+Q gains are in the proposal-heavy UPF.
+
+Both sides still use the original workload's **diagonal Q and R**. The
+floating density shortcut tests this property once per noise factor and
+retains the original quotient and squared-norm arithmetic. Non-diagonal
+factors still use the original pivoted LU; these timing ratios must not be
+presented as measurements of correlated-noise workloads. The public
+`gaussian_exponent` continues to accept general nonsingular dense factors.
+
+The larger changes are shared by all covariance shapes: validated private
+UKF cores avoid repeated descriptor/alias/workspace checks, small matrix
+operations use direct loops, and each UPF step factors R once rather than
+once per proposal. Callback order, callback-result validation, each distinct
+covariance's positive-definiteness check and atomic state commits remain.
+Q metadata computes exact quantization errors and finite magnitude comparisons
+with guarded IEEE integer operations; its error budgets and integer MACs are
+unchanged. Default Q PF moments keep each wide accumulator local across the
+particle loop. Public storage macros have not been reduced, including the Q
+UKF decomposition capacity that is still validated but no longer written.
+
+The direct internal covariance staging also removes an existing failure for
+`m > 2n+1`: the former nested public weighted-covariance call rejected the
+UKF update's own basic scratch size. Exact-minimum guarded workspace tests
+now cover that region for UKF and UPF without increasing the public macros.
+
+### Numerical decision and validation
+
+An unrestricted replacement of pivoted LU by triangular forward substitution
+was **not accepted**. A 200,000-trial-per-format broad-exponent probe found
+13 f32 cases where the old result met the original `2e-5` tolerance and the
+new result did not, despite both returning `OK`. Exact rational arithmetic
+confirmed all six exported examples. A `RANGE`-only fallback therefore did
+not satisfy the accuracy requirement. The final shortcut is diagonal-only;
+all other factors retain the old solve. The permanent cancellation regression
+in `pf_pipeline.cc` locks this distinction.
+
+Validation of the frozen final source:
+
+- `xmake b` passed; the six new focused test entries passed;
+  `xmake test -g xhive -v` passed **69 registered host entries**.
+- Independent GCC `-O2`, Clang `-O2`, and Clang
+  `-O1 -g -fsanitize=address,undefined,float-cast-overflow
+  -fno-sanitize-recover=all -fno-omit-frame-pointer` builds each passed
+  **661 GoogleTest cases**, with eight existing applicability skips.
+  Production C was compiled as strict C99 with
+  `-pedantic-errors -Wall -Wextra -Werror -Wvla`.
+- `host_oracle.py` passed 80 cases, 46,704 full output elements and 42
+  failure-publication checks. Every raw element also matched the `c334fdc`
+  host baseline. This is driver/implementation equivalence, not a replacement
+  for the long-double and Kalman-reference tests.
+- A test-only wrapper called the actual final private diagonal path or the
+  unchanged public solve on the same broad-exponent corpus: 103,791 valid
+  f32 factors and 89,777 f64 factors, **zero status or raw-output differences**.
+  This preserves legacy behavior; it is not a forward-error guarantee for
+  ill-conditioned inputs.
+- The exact Q quantization-error host probe made 5,996,845 comparisons with
+  zero bit differences. The permanent `q_quantization.cc` tests also cover
+  cell boundaries, adjacent values, all unit-range exponents, signed zeros,
+  subnormals and finite magnitude comparisons.
+- All 80 new baseline and 80 final board cases passed DWT/GPIO checks. The
+  largest nonlinear UPF state was read in full after each final image:
+  **2688 elements per format**, byte-identical to the previously measured
+  baseline state. Host-versus-board floating libm differences remain recorded
+  separately in JSON rather than being called exact matches.
+- `python3 -B libs/filters/bench/n32h474/test_scripts.py -v` passed **32**
+  offline tests, including bounded startup settling and rejection without
+  polling when the mailbox is still uninitialized or running.
+
+Whole-image static RAM and public per-instance RAM are unchanged. Flash
+usage increases by 1128 / 1104 / 2016 / 2560 bytes for f32 / f64 / q15 / q31
+respectively. The 96 KiB RAM / 256 KiB Flash layout and 8 KiB reserved stack
+are unchanged; stack high-water usage was not measured.
+
+**Q does not uniformly beat floating point.** With the much faster floating
+paths, q15/FPU-off wins **0/20** pairs against f32/FPU-on; f32-time/q15-time is
+0.249–0.472. q31/FPU-off wins **14/20** pairs against f64, with
+f64-time/q31-time 0.867–1.133. Persistent Q arrays remain int16/int32 and the
+Q statistical loops remain integer, but those facts alone do not establish
+a speed advantage over the optimized floating implementation.
+
+Complete artifacts are retained under `/tmp/pf-upf-xhive-round3-g0ml7l/` and
+its indexed build directories. `final-builds.json`, `final-host/`, and
+`final-run-commands.json` locate the immutable images, host checks and exact
+measurement commands. The board was left in the final q31 image's ready
+phase; an idle SWD read confirmed format q31, phase 1, command 0 and CPACR=0.
+No PWM runs.
+
+## Archived board results: first optimization round
 
 [`baseline-3ee417a.csv`](baseline-3ee417a.csv) and
 [`current.csv`](current.csv) contain all 80 matched scenarios before and after

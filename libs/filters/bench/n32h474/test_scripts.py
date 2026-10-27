@@ -392,6 +392,33 @@ class MainRejectionTests(OfflineTestCase):
         probe.start.assert_called_once_with(MAILBOX_ADDRESS, 16)
         probe.execute.assert_not_called()
 
+    def test_flash_settles_before_the_only_ready_read(self):
+        probe = mock.Mock(spec=RUN.Probe)
+        probe.execute.return_value = "Contents already match"
+        ready = mailbox_words()[:HEADER_WORDS]
+        ready[3] = 1
+        probe.read.return_value = ready
+        with mock.patch.object(sys, "argv", self.arguments("--flash", "--prepare-only")), \
+             mock.patch.object(RUN, "symbol", return_value=(MAILBOX_ADDRESS, 1728)), \
+             mock.patch.object(RUN, "Probe", return_value=probe):
+            RUN.main()
+        self.assertEqual(probe.mock_calls,
+                         [mock.call.execute([f"loadfile {self.elf}", "r", "g", "sleep 250"], "flash"),
+                          mock.call.read(MAILBOX_ADDRESS, HEADER_WORDS)])
+
+    def test_zero_mailbox_after_startup_settle_is_rejected_without_retry(self):
+        probe = mock.Mock(spec=RUN.Probe)
+        probe.execute.return_value = "Program & Verify speed"
+        probe.read.return_value = [0] * HEADER_WORDS
+        with mock.patch.object(sys, "argv", self.arguments("--flash", "--prepare-only")), \
+             mock.patch.object(RUN, "symbol", return_value=(MAILBOX_ADDRESS, 1728)), \
+             mock.patch.object(RUN, "Probe", return_value=probe), \
+             self.assertRaisesRegex(RuntimeError, "firmware mailbox not initialized"):
+            RUN.main()
+        self.assertEqual(probe.mock_calls,
+                         [mock.call.execute([f"loadfile {self.elf}", "r", "g", "sleep 250"], "flash"),
+                          mock.call.read(MAILBOX_ADDRESS, HEADER_WORDS)])
+
     def test_run_nonempty_output_is_rejected_before_probe_or_symbol_lookup(self):
         evidence = self.output / "previous.json"
         evidence.write_bytes(b"preserve previous evidence")

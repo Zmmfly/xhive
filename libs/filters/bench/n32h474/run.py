@@ -158,7 +158,10 @@ def main():
         raise RuntimeError(f"ELF mailbox size {size} differs from host ABI {MAILBOX_BYTES}")
     probe = Probe(args.jlink, output)
     if args.flash:
-        text = probe.execute([f"loadfile {elf}", "r", "g"], "flash")
+        # An immediate reconnect on this rig observed a zero mailbox before
+        # main initialized it. Let startup run on the same connection; the
+        # first read below must still validate readiness without polling.
+        text = probe.execute([f"loadfile {elf}", "r", "g", "sleep 250"], "flash")
         if not ("Program & Verify speed" in text or "Contents already match" in text or text.count("O.K.") >= 3):
             raise RuntimeError("J-Link did not report a verified flash")
     header = probe.read(address, HEADER_WORDS)
