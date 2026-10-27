@@ -145,6 +145,7 @@ static linears_status_t ukf_finite_f64(const linears_matrix_t *matrix)
 #define U_FN filters_ukf_f32_fn
 #define U_RESIDUAL_FN filters_ukf_f32_residual_fn
 #define U_ZERO 0.0f
+#define U_HALF 0.5f
 #define U_FINITE ukf_finite_f32
 #include "ukf_work_impl.h"
 
@@ -156,6 +157,7 @@ static linears_status_t ukf_finite_f64(const linears_matrix_t *matrix)
 #define U_FN filters_ukf_f64_fn
 #define U_RESIDUAL_FN filters_ukf_f64_residual_fn
 #define U_ZERO 0.0
+#define U_HALF 0.5
 #define U_FINITE ukf_finite_f64
 #include "ukf_work_impl.h"
 
@@ -167,6 +169,7 @@ static linears_status_t ukf_finite_f64(const linears_matrix_t *matrix)
 #define U_FN filters_ukf_fixed_fn
 #define U_RESIDUAL_FN filters_ukf_fixed_residual_fn
 #define U_ZERO INT64_C(0)
+#define U_HALF (LINEARS_FIXED_ONE / 2)
 #include "ukf_work_impl.h"
 
 #define U_TAG f32
@@ -179,7 +182,6 @@ static linears_status_t ukf_finite_f64(const linears_matrix_t *matrix)
 #define U_WORKSPACE filters_ukf_f32_workspace_t
 #define U_FN filters_ukf_f32_fn
 #define U_RESIDUAL_FN filters_ukf_f32_residual_fn
-#define U_HALF 0.5f
 #define U_FINITE ukf_finite_f32
 #define U_PREDICT_STORAGE FILTERS_UKF_PREDICT_STORAGE
 #define U_PREDICT_BASIC FILTERS_UKF_PREDICT_BASIC_BYTES
@@ -197,7 +199,6 @@ static linears_status_t ukf_finite_f64(const linears_matrix_t *matrix)
 #define U_WORKSPACE filters_ukf_f64_workspace_t
 #define U_FN filters_ukf_f64_fn
 #define U_RESIDUAL_FN filters_ukf_f64_residual_fn
-#define U_HALF 0.5
 #define U_FINITE ukf_finite_f64
 #define U_PREDICT_STORAGE FILTERS_UKF_PREDICT_STORAGE
 #define U_PREDICT_BASIC FILTERS_UKF_PREDICT_BASIC_BYTES
@@ -215,7 +216,6 @@ static linears_status_t ukf_finite_f64(const linears_matrix_t *matrix)
 #define U_WORKSPACE filters_ukf_fixed_workspace_t
 #define U_FN filters_ukf_fixed_fn
 #define U_RESIDUAL_FN filters_ukf_fixed_residual_fn
-#define U_HALF (LINEARS_FIXED_ONE / 2)
 #define U_IMPORT linears_fixed_from_q15
 #define U_EXPORT linears_fixed_to_q15
 #define U_PACK_FIELD q15
@@ -235,7 +235,6 @@ static linears_status_t ukf_finite_f64(const linears_matrix_t *matrix)
 #define U_WORKSPACE filters_ukf_fixed_workspace_t
 #define U_FN filters_ukf_fixed_fn
 #define U_RESIDUAL_FN filters_ukf_fixed_residual_fn
-#define U_HALF (LINEARS_FIXED_ONE / 2)
 #define U_IMPORT linears_fixed_from_q31
 #define U_EXPORT linears_fixed_to_q31
 #define U_PACK_FIELD q31

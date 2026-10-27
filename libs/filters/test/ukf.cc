@@ -35,6 +35,8 @@ template<> struct Ukf<tag> { \
     static constexpr auto mean = filters_ukf_##kernel##_mean; \
     static constexpr auto deviations = filters_ukf_##kernel##_deviations; \
     static constexpr auto weighted_covariance = filters_ukf_##kernel##_weighted_covariance; \
+    static constexpr auto predict_work = filters_ukf_##kernel##_predict_work; \
+    static constexpr auto update_work = filters_ukf_##kernel##_update_work; \
     static constexpr auto init = filters_ukf_##tag##_init; \
     static constexpr auto predict = filters_ukf_##tag##_predict; \
     static constexpr auto update = filters_ukf_##tag##_update; \
@@ -450,13 +452,13 @@ TYPED_TEST(UnscentedKalman, DecomposedStepsComposeIntoPredictAndAcceptArbitraryW
     ASSERT_EQ(Ukf<A>::init(&filter.state, work_encode<A>(1), work_encode<A>(2), work_encode<A>(1), &xv, &pv, &qv, &rv), LINEARS_OK);
     const typename Ukf<A>::Weights w = filter.state.weights;
     /* Manual composition in working format. */
-    WorkMatrix<A> mean_in(decode<A>(xv)), cov_in(decode<A>(pv));
+    WorkMatrix<A> mean_in(decode<A>(xv)), cov_in(decode<A>(pv)), q_in(decode<A>(qv));
     WorkMatrix<A> points(s, n), propagated(s, n), deviations(s, n), mean(n, 1), covariance(n, n), wm(s, 1), wc(s, 1);
     for (std::size_t i = 0; i < s; ++i) {
         wm.data[i] = i == 0 ? w.mean0 : w.other;
         wc.data[i] = i == 0 ? w.covariance0 : w.other;
     }
-    auto mean_v = mean_in.view(), cov_v = cov_in.view(), points_v = points.view();
+    auto mean_v = mean_in.view(), cov_v = cov_in.view(), q_v = q_in.view(), points_v = points.view();
     auto prop_v = propagated.view(), dev_v = deviations.view(), out_mean = mean.view(), out_cov = covariance.view();
     auto wm_v = wm.view(), wc_v = wc.view();
     UkfWorkspace<A> sigma_ws(FILTERS_UKF_SIGMA_POINTS_STORAGE(n), FILTERS_UKF_SIGMA_POINTS_BASIC_BYTES(n), FILTERS_UKF_SIGMA_POINTS_DECOMP_STORAGE(n));
@@ -489,6 +491,32 @@ TYPED_TEST(UnscentedKalman, DecomposedStepsComposeIntoPredictAndAcceptArbitraryW
     ASSERT_EQ(Ukf<A>::predict(&filter.state, map_callback<A>, &transition, nullptr, nullptr, predict_ws.view()), LINEARS_OK);
     expect_matrix<A>(filter.state.estimate, decode_work<A>(out_mean));
     expect_matrix<A>(filter.state.covariance, expected_p);
+    /* The working-format predict kernel is the filter without storage. */
+    WorkMatrix<A> work_mean(n, 1), work_cov(n, n);
+    auto work_mean_v = work_mean.view(), work_cov_v = work_cov.view();
+    UkfWorkspace<A> work_ws(FILTERS_UKF_PREDICT_WORK_STORAGE(n), FILTERS_UKF_PREDICT_BASIC_BYTES(n), FILTERS_UKF_PREDICT_DECOMP_STORAGE(n));
+    ASSERT_EQ(Ukf<A>::predict_work(&mean_v, &cov_v, &q_v, &w, map_callback<A>, &transition, nullptr, nullptr,
+                                   &work_mean_v, &work_cov_v, work_ws.view()), LINEARS_OK);
+    for (std::size_t j = 0; j < n; ++j)
+        expect_near<A>(decode_work<A>(work_mean_v).values[j], decode_work<A>(out_mean).values[j]);
+    for (std::size_t k = 0; k < n * n; ++k)
+        expect_near<A>(decode_work<A>(work_cov_v).values[k], expected_p.values[k]);
+    /* And the update kernel reproduces a filter update from the same prior. */
+    Model observation{[](const Vec& x) { return Vec{x[0] + x[1]}; }};
+    WorkMatrix<A> r_in(decode<A>(rv)), z_in(Dense(1, 1, {0.05L})), post_mean(n, 1), post_cov(n, n);
+    Matrix<A> z(Dense(1, 1, {0.05L}));
+    auto r_v = r_in.view(), z_v = z_in.view(), post_mean_v = post_mean.view(), post_cov_v = post_cov.view(), zv = z.view();
+    UkfWorkspace<A> update_work_ws(FILTERS_UKF_UPDATE_WORK_STORAGE(n, 1), FILTERS_UKF_UPDATE_BASIC_BYTES(n, 1), FILTERS_UKF_UPDATE_DECOMP_STORAGE(n, 1));
+    auto update_ws = UkfWorkspace<A>::update(n, 1);
+    ASSERT_EQ(Ukf<A>::update_work(&work_mean_v, &work_cov_v, &r_v, &z_v, &w, map_callback<A>, &observation, nullptr, nullptr,
+                                  &post_mean_v, &post_cov_v, update_work_ws.view()), LINEARS_OK);
+    ASSERT_EQ(Ukf<A>::update(&filter.state, &zv, map_callback<A>, &observation, nullptr, nullptr, update_ws.view()), LINEARS_OK);
+    expect_matrix<A>(filter.state.estimate, decode_work<A>(post_mean_v));
+    expect_matrix<A>(filter.state.covariance, decode_work<A>(post_cov_v));
+    EXPECT_EQ(Ukf<A>::predict_work(&mean_v, &cov_v, &q_v, nullptr, map_callback<A>, &transition, nullptr, nullptr,
+                                   &work_mean_v, &work_cov_v, work_ws.view()), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(Ukf<A>::update_work(&work_mean_v, &work_cov_v, &r_v, &z_v, &w, map_callback<A>, &observation, nullptr, nullptr,
+                                  &work_mean_v, &post_cov_v, update_work_ws.view()), LINEARS_ERROR_ALIAS);
     /* The mean with a plain-subtraction residual reproduces the weighted sum. */
     Model plain;
     plain.residual = [](const Vec& a, const Vec& b) { Vec d(a.size()); for (std::size_t i = 0; i < d.size(); ++i) d[i] = a[i] - b[i]; return d; };
@@ -527,6 +555,7 @@ TYPED_TEST(UnscentedKalman, DecomposedStepsComposeIntoPredictAndAcceptArbitraryW
     for (std::size_t k = 0; k < 3; ++k) expect_near<A>(decode_work<A>(cloud_mean_v).values[k], mean_a.values[k]);
     for (std::size_t k = 0; k < 6; ++k) expect_near<A>(decode_work<A>(cross_v).values[k], expected.values[k]);
     filter.guards(); predict_ws.guards(); sigma_ws.guards(); mean_ws.guards(); dev_ws.guards(); cov_ws.guards();
+    work_ws.guards(); update_work_ws.guards(); update_ws.guards();
     pf_mean_ws.guards(); pf_dev_ws.guards(); pf_cov_ws.guards();
 }
 
@@ -747,6 +776,10 @@ TEST(UnscentedKalmanWorkspace, ConstantExpressionsAndOverflowSentinels) {
     static_assert(FILTERS_UKF_UPDATE_STORAGE(2, 1) == 7 * 4 + 2 + 10 * 2 + 7 * 2 + 5 + 2 + 5 * 2, "update storage");
     static_assert(FILTERS_UKF_UPDATE_STORAGE(1, 3) == 7 + 2 * 9 + 10 * 3 + 7 + 15 + 2 + 3 * 3, "wide update storage");
     static_assert(FILTERS_UKF_Q_UPDATE_STORAGE(2, 1) == FILTERS_UKF_UPDATE_STORAGE(2, 1) + 4 + 1 + 2 + 1, "Q update storage");
+    static_assert(FILTERS_UKF_PREDICT_WORK_STORAGE(2) == 7 * 4 + 7 * 2 + 2, "predict kernel storage");
+    static_assert(FILTERS_UKF_PREDICT_STORAGE(2) == FILTERS_UKF_PREDICT_WORK_STORAGE(2) + 2 + 4, "filter adds staging");
+    static_assert(FILTERS_UKF_UPDATE_WORK_STORAGE(2, 1) == 6 * 4 + 2 + 10 * 2 + 6 * 2 + 5 + 2 + 5 * 2, "update kernel storage");
+    static_assert(FILTERS_UKF_UPDATE_STORAGE(2, 1) == FILTERS_UKF_UPDATE_WORK_STORAGE(2, 1) + 2 + 4, "filter adds staging");
     static_assert(FILTERS_UKF_PREDICT_BASIC_BYTES(2) == 2 * 5 * sizeof(linears_workspace_unit_t), "predict basic");
     static_assert(FILTERS_UKF_UPDATE_BASIC_BYTES(1, 3) == 3 * 3 * sizeof(linears_workspace_unit_t), "update basic");
     static_assert(FILTERS_UKF_Q_PREDICT_BASIC_BYTES(2) == 10 * sizeof(linears_workspace_unit_t), "Q predict basic covers staging");
@@ -763,6 +796,8 @@ TEST(UnscentedKalmanWorkspace, ConstantExpressionsAndOverflowSentinels) {
     EXPECT_EQ(FILTERS_UKF_UPDATE_STORAGE(huge, 1), SIZE_MAX);
     EXPECT_EQ(FILTERS_UKF_UPDATE_STORAGE(1, huge), SIZE_MAX);
     EXPECT_EQ(FILTERS_UKF_Q_UPDATE_STORAGE(huge, huge), SIZE_MAX);
+    EXPECT_EQ(FILTERS_UKF_PREDICT_WORK_STORAGE(huge), SIZE_MAX);
+    EXPECT_EQ(FILTERS_UKF_UPDATE_WORK_STORAGE(huge, 1), SIZE_MAX);
     EXPECT_EQ(FILTERS_UKF_PREDICT_BASIC_BYTES(huge), SIZE_MAX);
     EXPECT_EQ(FILTERS_UKF_Q_UPDATE_BASIC_BYTES(huge, 1), SIZE_MAX);
     EXPECT_EQ(FILTERS_UKF_UPDATE_DECOMP_STORAGE(huge, huge), SIZE_MAX);

@@ -114,12 +114,19 @@ kernels used by q15 and q31), one point per row:
 | `mean(points, w, residual, context, out)` | weighted mean, residual-aware |
 | `deviations(points, mean, residual, context, out)` | row-wise `points_i (-) mean` |
 | `weighted_covariance(a, b, w, out)` | `a^T * diag(w) * b` |
+| `predict_work(x, P, Q, weights, f, residual, out_x, out_P)` | the complete predict step on working matrices |
+| `update_work(x, P, R, z, weights, h, residual, out_x, out_P)` | the complete update step on working matrices |
 
 `weighted_covariance` with `a == b` is a covariance; with two deviation sets
 it is a cross covariance; noise is added by the caller. Weights are an
 s-by-1 working vector of any sign; the residual form of `mean` assumes they
-sum to one. `predict` and `update` are compositions of these kernels plus the
-shared `linears` add/transpose/axpby/Cholesky/solve operations.
+sum to one. `predict_work` and `update_work` compose the smaller kernels plus
+the shared `linears` add/transpose/axpby/Cholesky/solve operations; the
+signal-format `predict` and `update` only validate the state storage, import
+Q signals, call the kernel and commit. Their storage macros are therefore the
+kernel amount (`FILTERS_UKF_PREDICT_WORK_STORAGE`,
+`FILTERS_UKF_UPDATE_WORK_STORAGE`) plus `n + n*n` output staging and, for Q,
+the imported inputs.
 
 ## Fixed-fraction Q contract
 
@@ -254,8 +261,10 @@ design). Oracles are independent of the production code:
   innovation takes the short way; without it the floating mean lands near zero
   and the Q covariance (about 2.9) leaves the signal interval and fails
   atomically with `RANGE`.
-- Manual composition of the kernels reproduces `predict`; the same kernels
-  compute the mean and cross covariance of seven uniformly weighted points.
+- Manual composition of the kernels reproduces `predict`; `predict_work` and
+  `update_work` reproduce the filter transactions from the same prior; the
+  same kernels compute the mean and cross covariance of seven uniformly
+  weighted points.
 - Init validation, capacities, exact/own-descriptor alias acceptance, partial
   and cross alias rejection, workspace bounds and misalignment, callback and
   residual error propagation, nonfinite callback output, semidefinite `P`,

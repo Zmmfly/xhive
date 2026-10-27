@@ -307,6 +307,33 @@ typedef struct {
     LINEARS_BASIC_WORKSPACE_BYTES((p), FILTERS_KALMAN_MAX_SIZE((points), (q)))
 
 /**
+ * @brief Working elements for the predict kernel: 7*n*n + 7*n + 2; SIZE_MAX on overflow.
+ *
+ * n is a positive, side-effect-free state count. The filter macros below add
+ * their own output staging and Q imports on top of this amount.
+ */
+#define FILTERS_UKF_PREDICT_WORK_STORAGE(n) \
+    LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(7, LINEARS_SIZE_MUL((n), (n))), \
+                     LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(7, (n)), 2))
+
+/**
+ * @brief Working elements for the update kernel; SIZE_MAX on overflow.
+ *
+ * 6*n*n + 2*m*m + 10*n*m + 6*n + 5*m + 2 + (2*n+1)*max(n,m) elements for n
+ * states and m measurements, both positive and side-effect-free.
+ */
+#define FILTERS_UKF_UPDATE_WORK_STORAGE(n, m) \
+    LINEARS_SIZE_ADD( \
+        LINEARS_SIZE_ADD( \
+            LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(LINEARS_SIZE_MUL(2, (n)), FILTERS_KALMAN_MAX_SIZE((n), (m))), \
+                             FILTERS_KALMAN_MAX_SIZE((n), (m))), \
+            LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(6, LINEARS_SIZE_MUL((n), (n))), \
+                             LINEARS_SIZE_MUL(2, LINEARS_SIZE_MUL((m), (m))))), \
+        LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(10, LINEARS_SIZE_MUL((n), (m))), \
+                         LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(6, (n)), \
+                                          LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(5, (m)), 2))))
+
+/**
  * @brief Floating working elements for predict: 8*n*n + 8*n + 2; SIZE_MAX on overflow.
  *
  * n is a positive, side-effect-free state count. Allocate a real float or
@@ -329,7 +356,8 @@ typedef struct {
 /**
  * @brief Floating predict basic-scratch bytes; SIZE_MAX means overflow.
  *
- * Allocate linears_workspace_unit_t[LINEARS_WORKSPACE_UNITS(result)].
+ * Allocate linears_workspace_unit_t[LINEARS_WORKSPACE_UNITS(result)]. The
+ * predict kernel has the same basic and decomposition requirements.
  */
 #define FILTERS_UKF_PREDICT_BASIC_BYTES(n) \
     LINEARS_BASIC_WORKSPACE_BYTES((n), FILTERS_UKF_SIGMA_COUNT(n))
@@ -377,6 +405,8 @@ typedef struct {
 
 /**
  * @brief Floating update basic-scratch bytes; SIZE_MAX means overflow.
+ *
+ * The update kernel has the same basic and decomposition requirements.
  */
 #define FILTERS_UKF_UPDATE_BASIC_BYTES(n, m) \
     LINEARS_BASIC_WORKSPACE_BYTES(FILTERS_KALMAN_MAX_SIZE((n), (m)), FILTERS_UKF_SIGMA_COUNT(n))
@@ -512,6 +542,73 @@ linears_status_t filters_ukf_f32_weighted_covariance(const linears_matrix_t *a, 
                                                      filters_ukf_f32_workspace_t workspace);
 
 /**
+ * @brief Unscented prediction on single-precision working matrices.
+ *
+ * This is the predict step without state storage: it maps the sigma points
+ * of (mean, covariance) through transition and writes the predicted mean and
+ * the symmetrized predicted covariance plus process_noise.
+ *
+ * @param[in] mean Non-NULL finite n-by-1 prior mean.
+ * @param[in] covariance Non-NULL finite symmetric positive-definite n-by-n prior covariance.
+ * @param[in] process_noise Non-NULL finite symmetric PSD n-by-n Q.
+ * @param[in] weights Non-NULL weights from filters_ukf_f32_weights.
+ * @param[in] transition Non-NULL map f from an n-by-1 point to its n-by-1 successor.
+ * @param[in] transition_context Passed to transition unchanged; may be NULL.
+ * @param[in] residual State-space residual, or NULL for plain subtraction.
+ * @param[in] residual_context Passed to residual unchanged; may be NULL.
+ * @param[in,out] out_mean Non-NULL n-by-1 destination; disjoint from every input.
+ * @param[in,out] out_covariance Non-NULL n-by-n destination; disjoint from every input.
+ * @param[in] workspace Arrays meeting FILTERS_UKF_PREDICT_WORK_STORAGE(n),
+ *                      FILTERS_UKF_PREDICT_BASIC_BYTES(n) and
+ *                      FILTERS_UKF_PREDICT_DECOMP_STORAGE(n).
+ * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, WORKSPACE, ALIAS,
+ *         RANGE, DOMAIN (asymmetry, negative diagonal, invalid weights),
+ *         NOT_POSITIVE_DEFINITE, or a callback error.
+ * @note Output contents are unspecified after a failure.
+ */
+linears_status_t filters_ukf_f32_predict_work(const linears_matrix_t *mean, const linears_matrix_t *covariance,
+                                              const linears_matrix_t *process_noise,
+                                              const filters_ukf_f32_weights_t *weights,
+                                              filters_ukf_f32_fn transition, void *transition_context,
+                                              filters_ukf_f32_residual_fn residual, void *residual_context,
+                                              linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
+                                              filters_ukf_f32_workspace_t workspace);
+
+/**
+ * @brief Unscented measurement update on single-precision working matrices.
+ *
+ * This is the update step without state storage; see filters_ukf_f32_update
+ * for the equations. R is Cholesky-checked before any callback runs.
+ *
+ * @param[in] mean Non-NULL finite n-by-1 prior mean.
+ * @param[in] covariance Non-NULL finite symmetric positive-definite n-by-n prior covariance.
+ * @param[in] measurement_noise Non-NULL finite symmetric SPD m-by-m R.
+ * @param[in] measurement Non-NULL finite m-by-1 z.
+ * @param[in] weights Non-NULL weights from filters_ukf_f32_weights.
+ * @param[in] observation Non-NULL map h from an n-by-1 point to an m-by-1 measurement.
+ * @param[in] observation_context Passed to observation unchanged; may be NULL.
+ * @param[in] residual Measurement-space residual, or NULL for plain subtraction.
+ * @param[in] residual_context Passed to residual unchanged; may be NULL.
+ * @param[in,out] out_mean Non-NULL n-by-1 destination; disjoint from every input.
+ * @param[in,out] out_covariance Non-NULL n-by-n destination; disjoint from every input.
+ * @param[in] workspace Arrays meeting FILTERS_UKF_UPDATE_WORK_STORAGE(n,m),
+ *                      FILTERS_UKF_UPDATE_BASIC_BYTES(n,m) and
+ *                      FILTERS_UKF_UPDATE_DECOMP_STORAGE(n,m).
+ * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, WORKSPACE, ALIAS,
+ *         RANGE, DOMAIN, NOT_POSITIVE_DEFINITE (P, R or S), SINGULAR, or a
+ *         callback error.
+ * @note Output contents are unspecified after a failure.
+ */
+linears_status_t filters_ukf_f32_update_work(const linears_matrix_t *mean, const linears_matrix_t *covariance,
+                                             const linears_matrix_t *measurement_noise,
+                                             const linears_matrix_t *measurement,
+                                             const filters_ukf_f32_weights_t *weights,
+                                             filters_ukf_f32_fn observation, void *observation_context,
+                                             filters_ukf_f32_residual_fn residual, void *residual_context,
+                                             linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
+                                             filters_ukf_f32_workspace_t workspace);
+
+/**
  * @brief Initialize a single-precision UKF: hyperparameters and x/P/Q/R.
  *
  * @param[in,out] state Non-NULL object whose descriptors and capacities are set.
@@ -636,6 +733,29 @@ linears_status_t filters_ukf_f64_weighted_covariance(const linears_matrix_t *a, 
                                                      filters_ukf_f64_workspace_t workspace);
 
 /**
+ * @copydoc filters_ukf_f32_predict_work
+ */
+linears_status_t filters_ukf_f64_predict_work(const linears_matrix_t *mean, const linears_matrix_t *covariance,
+                                              const linears_matrix_t *process_noise,
+                                              const filters_ukf_f64_weights_t *weights,
+                                              filters_ukf_f64_fn transition, void *transition_context,
+                                              filters_ukf_f64_residual_fn residual, void *residual_context,
+                                              linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
+                                              filters_ukf_f64_workspace_t workspace);
+
+/**
+ * @copydoc filters_ukf_f32_update_work
+ */
+linears_status_t filters_ukf_f64_update_work(const linears_matrix_t *mean, const linears_matrix_t *covariance,
+                                             const linears_matrix_t *measurement_noise,
+                                             const linears_matrix_t *measurement,
+                                             const filters_ukf_f64_weights_t *weights,
+                                             filters_ukf_f64_fn observation, void *observation_context,
+                                             filters_ukf_f64_residual_fn residual, void *residual_context,
+                                             linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
+                                             filters_ukf_f64_workspace_t workspace);
+
+/**
  * @copydoc filters_ukf_f32_init
  */
 linears_status_t filters_ukf_f64_init(filters_ukf_f64_t *state, double alpha, double beta, double kappa,
@@ -747,6 +867,60 @@ linears_status_t filters_ukf_fixed_deviations(const linears_matrix_t *points, co
 linears_status_t filters_ukf_fixed_weighted_covariance(const linears_matrix_t *a, const linears_matrix_t *b,
                                                        const linears_matrix_t *weights, linears_matrix_t *out,
                                                        filters_ukf_fixed_workspace_t workspace);
+
+/**
+ * @brief Unscented prediction on fixed-F31 working matrices; see the f32 variant.
+ *
+ * @param[in] mean Non-NULL n-by-1 working prior mean.
+ * @param[in] covariance Non-NULL symmetric positive-definite n-by-n working prior covariance.
+ * @param[in] process_noise Non-NULL symmetric PSD n-by-n working Q.
+ * @param[in] weights Non-NULL weights from filters_ukf_fixed_weights.
+ * @param[in] transition Non-NULL F31 working map f (n-by-1 to n-by-1).
+ * @param[in] transition_context Passed to transition unchanged; may be NULL.
+ * @param[in] residual F31 state-space residual, or NULL for plain subtraction.
+ * @param[in] residual_context Passed to residual unchanged; may be NULL.
+ * @param[in,out] out_mean Non-NULL n-by-1 working destination; disjoint from inputs.
+ * @param[in,out] out_covariance Non-NULL n-by-n working destination; disjoint from inputs.
+ * @param[in] workspace Arrays meeting FILTERS_UKF_PREDICT_WORK_STORAGE(n),
+ *                      FILTERS_UKF_PREDICT_BASIC_BYTES(n) and
+ *                      FILTERS_UKF_PREDICT_DECOMP_STORAGE(n).
+ * @return linears_status_t As filters_ukf_f32_predict_work; RANGE means F31/F62 overflow.
+ */
+linears_status_t filters_ukf_fixed_predict_work(const linears_matrix_t *mean, const linears_matrix_t *covariance,
+                                                const linears_matrix_t *process_noise,
+                                                const filters_ukf_fixed_weights_t *weights,
+                                                filters_ukf_fixed_fn transition, void *transition_context,
+                                                filters_ukf_fixed_residual_fn residual, void *residual_context,
+                                                linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
+                                                filters_ukf_fixed_workspace_t workspace);
+
+/**
+ * @brief Unscented update on fixed-F31 working matrices; see the f32 variant.
+ *
+ * @param[in] mean Non-NULL n-by-1 working prior mean.
+ * @param[in] covariance Non-NULL symmetric positive-definite n-by-n working prior covariance.
+ * @param[in] measurement_noise Non-NULL symmetric SPD m-by-m working R.
+ * @param[in] measurement Non-NULL m-by-1 working z.
+ * @param[in] weights Non-NULL weights from filters_ukf_fixed_weights.
+ * @param[in] observation Non-NULL F31 working map h (n-by-1 to m-by-1).
+ * @param[in] observation_context Passed to observation unchanged; may be NULL.
+ * @param[in] residual F31 measurement-space residual, or NULL for plain subtraction.
+ * @param[in] residual_context Passed to residual unchanged; may be NULL.
+ * @param[in,out] out_mean Non-NULL n-by-1 working destination; disjoint from inputs.
+ * @param[in,out] out_covariance Non-NULL n-by-n working destination; disjoint from inputs.
+ * @param[in] workspace Arrays meeting FILTERS_UKF_UPDATE_WORK_STORAGE(n,m),
+ *                      FILTERS_UKF_UPDATE_BASIC_BYTES(n,m) and
+ *                      FILTERS_UKF_UPDATE_DECOMP_STORAGE(n,m).
+ * @return linears_status_t As filters_ukf_f32_update_work; RANGE means F31/F62 overflow.
+ */
+linears_status_t filters_ukf_fixed_update_work(const linears_matrix_t *mean, const linears_matrix_t *covariance,
+                                               const linears_matrix_t *measurement_noise,
+                                               const linears_matrix_t *measurement,
+                                               const filters_ukf_fixed_weights_t *weights,
+                                               filters_ukf_fixed_fn observation, void *observation_context,
+                                               filters_ukf_fixed_residual_fn residual, void *residual_context,
+                                               linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
+                                               filters_ukf_fixed_workspace_t workspace);
 
 /**
  * @brief Initialize a q15 UKF from raw q15 matrices and F31 hyperparameters.
