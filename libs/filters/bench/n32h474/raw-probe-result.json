@@ -1,0 +1,26 @@
+{
+  "elf_sha256": "ceda3bd28da9bc635f01271c8a5225d2d5ab6f7208be524d687312560061cc2e",
+  "probe_source_sha256": "3147efb21f98be38585a47bfce731891db3ef1428baf1055b1a84def8ec3a8af",
+  "words": [
+    1347569202,
+    2,
+    0,
+    196614,
+    300027,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "live_cpacr": 0,
+  "measurement": "correctness only, reset HSI; not a latency measurement",
+  "q15_comparisons": 196614,
+  "q31_comparisons": 300027,
+  "total_comparisons": 496641,
+  "mismatches": 0
+}

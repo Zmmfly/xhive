@@ -356,8 +356,10 @@ formulas and validation are in [PF.md](PF.md). Known limits:
 Tests are separated into `fir.cc`, `fir_design.cc`, `biquad.cc`, `lpf.cc`,
 `hpf.cc`, `bpf.cc`, `moving_average.cc`, `ema.cc`, `median.cc`,
 `complementary.cc`, `kalman_scalar.cc`, `kalman_matrix.cc`, `ukf.cc`, `pf.cc`
-and `upf.cc`, with Q-specific regressions in `q_estimators.cc`. The filter
-family suites exercise all four numeric formats. Independent difference
+and `upf.cc`, with Q-specific regressions in `q_estimators.cc`. The N32H474
+optimizations add exact-boundary tests in `q_boundaries.cc`, Q arithmetic
+comparisons in `pf_q_mcu.cc`, and floating working-kernel comparisons in
+`float_work_equivalence.cc`. The filter family suites exercise all four numeric formats. Independent difference
 equations or sorted-window oracles use the quantized public inputs; matrix
 Kalman, the UKF and the particle filters use Eigen only in tests. The exact fixed
 FIR oracle uses the host compiler's native `__int128`, deliberately independent
@@ -378,8 +380,8 @@ xmake test -g xhive -v 'filters_test_*/*'
 xmake test -g xhive -v 'filters_test_lpf/lpf'
 ```
 
-Confirmed for the dedicated Q implementation, including the final
-translated-small-covariance regressions:
+The following historical checks were confirmed for the dedicated Q baseline
+at `3ee417a`, including its translated-small-covariance regressions:
 
 - `xmake b`: passed.
 - `xmake test -g xhive`: all 60 registered host test entries passed, including
@@ -424,6 +426,13 @@ products and memory passes; speedups must not all be attributed to integer
 arithmetic beating an FPU. Files marked `baseline-470206b` describe the
 previous floating-wrapper implementation, not validation of the dedicated
 Q paths.
+
+The [N32H474 board fixture and results](bench/n32h474/README.md) measure all
+three estimators with f32/f64 FPU access enabled and q15/q31 FPU access disabled.
+It records DWT cycles and independently checks all measured GPIO pulse widths
+with a logic analyzer. On this Cortex-M4, f64 arithmetic remains software even
+when FPU access is enabled; q15 without FPU must not be assumed faster than
+hardware f32. See that guide for the measured matrix, source hashes and limits.
 
 ## Algorithms and references
 

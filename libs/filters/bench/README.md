@@ -1,9 +1,13 @@
 # Q estimator measurements
 
-These tools compare the dedicated q15/q31 UKF, PF and UPF paths with the
-unchanged f32/f64 paths. They are separate from functional Xmake tests and
-neither download tools nor access a board. Generated objects and logs stay in
-retained temporary directories outside the SDK.
+The host and compile-only tools in this directory compare the dedicated
+q15/q31 UKF, PF and UPF paths with f32/f64. They are separate from functional
+Xmake tests and neither download tools nor access a board. Generated objects
+and logs stay in retained temporary directories outside the SDK.
+
+Real N32H474 measurements, including FPU-on f32/f64 versus FPU-off q15/q31,
+use the separately authorized [board fixture](n32h474/README.md). Its results
+must not be inferred from the historical host measurements below.
 
 ## Reproduce
 
@@ -37,11 +41,13 @@ threshold is imposed on CI.
 
 ## Recorded results
 
-The `current-*` records use the dedicated Q implementation, with production
-source hashes matching the validated working tree. The UKF kernel hash is
+The historical `current-*` records describe the dedicated Q implementation
+later committed as `f8af678`, before the N32H474-driven optimizations to both Q
+and floating kernels. They are not measurements of the latest working tree.
+Their recorded UKF kernel hash is
 `556c4aad42e8cc03788f2cc72f2bf79527bc25133ab352da1d052ee9bf3d577b`.
-Their `revision` field identifies the base commit, not a commit containing the
-uncommitted implementation; `source_mode` is `working-tree-copy`.
+Their `revision` field identifies the then-base commit, not the later commit
+containing the implementation; `source_mode` is `working-tree-copy`.
 `baseline-470206b-*` records describe the previous floating-wrapper version.
 
 Host: AMD Ryzen 9 7945HX, Linux CPU 0 affinity. Compilers: GCC 15.2 and
