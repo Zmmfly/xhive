@@ -22,7 +22,10 @@ there is no separately versioned upstream package:
 
 Each library provides `f32`, `f64`, `q15`, and `q31` APIs. q15/q31 signals are raw
 signed Q1.15/Q1.31 integers without exponent fields; working values and wide
-coefficients use explicit `int64_t` fixed-F31 storage. Q computation is integer-only.
+coefficients use explicit `int64_t` fixed-F31 storage, and that Q computation is
+integer-only. The UKF, PF and UPF of `filters` are the exception: they store every
+array in the signal type and run q15 in float and q31 in double between a single
+widening on entry and a single range-checked narrowing on commit.
 Matrices contain only `data`, `rows`, and `cols`, replacing the former BFP ABI.
 State and dimension-sized workspace belong to the caller; see each public header
 for capacity, alignment, aliasing, endpoint and range-error contracts. These are

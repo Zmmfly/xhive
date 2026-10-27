@@ -508,7 +508,7 @@ TYPED_TEST(UnscentedKalman, FixedSigmaPointsMayLeaveTheSignalIntervalButResultsM
         auto predict_ws = UkfWorkspace<A>::predict(1);
         ASSERT_EQ(Ukf<A>::init(&fixture.state, work_encode<A>(1), work_encode<A>(2), work_encode<A>(0), &xv, &pv, &qv, &rv), LINEARS_OK);
         const long double x_start = decode<A>(xv).values[0], p_start = decode<A>(pv).values[0];
-        ASSERT_GT(x_start + std::sqrt(p_start), 1); /* The upper sigma point exceeds +1 in F31. */
+        ASSERT_GT(x_start + std::sqrt(p_start), 1); /* The upper sigma point exceeds +1 in the working type. */
         ASSERT_EQ(Ukf<A>::predict(&fixture.state, map_callback<A>, &contract, nullptr, nullptr, predict_ws.view()), LINEARS_OK);
         expect_matrix<A>(fixture.state.estimate, Dense(1, 1, {0.5L * x_start}));
         expect_matrix<A>(fixture.state.covariance, Dense(1, 1, {0.25L * p_start}));
@@ -534,7 +534,6 @@ TEST(UnscentedKalmanWorkspace, ConstantExpressionsAndOverflowSentinels) {
     static_assert(FILTERS_UKF_UPDATE_STORAGE(2, 1) == FILTERS_UKF_UPDATE_WORK_STORAGE(2, 1) + 2 + 4, "filter adds staging");
     static_assert(FILTERS_UKF_PREDICT_BASIC_BYTES(2) == 2 * 5 * sizeof(linears_workspace_unit_t), "predict basic");
     static_assert(FILTERS_UKF_UPDATE_BASIC_BYTES(1, 3) == 3 * 3 * sizeof(linears_workspace_unit_t), "update basic");
-    static_assert(FILTERS_UKF_Q_PREDICT_BASIC_BYTES(2) == 10 * sizeof(linears_workspace_unit_t), "Q predict basic covers staging");
     static_assert(FILTERS_UKF_PREDICT_DECOMP_STORAGE(3) == 9, "Cholesky of P");
     static_assert(FILTERS_UKF_UPDATE_DECOMP_STORAGE(3, 1) == 9, "Cholesky dominates");
     static_assert(FILTERS_UKF_UPDATE_DECOMP_STORAGE(1, 3) == 12, "solve dominates");
@@ -551,15 +550,15 @@ TEST(UnscentedKalmanWorkspace, ConstantExpressionsAndOverflowSentinels) {
     EXPECT_EQ(FILTERS_UKF_PREDICT_WORK_STORAGE(huge), SIZE_MAX);
     EXPECT_EQ(FILTERS_UKF_UPDATE_WORK_STORAGE(huge, 1), SIZE_MAX);
     EXPECT_EQ(FILTERS_UKF_PREDICT_BASIC_BYTES(huge), SIZE_MAX);
-    EXPECT_EQ(FILTERS_UKF_Q_UPDATE_BASIC_BYTES(huge, 1), SIZE_MAX);
+    EXPECT_EQ(FILTERS_UKF_UPDATE_BASIC_BYTES(huge, 1), SIZE_MAX);
     EXPECT_EQ(FILTERS_UKF_UPDATE_DECOMP_STORAGE(huge, huge), SIZE_MAX);
     EXPECT_EQ(FILTERS_UKF_MEAN_STORAGE(huge, 3), SIZE_MAX);
     EXPECT_EQ(FILTERS_UKF_WEIGHTED_COVARIANCE_STORAGE(huge, 3, 3), SIZE_MAX);
     float f32_predict[FILTERS_UKF_PREDICT_STORAGE(2)];
-    linears_fixed_t q_update[FILTERS_UKF_Q_UPDATE_STORAGE(2, 1)];
-    linears_workspace_unit_t basic[LINEARS_WORKSPACE_UNITS(FILTERS_UKF_Q_UPDATE_BASIC_BYTES(2, 1))];
+    double q31_update[FILTERS_UKF_Q_UPDATE_STORAGE(2, 1)];
+    linears_workspace_unit_t basic[LINEARS_WORKSPACE_UNITS(FILTERS_UKF_UPDATE_BASIC_BYTES(2, 1))];
     EXPECT_EQ(sizeof f32_predict / sizeof f32_predict[0], 50u);
-    EXPECT_EQ(sizeof q_update / sizeof q_update[0], FILTERS_UKF_UPDATE_STORAGE(2, 1) + 8u);
+    EXPECT_EQ(sizeof q31_update / sizeof q31_update[0], FILTERS_UKF_UPDATE_STORAGE(2, 1) + 8u);
     EXPECT_EQ(sizeof basic / sizeof basic[0], 10u);
 }
 

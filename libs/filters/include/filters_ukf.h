@@ -24,19 +24,20 @@
  * unscented particle filters can reuse them with their own weights.
  *
  * f32/f64 callbacks and kernels see float/double matrices. q15/q31 filters
- * store raw signals (int16_t/2^15, int32_t/2^31) but their callbacks and the
- * shared `fixed` kernels see linears_fixed_t working matrices (int64_t/2^31),
- * because sigma points and weights legitimately exceed the Q signal interval.
- * Q hyperparameters are therefore linears_fixed_t coefficients, where
- * LINEARS_FIXED_ONE is one. Q final x/P are range-checked on their computed
- * F31 values and narrowed once, with the endpoint policy of linears_numeric.h.
- * See UKF.md for the algorithm, storage layout and validation record.
+ * store raw signals (int16_t/2^15, int32_t/2^31) in every persistent array
+ * and compute in the floating type whose significand covers the signal: q15
+ * uses the f32 kernels, callbacks, weights and workspace, q31 the f64 ones.
+ * Signals widen once on entry; sigma points and intermediates may exceed the
+ * signal interval; the final x/P are range-checked against [-1,+1] and
+ * narrowed once with the endpoint policy of linears_numeric.h (exact +1 and
+ * the rounding cell reaching it map to the maximum), or the transaction
+ * fails with RANGE and commits nothing. See UKF.md for the algorithm,
+ * storage layout and validation record.
  */
 #ifndef FILTERS_UKF_H
 #define FILTERS_UKF_H
 
 #include "filters_kalman.h"
-#include "linears_work.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -94,33 +95,6 @@ typedef linears_status_t (*filters_ukf_f64_residual_fn)(const linears_matrix_t *
                                                         linears_matrix_t *out, void *context);
 
 /**
- * @brief Fixed-F31 point map shared by the q15 and q31 filters.
- *
- * @param[in] in Non-NULL n-by-1 linears_fixed_t working point (int64_t/2^31).
- * @param[out] out Non-NULL n-by-1 or m-by-1 linears_fixed_t working view;
- *                 every element must be written. Any int64_t value is valid.
- * @param[in] context Caller pointer passed through unchanged; may be NULL.
- * @return linears_status_t LINEARS_OK or an error returned verbatim.
- * @note Inputs can exceed [-1,+1]; compute with linears_fixed_* helpers or
- *       linears_*_fixed matrix operations. in and out never overlap.
- */
-typedef linears_status_t (*filters_ukf_fixed_fn)(const linears_matrix_t *in,
-                                                 linears_matrix_t *out, void *context);
-
-/**
- * @brief Fixed-F31 residual out = a (-) b shared by the q15 and q31 filters.
- *
- * @param[in] a Non-NULL k-by-1 working minuend.
- * @param[in] b Non-NULL k-by-1 working reference; may share data with a.
- * @param[out] out Non-NULL k-by-1 working destination; every element written.
- * @param[in] context Caller pointer passed through unchanged; may be NULL.
- * @return linears_status_t LINEARS_OK or an error returned verbatim.
- */
-typedef linears_status_t (*filters_ukf_fixed_residual_fn)(const linears_matrix_t *a,
-                                                          const linears_matrix_t *b,
-                                                          linears_matrix_t *out, void *context);
-
-/**
  * @brief Single-precision scaled unscented transform weights.
  *
  * lambda = alpha^2*(n+kappa) - n. Only three distinct weights exist; the
@@ -144,43 +118,21 @@ typedef struct {
 } filters_ukf_f64_weights_t;
 
 /**
- * @brief Fixed-F31 unscented weights shared by q15 and q31; raw/2^31 each.
- */
-typedef struct {
-    linears_fixed_t scale; /**< n+lambda > 0, F31; multiplies P before Cholesky. */
-    linears_fixed_t mean0; /**< W_m[0], F31; magnitude can exceed one. */
-    linears_fixed_t covariance0; /**< W_c[0], F31; may be negative. */
-    linears_fixed_t other; /**< W_m[i] = W_c[i] for i >= 1, F31. */
-} filters_ukf_fixed_weights_t;
-
-/**
  * @brief Single-precision scratch; same arrays as the linear matrix filter.
  *
  * Supply real float, linears_workspace_unit_t and float arrays sized by the
  * FILTERS_UKF_* macros of the operation; mutually disjoint and disjoint from
  * state, inputs, outputs and descriptors. Only the required prefix is used.
+ * The q15 filters use this scratch with the FILTERS_UKF_Q_* data amounts.
  */
 typedef filters_kalman_matrix_f32_workspace_t filters_ukf_f32_workspace_t;
 
 /**
  * @brief Double-precision scratch; same arrays as the linear matrix filter.
+ *
+ * The q31 filters use this scratch with the FILTERS_UKF_Q_* data amounts.
  */
 typedef filters_kalman_matrix_f64_workspace_t filters_ukf_f64_workspace_t;
-
-/**
- * @brief Fixed-F31 scratch shared by the fixed kernels and q15/q31 filters.
- *
- * All numeric scratch is linears_fixed_t; raw Q signals are never stored in
- * it. Q filters also stage their final narrowed x/P in basic units through
- * the units' declared q15/q31 members. Size with the FILTERS_UKF_Q_* macros.
- */
-typedef struct {
-    linears_fixed_t *data; /**< Working matrices and intermediates. */
-    size_t capacity; /**< Capacity of data in linears_fixed_t elements. */
-    linears_workspace_unit_t *basic; /**< Separate basic-kernel union array. */
-    size_t basic_bytes; /**< Available bytes in basic. */
-    linears_fixed_workspace_t decomposition; /**< Separate Cholesky/solve array. */
-} filters_ukf_fixed_workspace_t;
 
 /**
  * @brief Caller-owned single-precision UKF state and explicitly bounded storage.
@@ -223,8 +175,9 @@ typedef struct {
 /**
  * @brief Caller-owned q15 UKF state; arrays hold raw int16_t/2^15 signals.
  *
- * Storage rules follow filters_ukf_f32_t with int16_t elements. Weights are
- * wide F31. Working arithmetic is integer-only F31/F62.
+ * Storage rules follow filters_ukf_f32_t with int16_t elements. Weights,
+ * callbacks and scratch are the f32 ones: the filter widens its signals to
+ * float on every call and narrows the results back.
  */
 typedef struct {
     linears_matrix_t estimate; /**< n-by-1 raw q15 state. */
@@ -235,14 +188,15 @@ typedef struct {
     size_t covariance_capacity; /**< Allocated covariance elements; at least n*n. */
     size_t process_noise_capacity; /**< Allocated Q elements; at least n*n. */
     size_t measurement_noise_capacity; /**< Allocated R elements; at least m*m. */
-    filters_ukf_fixed_weights_t weights; /**< Written by init from F31 alpha/beta/kappa. */
+    filters_ukf_f32_weights_t weights; /**< Written by init from float alpha/beta/kappa. */
 } filters_ukf_q15_t;
 
 /**
  * @brief Caller-owned q31 UKF state; arrays hold raw int32_t/2^31 signals.
  *
- * Storage rules follow filters_ukf_f32_t with int32_t elements. Weights are
- * wide F31. Working arithmetic is integer-only F31/F62.
+ * Storage rules follow filters_ukf_f32_t with int32_t elements. Weights,
+ * callbacks and scratch are the f64 ones: the filter widens its signals to
+ * double on every call and narrows the results back.
  */
 typedef struct {
     linears_matrix_t estimate; /**< n-by-1 raw q31 state. */
@@ -253,14 +207,14 @@ typedef struct {
     size_t covariance_capacity; /**< Allocated covariance elements; at least n*n. */
     size_t process_noise_capacity; /**< Allocated Q elements; at least n*n. */
     size_t measurement_noise_capacity; /**< Allocated R elements; at least m*m. */
-    filters_ukf_fixed_weights_t weights; /**< Written by init from F31 alpha/beta/kappa. */
+    filters_ukf_f64_weights_t weights; /**< Written by init from double alpha/beta/kappa. */
 } filters_ukf_q31_t;
 
 /**
  * @brief Working elements for sigma point generation: 2*n*n; SIZE_MAX on overflow.
  *
  * n is a positive, side-effect-free state count. Allocate the kernel's working
- * element type (float, double or linears_fixed_t).
+ * element type (float or double).
  */
 #define FILTERS_UKF_SIGMA_POINTS_STORAGE(n) LINEARS_SIZE_MUL(2, LINEARS_SIZE_MUL((n), (n)))
 
@@ -344,17 +298,17 @@ typedef struct {
                      LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(8, (n)), 2))
 
 /**
- * @brief Fixed-F31 working elements for Q predict: 10*n*n + 9*n + 2.
+ * @brief Working elements for Q predict: 10*n*n + 9*n + 2.
  *
- * Includes the imported x/P/Q. n is positive and side-effect-free; SIZE_MAX
- * signals overflow. Allocate a real linears_fixed_t array.
+ * Includes the widened x/P/Q. n is positive and side-effect-free; SIZE_MAX
+ * signals overflow. Allocate float for q15 and double for q31.
  */
 #define FILTERS_UKF_Q_PREDICT_STORAGE(n) \
     LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(10, LINEARS_SIZE_MUL((n), (n))), \
                      LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(9, (n)), 2))
 
 /**
- * @brief Floating predict basic-scratch bytes; SIZE_MAX means overflow.
+ * @brief Predict basic-scratch bytes in every format; SIZE_MAX means overflow.
  *
  * Allocate linears_workspace_unit_t[LINEARS_WORKSPACE_UNITS(result)]. The
  * predict kernel has the same basic and decomposition requirements.
@@ -363,16 +317,9 @@ typedef struct {
     LINEARS_BASIC_WORKSPACE_BYTES((n), FILTERS_UKF_SIGMA_COUNT(n))
 
 /**
- * @brief Q predict basic-scratch bytes, including n+n*n units of output staging.
- */
-#define FILTERS_UKF_Q_PREDICT_BASIC_BYTES(n) \
-    FILTERS_KALMAN_MAX_SIZE(FILTERS_UKF_PREDICT_BASIC_BYTES(n), \
-        LINEARS_BASIC_WORKSPACE_BYTES(LINEARS_SIZE_ADD((n), LINEARS_SIZE_MUL((n), (n))), 1))
-
-/**
  * @brief Decomposition elements for predict in every format: the Cholesky of P.
  *
- * Allocate float, double or linears_fixed_t to match the filter.
+ * Allocate float (f32, q15) or double (f64, q31) to match the filter.
  */
 #define FILTERS_UKF_PREDICT_DECOMP_STORAGE(n) LINEARS_CHOLESKY_WORKSPACE(n)
 
@@ -394,7 +341,7 @@ typedef struct {
                                           LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(5, (m)), 2))))
 
 /**
- * @brief Fixed-F31 working elements for Q update, including imported x/P/R/z.
+ * @brief Working elements for Q update, including the widened x/P/R/z.
  *
  * Adds n*n + m*m + n + m elements to FILTERS_UKF_UPDATE_STORAGE(n,m).
  */
@@ -404,19 +351,12 @@ typedef struct {
                          LINEARS_SIZE_ADD((n), (m))))
 
 /**
- * @brief Floating update basic-scratch bytes; SIZE_MAX means overflow.
+ * @brief Update basic-scratch bytes in every format; SIZE_MAX means overflow.
  *
  * The update kernel has the same basic and decomposition requirements.
  */
 #define FILTERS_UKF_UPDATE_BASIC_BYTES(n, m) \
     LINEARS_BASIC_WORKSPACE_BYTES(FILTERS_KALMAN_MAX_SIZE((n), (m)), FILTERS_UKF_SIGMA_COUNT(n))
-
-/**
- * @brief Q update basic-scratch bytes, including n+n*n units of output staging.
- */
-#define FILTERS_UKF_Q_UPDATE_BASIC_BYTES(n, m) \
-    FILTERS_KALMAN_MAX_SIZE(FILTERS_UKF_UPDATE_BASIC_BYTES((n), (m)), \
-        LINEARS_BASIC_WORKSPACE_BYTES(LINEARS_SIZE_ADD((n), LINEARS_SIZE_MUL((n), (n))), 1))
 
 /**
  * @brief Decomposition elements for update: max(n*n, m*m + m*n); SIZE_MAX on overflow.
@@ -779,263 +719,126 @@ linears_status_t filters_ukf_f64_update(filters_ukf_f64_t *state, const linears_
                                         filters_ukf_f64_workspace_t workspace);
 
 /**
- * @brief Compute fixed-F31 unscented weights with integer arithmetic only.
+ * @brief Initialize a q15 UKF from raw q15 matrices and float hyperparameters.
  *
- * @param[in] states Positive state count n.
- * @param[in] alpha Strictly positive F31 spread (raw/2^31); LINEARS_FIXED_ONE is one.
- * @param[in] beta F31 prior parameter; 2*LINEARS_FIXED_ONE for Gaussians.
- * @param[in] kappa F31 secondary scaling; n+kappa must be positive.
- * @param[out] out Non-NULL destination, unchanged on failure.
- * @return linears_status_t OK, ARGUMENT for NULL out, DIMENSION for zero
- *         states, RANGE for F31 overflow, or DOMAIN when alpha or
- *         alpha^2*(n+kappa) is not positive after rounding.
- * @note Tiny alpha makes scale tiny and the weights huge; F31 then loses
- *       sigma point precision. Alpha near one is recommended for Q filters.
- */
-linears_status_t filters_ukf_fixed_weights(size_t states, linears_fixed_t alpha, linears_fixed_t beta,
-                                           linears_fixed_t kappa, filters_ukf_fixed_weights_t *out);
-
-/**
- * @brief Generate 2n+1 fixed-F31 sigma points, one per row; see the f32 variant.
- *
- * @param[in] mean Non-NULL n-by-1 working center point.
- * @param[in] covariance Non-NULL exactly symmetric positive-definite n-by-n working matrix.
- * @param[in] scale Positive F31 factor, normally weights.scale.
- * @param[in,out] points Non-NULL (2n+1)-by-n working destination; disjoint from inputs.
- * @param[in] workspace Arrays meeting the FILTERS_UKF_SIGMA_POINTS_* macros.
- * @return linears_status_t As filters_ukf_f32_sigma_points; RANGE means int64 overflow.
- */
-linears_status_t filters_ukf_fixed_sigma_points(const linears_matrix_t *mean,
-                                                const linears_matrix_t *covariance, linears_fixed_t scale,
-                                                linears_matrix_t *points,
-                                                filters_ukf_fixed_workspace_t workspace);
-
-/**
- * @brief Map every row of fixed-F31 points through a callback; see the f32 variant.
- *
- * @param[in] points Non-NULL s-by-k working matrix.
- * @param[in] fn Non-NULL working map from k-by-1 to j-by-1.
- * @param[in] context Passed to fn unchanged; may be NULL.
- * @param[in,out] out Non-NULL s-by-j working destination; disjoint from points.
- * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, ALIAS or the callback's error.
- */
-linears_status_t filters_ukf_fixed_propagate(const linears_matrix_t *points, filters_ukf_fixed_fn fn,
-                                             void *context, linears_matrix_t *out);
-
-/**
- * @brief Weighted mean of fixed-F31 rows; see the f32 variant for the formula.
- *
- * @param[in] points Non-NULL s-by-k working matrix.
- * @param[in] weights Non-NULL s-by-1 F31 weights; sum to one with a residual.
- * @param[in] residual Working residual callback, or NULL for plain subtraction.
- * @param[in] context Passed to residual unchanged; may be NULL.
- * @param[in,out] out Non-NULL k-by-1 working destination; disjoint from inputs.
- * @param[in] workspace Arrays meeting the FILTERS_UKF_MEAN_* macros.
- * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, WORKSPACE, ALIAS,
- *         RANGE for F31/F62 overflow, or a residual callback error.
- */
-linears_status_t filters_ukf_fixed_mean(const linears_matrix_t *points, const linears_matrix_t *weights,
-                                        filters_ukf_fixed_residual_fn residual, void *context,
-                                        linears_matrix_t *out, filters_ukf_fixed_workspace_t workspace);
-
-/**
- * @brief Row-wise fixed-F31 residuals of points about a mean; see the f32 variant.
- *
- * @param[in] points Non-NULL s-by-k working matrix.
- * @param[in] mean Non-NULL k-by-1 working reference; may share data with points.
- * @param[in] residual Working residual callback, or NULL for plain subtraction.
- * @param[in] context Passed to residual unchanged; may be NULL.
- * @param[in,out] out Non-NULL s-by-k working destination; disjoint from inputs.
- * @param[in] workspace basic must meet FILTERS_UKF_DEVIATIONS_BASIC_BYTES(k).
- * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, WORKSPACE, ALIAS,
- *         RANGE, or a residual callback error.
- */
-linears_status_t filters_ukf_fixed_deviations(const linears_matrix_t *points, const linears_matrix_t *mean,
-                                              filters_ukf_fixed_residual_fn residual, void *context,
-                                              linears_matrix_t *out, filters_ukf_fixed_workspace_t workspace);
-
-/**
- * @brief Fixed-F31 out = a^T * diag(weights) * b; see the f32 variant.
- *
- * @param[in] a Non-NULL s-by-p working matrix.
- * @param[in] b Non-NULL s-by-q working matrix; may be a itself.
- * @param[in] weights Non-NULL s-by-1 F31 weights; negative values are allowed.
- * @param[in,out] out Non-NULL p-by-q working destination; disjoint from inputs.
- * @param[in] workspace Arrays meeting the FILTERS_UKF_WEIGHTED_COVARIANCE_* macros.
- * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, WORKSPACE, ALIAS or RANGE.
- */
-linears_status_t filters_ukf_fixed_weighted_covariance(const linears_matrix_t *a, const linears_matrix_t *b,
-                                                       const linears_matrix_t *weights, linears_matrix_t *out,
-                                                       filters_ukf_fixed_workspace_t workspace);
-
-/**
- * @brief Unscented prediction on fixed-F31 working matrices; see the f32 variant.
- *
- * @param[in] mean Non-NULL n-by-1 working prior mean.
- * @param[in] covariance Non-NULL symmetric positive-definite n-by-n working prior covariance.
- * @param[in] process_noise Non-NULL symmetric PSD n-by-n working Q.
- * @param[in] weights Non-NULL weights from filters_ukf_fixed_weights.
- * @param[in] transition Non-NULL F31 working map f (n-by-1 to n-by-1).
- * @param[in] transition_context Passed to transition unchanged; may be NULL.
- * @param[in] residual F31 state-space residual, or NULL for plain subtraction.
- * @param[in] residual_context Passed to residual unchanged; may be NULL.
- * @param[in,out] out_mean Non-NULL n-by-1 working destination; disjoint from inputs.
- * @param[in,out] out_covariance Non-NULL n-by-n working destination; disjoint from inputs.
- * @param[in] workspace Arrays meeting FILTERS_UKF_PREDICT_WORK_STORAGE(n),
- *                      FILTERS_UKF_PREDICT_BASIC_BYTES(n) and
- *                      FILTERS_UKF_PREDICT_DECOMP_STORAGE(n).
- * @return linears_status_t As filters_ukf_f32_predict_work; RANGE means F31/F62 overflow.
- */
-linears_status_t filters_ukf_fixed_predict_work(const linears_matrix_t *mean, const linears_matrix_t *covariance,
-                                                const linears_matrix_t *process_noise,
-                                                const filters_ukf_fixed_weights_t *weights,
-                                                filters_ukf_fixed_fn transition, void *transition_context,
-                                                filters_ukf_fixed_residual_fn residual, void *residual_context,
-                                                linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
-                                                filters_ukf_fixed_workspace_t workspace);
-
-/**
- * @brief Unscented update on fixed-F31 working matrices; see the f32 variant.
- *
- * @param[in] mean Non-NULL n-by-1 working prior mean.
- * @param[in] covariance Non-NULL symmetric positive-definite n-by-n working prior covariance.
- * @param[in] measurement_noise Non-NULL symmetric SPD m-by-m working R.
- * @param[in] measurement Non-NULL m-by-1 working z.
- * @param[in] weights Non-NULL weights from filters_ukf_fixed_weights.
- * @param[in] observation Non-NULL F31 working map h (n-by-1 to m-by-1).
- * @param[in] observation_context Passed to observation unchanged; may be NULL.
- * @param[in] residual F31 measurement-space residual, or NULL for plain subtraction.
- * @param[in] residual_context Passed to residual unchanged; may be NULL.
- * @param[in,out] out_mean Non-NULL n-by-1 working destination; disjoint from inputs.
- * @param[in,out] out_covariance Non-NULL n-by-n working destination; disjoint from inputs.
- * @param[in] workspace Arrays meeting FILTERS_UKF_UPDATE_WORK_STORAGE(n,m),
- *                      FILTERS_UKF_UPDATE_BASIC_BYTES(n,m) and
- *                      FILTERS_UKF_UPDATE_DECOMP_STORAGE(n,m).
- * @return linears_status_t As filters_ukf_f32_update_work; RANGE means F31/F62 overflow.
- */
-linears_status_t filters_ukf_fixed_update_work(const linears_matrix_t *mean, const linears_matrix_t *covariance,
-                                               const linears_matrix_t *measurement_noise,
-                                               const linears_matrix_t *measurement,
-                                               const filters_ukf_fixed_weights_t *weights,
-                                               filters_ukf_fixed_fn observation, void *observation_context,
-                                               filters_ukf_fixed_residual_fn residual, void *residual_context,
-                                               linears_matrix_t *out_mean, linears_matrix_t *out_covariance,
-                                               filters_ukf_fixed_workspace_t workspace);
-
-/**
- * @brief Initialize a q15 UKF from raw q15 matrices and F31 hyperparameters.
+ * Contract as filters_ukf_f32_init with int16_t/2^15 elements; raw values are
+ * copied unchanged, so no value fails with RANGE here. Positive noise must
+ * remain positive after quantization: a variance that rounds to raw zero is zero.
  *
  * @param[in,out] state Non-NULL object whose descriptors and capacities are set.
- * @param[in] alpha Strictly positive F31 spread; LINEARS_FIXED_ONE is one.
- * @param[in] beta F31 prior parameter; 2*LINEARS_FIXED_ONE for Gaussians.
- * @param[in] kappa F31 secondary scaling; n+kappa must be positive.
+ * @param[in] alpha Sigma point spread, strictly positive; typically (0,1].
+ * @param[in] beta Distribution prior; 2 for Gaussian states.
+ * @param[in] kappa Secondary scaling; n+kappa must be positive.
  * @param[in] estimate Non-NULL n-by-1 raw q15 initial x.
  * @param[in] covariance Non-NULL symmetric n-by-n raw q15 initial P, nonnegative diagonal.
  * @param[in] process_noise Non-NULL symmetric PSD n-by-n raw q15 Q.
  * @param[in] measurement_noise Non-NULL symmetric m-by-m raw q15 R.
- * @return linears_status_t As filters_ukf_f32_init, without RANGE for values.
- * @note Raw values are copied unchanged. Positive noise must remain positive
- *       after quantization; a physical variance that rounds to raw zero is zero.
+ * @return linears_status_t As filters_ukf_f32_init.
  */
-linears_status_t filters_ukf_q15_init(filters_ukf_q15_t *state, linears_fixed_t alpha, linears_fixed_t beta,
-                                      linears_fixed_t kappa, const linears_matrix_t *estimate,
-                                      const linears_matrix_t *covariance, const linears_matrix_t *process_noise,
+linears_status_t filters_ukf_q15_init(filters_ukf_q15_t *state, float alpha, float beta, float kappa,
+                                      const linears_matrix_t *estimate, const linears_matrix_t *covariance,
+                                      const linears_matrix_t *process_noise,
                                       const linears_matrix_t *measurement_noise);
 
 /**
- * @brief Integer-only q15 unscented prediction with F31 working callbacks.
+ * @brief q15 unscented prediction computed in float; contract as filters_ukf_f32_predict.
+ *
+ * x, P and Q are widened to float, the f32 predict kernel runs with the
+ * given float callbacks, and the results are narrowed back to q15.
  *
  * @param[in,out] state Non-NULL initialized q15 filter.
- * @param[in] transition Non-NULL F31 working map f (n-by-1 to n-by-1).
+ * @param[in] transition Non-NULL float map f (n-by-1 to n-by-1).
  * @param[in] transition_context Passed to transition unchanged; may be NULL.
- * @param[in] residual F31 state-space residual, or NULL for plain subtraction.
+ * @param[in] residual Float state-space residual, or NULL for plain subtraction.
  * @param[in] residual_context Passed to residual unchanged; may be NULL.
- * @param[in] workspace Arrays meeting FILTERS_UKF_Q_PREDICT_STORAGE(n),
- *                      FILTERS_UKF_Q_PREDICT_BASIC_BYTES(n) and
+ * @param[in] workspace Float arrays meeting FILTERS_UKF_Q_PREDICT_STORAGE(n),
+ *                      FILTERS_UKF_PREDICT_BASIC_BYTES(n) and
  *                      FILTERS_UKF_PREDICT_DECOMP_STORAGE(n).
- * @return linears_status_t As filters_ukf_f32_predict. RANGE also covers F31/F62
- *         working overflow and a computed F31 x or P element outside [-1,+1].
- * @note The range check applies to the computed/rounded F31 results, not an
- *       ideal unrounded expression; exact +1 narrows to INT16_MAX.
+ * @return linears_status_t As filters_ukf_f32_predict. RANGE also covers a
+ *         computed x or P element outside [-1,+1]; nothing is committed then.
+ * @note Both outputs are range-checked before either is written; exact +1
+ *       and the rounding cell reaching it narrow to INT16_MAX.
  */
-linears_status_t filters_ukf_q15_predict(filters_ukf_q15_t *state, filters_ukf_fixed_fn transition,
-                                         void *transition_context, filters_ukf_fixed_residual_fn residual,
-                                         void *residual_context, filters_ukf_fixed_workspace_t workspace);
+linears_status_t filters_ukf_q15_predict(filters_ukf_q15_t *state, filters_ukf_f32_fn transition,
+                                         void *transition_context, filters_ukf_f32_residual_fn residual,
+                                         void *residual_context, filters_ukf_f32_workspace_t workspace);
 
 /**
- * @brief Integer-only q15 unscented measurement update.
+ * @brief q15 unscented measurement update computed in float; contract as filters_ukf_f32_update.
  *
  * @param[in,out] state Non-NULL initialized q15 filter with m-by-m R.
  * @param[in] measurement Non-NULL m-by-1 raw q15 z.
- * @param[in] observation Non-NULL F31 working map h (n-by-1 to m-by-1).
+ * @param[in] observation Non-NULL float map h (n-by-1 to m-by-1).
  * @param[in] observation_context Passed to observation unchanged; may be NULL.
- * @param[in] residual F31 measurement-space residual, or NULL for plain subtraction.
+ * @param[in] residual Float measurement-space residual, or NULL for plain subtraction.
  * @param[in] residual_context Passed to residual unchanged; may be NULL.
- * @param[in] workspace Arrays meeting FILTERS_UKF_Q_UPDATE_STORAGE(n,m),
- *                      FILTERS_UKF_Q_UPDATE_BASIC_BYTES(n,m) and
+ * @param[in] workspace Float arrays meeting FILTERS_UKF_Q_UPDATE_STORAGE(n,m),
+ *                      FILTERS_UKF_UPDATE_BASIC_BYTES(n,m) and
  *                      FILTERS_UKF_UPDATE_DECOMP_STORAGE(n,m).
- * @return linears_status_t As filters_ukf_f32_update. RANGE also covers F31/F62
- *         working overflow and a computed F31 x or P element outside [-1,+1].
- *         NOT_POSITIVE_DEFINITE includes positive pivots lost to quantization.
+ * @return linears_status_t As filters_ukf_f32_update, plus RANGE for a
+ *         computed x or P element outside [-1,+1]. NOT_POSITIVE_DEFINITE
+ *         includes positive pivots lost to q15 quantization of P or R.
  */
 linears_status_t filters_ukf_q15_update(filters_ukf_q15_t *state, const linears_matrix_t *measurement,
-                                        filters_ukf_fixed_fn observation, void *observation_context,
-                                        filters_ukf_fixed_residual_fn residual, void *residual_context,
-                                        filters_ukf_fixed_workspace_t workspace);
+                                        filters_ukf_f32_fn observation, void *observation_context,
+                                        filters_ukf_f32_residual_fn residual, void *residual_context,
+                                        filters_ukf_f32_workspace_t workspace);
 
 /**
- * @brief Initialize a q31 UKF from raw q31 matrices and F31 hyperparameters.
+ * @brief Initialize a q31 UKF from raw q31 matrices and double hyperparameters.
  *
  * Contract as filters_ukf_q15_init with int32_t/2^31 elements.
  *
  * @param[in,out] state Non-NULL object whose descriptors and capacities are set.
- * @param[in] alpha Strictly positive F31 spread; LINEARS_FIXED_ONE is one.
- * @param[in] beta F31 prior parameter; 2*LINEARS_FIXED_ONE for Gaussians.
- * @param[in] kappa F31 secondary scaling; n+kappa must be positive.
+ * @param[in] alpha Sigma point spread, strictly positive; typically (0,1].
+ * @param[in] beta Distribution prior; 2 for Gaussian states.
+ * @param[in] kappa Secondary scaling; n+kappa must be positive.
  * @param[in] estimate Non-NULL n-by-1 raw q31 initial x.
  * @param[in] covariance Non-NULL symmetric n-by-n raw q31 initial P, nonnegative diagonal.
  * @param[in] process_noise Non-NULL symmetric PSD n-by-n raw q31 Q.
  * @param[in] measurement_noise Non-NULL symmetric m-by-m raw q31 R.
- * @return linears_status_t As filters_ukf_f32_init, without RANGE for values.
+ * @return linears_status_t As filters_ukf_f32_init.
  */
-linears_status_t filters_ukf_q31_init(filters_ukf_q31_t *state, linears_fixed_t alpha, linears_fixed_t beta,
-                                      linears_fixed_t kappa, const linears_matrix_t *estimate,
-                                      const linears_matrix_t *covariance, const linears_matrix_t *process_noise,
+linears_status_t filters_ukf_q31_init(filters_ukf_q31_t *state, double alpha, double beta, double kappa,
+                                      const linears_matrix_t *estimate, const linears_matrix_t *covariance,
+                                      const linears_matrix_t *process_noise,
                                       const linears_matrix_t *measurement_noise);
 
 /**
- * @brief Integer-only q31 unscented prediction; contract as filters_ukf_q15_predict.
+ * @brief q31 unscented prediction computed in double; contract as filters_ukf_q15_predict.
  *
  * @param[in,out] state Non-NULL initialized q31 filter.
- * @param[in] transition Non-NULL F31 working map f (n-by-1 to n-by-1).
+ * @param[in] transition Non-NULL double map f (n-by-1 to n-by-1).
  * @param[in] transition_context Passed to transition unchanged; may be NULL.
- * @param[in] residual F31 state-space residual, or NULL for plain subtraction.
+ * @param[in] residual Double state-space residual, or NULL for plain subtraction.
  * @param[in] residual_context Passed to residual unchanged; may be NULL.
- * @param[in] workspace Arrays meeting the FILTERS_UKF_Q_PREDICT_* and
- *                      FILTERS_UKF_PREDICT_DECOMP_STORAGE macros.
+ * @param[in] workspace Double arrays meeting FILTERS_UKF_Q_PREDICT_STORAGE(n),
+ *                      FILTERS_UKF_PREDICT_BASIC_BYTES(n) and
+ *                      FILTERS_UKF_PREDICT_DECOMP_STORAGE(n).
  * @return linears_status_t As filters_ukf_q15_predict; exact +1 narrows to INT32_MAX.
  */
-linears_status_t filters_ukf_q31_predict(filters_ukf_q31_t *state, filters_ukf_fixed_fn transition,
-                                         void *transition_context, filters_ukf_fixed_residual_fn residual,
-                                         void *residual_context, filters_ukf_fixed_workspace_t workspace);
+linears_status_t filters_ukf_q31_predict(filters_ukf_q31_t *state, filters_ukf_f64_fn transition,
+                                         void *transition_context, filters_ukf_f64_residual_fn residual,
+                                         void *residual_context, filters_ukf_f64_workspace_t workspace);
 
 /**
- * @brief Integer-only q31 unscented update; contract as filters_ukf_q15_update.
+ * @brief q31 unscented measurement update computed in double; contract as filters_ukf_q15_update.
  *
  * @param[in,out] state Non-NULL initialized q31 filter with m-by-m R.
  * @param[in] measurement Non-NULL m-by-1 raw q31 z.
- * @param[in] observation Non-NULL F31 working map h (n-by-1 to m-by-1).
+ * @param[in] observation Non-NULL double map h (n-by-1 to m-by-1).
  * @param[in] observation_context Passed to observation unchanged; may be NULL.
- * @param[in] residual F31 measurement-space residual, or NULL for plain subtraction.
+ * @param[in] residual Double measurement-space residual, or NULL for plain subtraction.
  * @param[in] residual_context Passed to residual unchanged; may be NULL.
- * @param[in] workspace Arrays meeting the FILTERS_UKF_Q_UPDATE_* and
- *                      FILTERS_UKF_UPDATE_DECOMP_STORAGE macros.
+ * @param[in] workspace Double arrays meeting FILTERS_UKF_Q_UPDATE_STORAGE(n,m),
+ *                      FILTERS_UKF_UPDATE_BASIC_BYTES(n,m) and
+ *                      FILTERS_UKF_UPDATE_DECOMP_STORAGE(n,m).
  * @return linears_status_t As filters_ukf_q15_update.
  */
 linears_status_t filters_ukf_q31_update(filters_ukf_q31_t *state, const linears_matrix_t *measurement,
-                                        filters_ukf_fixed_fn observation, void *observation_context,
-                                        filters_ukf_fixed_residual_fn residual, void *residual_context,
-                                        filters_ukf_fixed_workspace_t workspace);
+                                        filters_ukf_f64_fn observation, void *observation_context,
+                                        filters_ukf_f64_residual_fn residual, void *residual_context,
+                                        filters_ukf_f64_workspace_t workspace);
 
 #ifdef __cplusplus
 }

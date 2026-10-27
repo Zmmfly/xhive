@@ -12,38 +12,15 @@
     if (status != LINEARS_OK) return status; \
 } while (0)
 #define U_BASIC workspace.basic, workspace.basic_bytes
-#if U_FIXED
-#define U_CHECK_FINITE(matrix) ((void)0)
-#else
 #define U_CHECK_FINITE(matrix) U_TRY(U_FINITE(matrix))
-#endif
 
 linears_status_t U_API(weights)(size_t states, U_WORK alpha, U_WORK beta, U_WORK kappa,
                                 U_WEIGHTS *out)
 {
     U_WEIGHTS result;
-#if U_FIXED
-    linears_status_t status;
-    linears_fixed_t n, alpha_squared, lambda;
-#else
     U_WORK n = (U_WORK)states, alpha_squared;
-#endif
     if (out == NULL) return LINEARS_ERROR_ARGUMENT;
     if (states == 0) return LINEARS_ERROR_DIMENSION;
-#if U_FIXED
-    if (alpha <= 0) return LINEARS_ERROR_DOMAIN;
-    U_TRY(linears_fixed_from_int((int64_t)states, &n));
-    U_TRY(linears_fixed_mul(alpha, alpha, &alpha_squared));
-    U_TRY(linears_fixed_add(n, kappa, &result.scale));
-    U_TRY(linears_fixed_mul(alpha_squared, result.scale, &result.scale));
-    if (result.scale <= 0) return LINEARS_ERROR_DOMAIN;
-    U_TRY(linears_fixed_sub(result.scale, n, &lambda));
-    U_TRY(linears_fixed_div(lambda, result.scale, &result.mean0));
-    U_TRY(linears_fixed_add(result.mean0, LINEARS_FIXED_ONE, &result.covariance0));
-    U_TRY(linears_fixed_sub(result.covariance0, alpha_squared, &result.covariance0));
-    U_TRY(linears_fixed_add(result.covariance0, beta, &result.covariance0));
-    U_TRY(linears_fixed_div(LINEARS_FIXED_ONE / 2, result.scale, &result.other));
-#else
     if (!isfinite(alpha) || !isfinite(beta) || !isfinite(kappa)) return LINEARS_ERROR_RANGE;
     if (!(alpha > 0)) return LINEARS_ERROR_DOMAIN;
     alpha_squared = alpha * alpha;
@@ -55,7 +32,6 @@ linears_status_t U_API(weights)(size_t states, U_WORK alpha, U_WORK beta, U_WORK
     result.other = (U_WORK)0.5 / result.scale;
     if (!isfinite(result.mean0) || !isfinite(result.covariance0) || !isfinite(result.other))
         return LINEARS_ERROR_RANGE;
-#endif
     *out = result;
     return LINEARS_OK;
 }
@@ -80,16 +56,14 @@ linears_status_t U_API(sigma_points)(const linears_matrix_t *mean, const linears
                              FILTERS_UKF_SIGMA_POINTS_DECOMP_STORAGE(n)));
     U_CHECK_FINITE(mean);
     U_CHECK_FINITE(covariance);
-#if !U_FIXED
     if (!isfinite(scale)) return LINEARS_ERROR_RANGE;
-#endif
     if (!(scale > 0)) return LINEARS_ERROR_DOMAIN;
     workspace.basic_bytes = FILTERS_UKF_SIGMA_POINTS_BASIC_BYTES(n);
     workspace.decomposition.capacity = FILTERS_UKF_SIGMA_POINTS_DECOMP_STORAGE(n);
     cursor = workspace.data;
     scaled = U_LOCAL(take)(&cursor, n, n);
     factor = U_LOCAL(take)(&cursor, n, n);
-    U_TRY(U_LINEAR(axpby)(scale, covariance, U_ZERO, covariance, &scaled, U_BASIC));
+    U_TRY(U_LINEAR(axpby)(scale, covariance, (U_WORK)0, covariance, &scaled, U_BASIC));
     U_TRY(U_LINEAR(cholesky)(&scaled, &factor, workspace.decomposition));
     /* Rows of the transposed factor are the columns of L. */
     U_TRY(U_LINEAR(transpose)(&factor, &scaled, U_BASIC));
@@ -224,7 +198,7 @@ linears_status_t U_API(weighted_covariance)(const linears_matrix_t *a, const lin
     for (i = 0; i < s; ++i) {
         source = U_LOCAL(row)(b, i);
         target = U_LOCAL(row)(&scaled, i);
-        U_TRY(U_LINEAR(axpby)(w[i], &source, U_ZERO, &source, &target, U_BASIC));
+        U_TRY(U_LINEAR(axpby)(w[i], &source, (U_WORK)0, &source, &target, U_BASIC));
     }
     U_TRY(U_LINEAR(transpose)(a, &transposed, U_BASIC));
     return U_LINEAR(mul)(&transposed, &scaled, out, U_BASIC);
@@ -233,11 +207,9 @@ linears_status_t U_API(weighted_covariance)(const linears_matrix_t *a, const lin
 static linears_status_t U_LOCAL(weights_valid)(const U_WEIGHTS *weights)
 {
     if (weights == NULL) return LINEARS_ERROR_ARGUMENT;
-#if !U_FIXED
     if (!isfinite(weights->scale) || !isfinite(weights->mean0) ||
         !isfinite(weights->covariance0) || !isfinite(weights->other))
         return LINEARS_ERROR_RANGE;
-#endif
     return weights->scale > 0 ? LINEARS_OK : LINEARS_ERROR_DOMAIN;
 }
 
@@ -259,7 +231,7 @@ static linears_status_t U_LOCAL(symmetrize)(linears_matrix_t *matrix, linears_ma
 {
     linears_status_t status;
     U_TRY(U_LINEAR(transpose)(matrix, scratch, U_BASIC));
-    return U_LINEAR(axpby)(U_HALF, matrix, U_HALF, scratch, matrix, U_BASIC);
+    return U_LINEAR(axpby)((U_WORK)0.5, matrix, (U_WORK)0.5, scratch, matrix, U_BASIC);
 }
 
 linears_status_t U_API(predict_work)(const linears_matrix_t *mean, const linears_matrix_t *covariance,
@@ -429,11 +401,8 @@ linears_status_t U_API(update_work)(const linears_matrix_t *mean, const linears_
 #undef U_JOIN_INNER
 #undef U_TAG
 #undef U_WORK
-#undef U_FIXED
 #undef U_WEIGHTS
 #undef U_WORKSPACE
 #undef U_FN
 #undef U_RESIDUAL_FN
-#undef U_ZERO
-#undef U_HALF
 #undef U_FINITE

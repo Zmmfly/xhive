@@ -15,42 +15,31 @@ template<> struct Upf<tag> { \
 };
 UPF_TEST_API(f32, f32)
 UPF_TEST_API(f64, f64)
-UPF_TEST_API(q15, fixed)
-UPF_TEST_API(q31, fixed)
+UPF_TEST_API(q15, f32)
+UPF_TEST_API(q31, f64)
 #undef UPF_TEST_API
 
 template<class A> struct UpfState {
     using Raw = typename A::Raw;
-    using W = Work<A>;
     static constexpr Raw sentinel = static_cast<Raw>(-12345);
-    static constexpr W work_sentinel = static_cast<W>(-23456);
-    std::vector<W> particles, weights, covariances;
-    std::vector<Raw> q, r;
+    std::vector<Raw> particles, weights, covariances, q, r;
     typename Upf<A>::State state;
     UpfState(std::size_t count, std::size_t n, std::size_t m)
-        : particles(count * n + 2, work_sentinel), weights(count + 2, work_sentinel),
-          covariances(count * n * n + 2, work_sentinel), q(n * n + 2, sentinel), r(m * m + 2, sentinel),
+        : particles(count * n + 2, sentinel), weights(count + 2, sentinel),
+          covariances(count * n * n + 2, sentinel), q(n * n + 2, sentinel), r(m * m + 2, sentinel),
           state{{{particles.data() + 1, count, n}, {weights.data() + 1, count, 1},
                  {q.data() + 1, n, n}, {r.data() + 1, m, m}, count * n, count, n * n, m * m},
                 {covariances.data() + 1, count, n * n}, count * n * n, {}} {}
     void guards() const {
-        for (const auto *v : {&particles, &weights, &covariances}) {
-            EXPECT_EQ(v->front(), work_sentinel); EXPECT_EQ(v->back(), work_sentinel);
+        for (const auto *v : {&particles, &weights, &covariances, &q, &r}) {
+            EXPECT_EQ(v->front(), sentinel); EXPECT_EQ(v->back(), sentinel);
         }
-        EXPECT_EQ(q.front(), sentinel); EXPECT_EQ(q.back(), sentinel);
-        EXPECT_EQ(r.front(), sentinel); EXPECT_EQ(r.back(), sentinel);
     }
     auto snapshot() const { return std::make_tuple(bytes(state), particles, weights, covariances, q, r); }
-    std::vector<Vec> particle_rows() const {
-        const Dense all = decode_work<A>(state.base.particles);
-        std::vector<Vec> rows(all.rows, Vec(all.cols));
-        for (std::size_t i = 0; i < all.rows; ++i)
-            for (std::size_t j = 0; j < all.cols; ++j) rows[i][j] = all(i, j);
-        return rows;
-    }
-    Vec weight_values() const { return decode_work<A>(state.base.weights).values; }
+    std::vector<Vec> particle_rows() const { return decode_rows<A>(state.base.particles); }
+    Vec weight_values() const { return distribution<A>(state.base.weights); }
     std::vector<Dense> covariance_rows() const {
-        const Dense all = decode_work<A>(state.covariances);
+        const Dense all = decode<A>(state.covariances);
         const std::size_t n = state.base.particles.cols;
         std::vector<Dense> rows(all.rows, Dense(n, n));
         for (std::size_t i = 0; i < all.rows; ++i)
@@ -62,9 +51,6 @@ template<class A> struct UpfState {
 template<class A> UkfWorkspace<A> upf_step_workspace(std::size_t count, std::size_t n, std::size_t m) {
     return UkfWorkspace<A>(A::bits ? FILTERS_UPF_Q_STEP_STORAGE(count, n, m) : FILTERS_UPF_STEP_STORAGE(count, n, m),
                            FILTERS_UPF_STEP_BASIC_BYTES(n, m), FILTERS_UPF_STEP_DECOMP_STORAGE(n, m));
-}
-template<class A> UkfWorkspace<A> upf_resample_workspace(std::size_t count, std::size_t n) {
-    return UkfWorkspace<A>(FILTERS_UPF_RESAMPLE_STORAGE(count, n), 0, 0);
 }
 
 /* Independent long-double UPF: one Eigen-based UKF per particle, the
@@ -148,7 +134,7 @@ TYPED_TEST(UnscentedParticleFilter, PendulumStepsMatchLongDoubleReference) {
     UpfState<A> fixture(count, 2, 2);
     auto init_ws = pf_init_workspace<A>(count, 2);
     auto step_ws = upf_step_workspace<A>(count, 2, 2);
-    auto resample_ws = upf_resample_workspace<A>(count, 2);
+    auto resample_ws = pf_resample_workspace<A>(count);
     auto estimate_ws = pf_estimate_workspace<A>(count, 2);
     Sampler sampler(0x55504644u);
     std::vector<std::size_t> indices(count);
@@ -200,6 +186,7 @@ TYPED_TEST(UnscentedParticleFilter, PendulumStepsMatchLongDoubleReference) {
              * hundred working ulps of relative error instead of a few. */
             expect_near<A>(fixture.weight_values()[i], reference.weights[i], 4);
         }
+        expect_raw_weight_scale<A>(fixture.weights);
         Work<A> ess = work_encode<A>(0);
         ASSERT_EQ(Pf<A>::effective_sample_size(&fixture.state.base.weights, &ess), LINEARS_OK);
         if (work_decode<A>(ess) < static_cast<long double>(count) / 2) {
@@ -291,7 +278,7 @@ TYPED_TEST(UnscentedParticleFilter, PendulumTrackingStaysWithinItsOwnSpread) {
     UpfState<A> fixture(count, 2, 2);
     auto init_ws = pf_init_workspace<A>(count, 2);
     auto step_ws = upf_step_workspace<A>(count, 2, 2);
-    auto resample_ws = upf_resample_workspace<A>(count, 2);
+    auto resample_ws = pf_resample_workspace<A>(count);
     auto estimate_ws = pf_estimate_workspace<A>(count, 2);
     Sampler sampler(0x55505452u);
     std::vector<std::size_t> indices(count);
@@ -330,7 +317,8 @@ TYPED_TEST(UnscentedParticleFilter, ValidationAliasRulesAndFailureAtomicity) {
     using A = TypeParam;
     Model transition{[](const Vec& x) { return Vec{0.5L * x[0] + 0.1L * x[1], 0.5L * x[1]}; }};
     Model observation{[](const Vec& x) { return Vec{0.5L * x[0]}; }};
-    Matrix<A> x0(Dense(2, 1, {0.25L, -0.125L})), p0(Dense::identity(2, 0.25L)), q(Dense::identity(2, 0.01L));
+    /* Q particles must stay inside [-1,+1], so their prior is tighter. */
+    Matrix<A> x0(Dense(2, 1, {0.25L, -0.125L})), p0(Dense::identity(2, A::bits ? 0.04L : 0.25L)), q(Dense::identity(2, 0.01L));
     Matrix<A> r(Dense::identity(1, 0.25L)), z(Dense(1, 1, {0.125L}));
     Matrix<A> asymmetric(Dense(2, 2, {0.01L, 0.005L, 0, 0.01L})), zero(Dense::identity(2, 0)), zero_r(Dense(1, 1, {0}));
     auto xv = x0.view(), pv = p0.view(), qv = q.view(), rv = r.view(), zv = z.view(), zero_pv = zero.view();
@@ -338,7 +326,7 @@ TYPED_TEST(UnscentedParticleFilter, ValidationAliasRulesAndFailureAtomicity) {
     UpfState<A> fixture(count, 2, 1);
     auto init_ws = pf_init_workspace<A>(count, 2);
     auto step_ws = upf_step_workspace<A>(count, 2, 1);
-    auto resample_ws = upf_resample_workspace<A>(count, 2);
+    auto resample_ws = pf_resample_workspace<A>(count);
     Sampler sampler(7);
     const auto sample = sample_callback<A>;
     const auto one = work_encode<A>(1), two = work_encode<A>(2), zero_w = work_encode<A>(0);
@@ -370,8 +358,8 @@ TYPED_TEST(UnscentedParticleFilter, ValidationAliasRulesAndFailureAtomicity) {
     EXPECT_EQ(Upf<A>::init(&fixture.state, one, two, zero_w, &xv, &pv, &qv, &rv, sample, &sampler, init_ws.view()), LINEARS_ERROR_NO_CONVERGENCE);
     EXPECT_EQ(sampler.calls, 3);
     sampler.fail_at = -1; sampler.calls = 0;
-    for (auto& v : fixture.covariances) EXPECT_EQ(v, UpfState<A>::work_sentinel);
-    for (auto& v : fixture.particles) EXPECT_EQ(v, UpfState<A>::work_sentinel);
+    for (auto& v : fixture.covariances) EXPECT_EQ(v, UpfState<A>::sentinel);
+    for (auto& v : fixture.particles) EXPECT_EQ(v, UpfState<A>::sentinel);
     EXPECT_EQ(work_decode<A>(fixture.state.sigma_weights.scale), 0);
     ASSERT_EQ(Upf<A>::init(&fixture.state, one, two, zero_w, &xv, &pv, &qv, &rv, sample, &sampler, init_ws.view()), LINEARS_OK);
     EXPECT_EQ(sampler.calls, static_cast<int>(count));
@@ -453,23 +441,27 @@ TYPED_TEST(UnscentedParticleFilter, ValidationAliasRulesAndFailureAtomicity) {
         transition.calls = 0; observation.calls = 0; sampler.calls = 0;
     }
     /* A singular per-particle covariance fails the proposal Cholesky. */
-    std::fill(fixture.covariances.begin() + 1 + 2 * 4, fixture.covariances.begin() + 1 + 3 * 4, work_encode<A>(0));
+    std::fill(fixture.covariances.begin() + 1 + 2 * 4, fixture.covariances.begin() + 1 + 3 * 4, A::encode(0));
     const auto singular = fixture.snapshot();
     EXPECT_EQ(Upf<A>::step(&fixture.state, &zv, &model, sample, &sampler, step_ws.view()), LINEARS_ERROR_NOT_POSITIVE_DEFINITE);
     EXPECT_EQ(fixture.snapshot(), singular);
-    std::memcpy(fixture.covariances.data() + 1 + 2 * 4, fixture.covariances.data() + 1, 4 * sizeof(Work<A>));
+    std::memcpy(fixture.covariances.data() + 1 + 2 * 4, fixture.covariances.data() + 1, 4 * sizeof(typename A::Raw));
     EXPECT_EQ(fixture.snapshot(), snapshot);
     /* Resample validation, then a resample that moves covariances with their particles. */
     EXPECT_EQ(Upf<A>::resample(&fixture.state, one, indices.data(), count, resample_ws.view()), LINEARS_ERROR_DOMAIN);
     EXPECT_EQ(Upf<A>::resample(&fixture.state, work_encode<A>(0.5L), nullptr, count, resample_ws.view()), LINEARS_ERROR_ARGUMENT);
     EXPECT_EQ(Upf<A>::resample(&fixture.state, work_encode<A>(0.5L), indices.data(), count - 1, resample_ws.view()), LINEARS_ERROR_WORKSPACE);
-    auto short_ws = resample_ws.view(); --short_ws.capacity;
-    EXPECT_EQ(Upf<A>::resample(&fixture.state, work_encode<A>(0.5L), indices.data(), count, short_ws), LINEARS_ERROR_WORKSPACE);
+    if constexpr (A::bits != 0) {
+        auto short_ws = resample_ws.view(); --short_ws.capacity;
+        EXPECT_EQ(Upf<A>::resample(&fixture.state, work_encode<A>(0.5L), indices.data(), count, short_ws), LINEARS_ERROR_WORKSPACE);
+    }
     for (auto index : indices) EXPECT_EQ(index, SIZE_MAX);
     EXPECT_EQ(fixture.snapshot(), snapshot);
+    /* Distinct covariance markers; Q keeps them small so the final step stays in range. */
+    const long double marker = A::bits ? 0.01L : 1;
     for (std::size_t i = 0; i < count; ++i) {
-        fixture.covariances[1 + i * 4] = work_encode<A>(0.25L + 0.01L * static_cast<long double>(i));
-        fixture.weights[1 + i] = work_encode<A>(i == 1 ? 0.6L : 0.1L);
+        fixture.covariances[1 + i * 4] = A::encode(marker * (0.25L + 0.01L * static_cast<long double>(i)));
+        fixture.weights[1 + i] = A::encode(i == 1 ? 0.6L : 0.1L);
     }
     const std::vector<Vec> before = fixture.particle_rows();
     const std::vector<Dense> covariances_before = fixture.covariance_rows();
@@ -487,11 +479,10 @@ TYPED_TEST(UnscentedParticleFilter, ValidationAliasRulesAndFailureAtomicity) {
 TEST(UnscentedParticleFilterWorkspace, ConstantExpressionsAndOverflowSentinels) {
     static_assert(FILTERS_UKF_UPDATE_WORK_STORAGE(2, 1) == 75, "kernel scratch inside the step");
     static_assert(FILTERS_UPF_STEP_STORAGE(10, 2, 1) == 10 * 8 + 12 + 12 + 1 + 2 + 1 + 75, "step storage");
-    static_assert(FILTERS_UPF_Q_STEP_STORAGE(10, 2, 1) == FILTERS_UPF_STEP_STORAGE(10, 2, 1) + 4 + 1 + 1, "Q step storage");
+    static_assert(FILTERS_UPF_Q_STEP_STORAGE(10, 2, 1) == FILTERS_UPF_STEP_STORAGE(10, 2, 1) + 2 + 4 + 4 + 1 + 1, "Q step storage");
     static_assert(FILTERS_UPF_STEP_BASIC_BYTES(2, 1) == 10 * sizeof(linears_workspace_unit_t), "step basic");
     static_assert(FILTERS_UPF_STEP_DECOMP_STORAGE(2, 1) == 6, "prior exponent solve dominates");
     static_assert(FILTERS_UPF_STEP_DECOMP_STORAGE(1, 3) == 12, "gain solve dominates");
-    static_assert(FILTERS_UPF_RESAMPLE_STORAGE(10, 2) == 60, "resample storage");
     const std::size_t huge = SIZE_MAX / 2 + 1;
     EXPECT_EQ(FILTERS_UPF_STEP_STORAGE(huge, 2, 1), SIZE_MAX);
     EXPECT_EQ(FILTERS_UPF_STEP_STORAGE(1, huge, 1), SIZE_MAX);
@@ -499,12 +490,11 @@ TEST(UnscentedParticleFilterWorkspace, ConstantExpressionsAndOverflowSentinels) 
     EXPECT_EQ(FILTERS_UPF_Q_STEP_STORAGE(huge, 1, 1), SIZE_MAX);
     EXPECT_EQ(FILTERS_UPF_STEP_BASIC_BYTES(huge, 1), SIZE_MAX);
     EXPECT_EQ(FILTERS_UPF_STEP_DECOMP_STORAGE(huge, 1), SIZE_MAX);
-    EXPECT_EQ(FILTERS_UPF_RESAMPLE_STORAGE(huge, 2), SIZE_MAX);
     float step[FILTERS_UPF_STEP_STORAGE(10, 2, 1)];
-    linears_fixed_t q_resample[FILTERS_UPF_RESAMPLE_STORAGE(10, 2)];
+    double q31_step[FILTERS_UPF_Q_STEP_STORAGE(10, 2, 1)];
     linears_workspace_unit_t basic[LINEARS_WORKSPACE_UNITS(FILTERS_UPF_STEP_BASIC_BYTES(2, 1))];
     EXPECT_EQ(sizeof step / sizeof step[0], 183u);
-    EXPECT_EQ(sizeof q_resample / sizeof q_resample[0], 60u);
+    EXPECT_EQ(sizeof q31_step / sizeof q31_step[0], 195u);
     EXPECT_EQ(sizeof basic / sizeof basic[0], 10u);
 }
 

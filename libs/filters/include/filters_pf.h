@@ -15,11 +15,15 @@
  * callers own their generator and hand over draws through callbacks or
  * arguments. Serialize calls sharing a state or workspace.
  *
- * Particles and weights are stored in the kernels' working format (float,
- * double, or linears_fixed_t F31 for q15/q31), so a particle may wander
- * outside the Q signal interval without failing the filter; only estimate
- * narrows its outputs to the signal format. Q and R are signal matrices.
- * Weights live in [0,1] and sum to one after update, init and resample.
+ * f32/f64 filters store particles, weights, Q and R as float/double and
+ * their callbacks and kernels see those values directly. q15/q31 filters
+ * store every persistent array in the raw signal type (int16_t/2^15,
+ * int32_t/2^31) and compute in the floating type whose significand covers
+ * the signal: q15 uses the f32 kernels, callbacks, sampler and workspace,
+ * q31 the f64 ones. Signals widen once on entry and results narrow once on
+ * commit after a [-1,+1] range check, so a Q particle that leaves the
+ * signal interval fails its transaction with RANGE instead of being
+ * committed; see the q15 state type for the weight scaling.
  *
  * The transition, observation, residual and workspace types come from
  * filters_ukf.h, and the weighted mean/covariance of estimate are the UKF
@@ -53,16 +57,6 @@ typedef linears_status_t (*filters_pf_f32_sample_fn)(linears_matrix_t *out, void
 typedef linears_status_t (*filters_pf_f64_sample_fn)(linears_matrix_t *out, void *context);
 
 /**
- * @brief Fixed-F31 standard-normal sampler shared by the q15 and q31 filters.
- *
- * @param[out] out Non-NULL k-by-1 linears_fixed_t view (raw/2^31); every
- *                 element must receive an independent N(0,1) draw.
- * @param[in] context Caller pointer passed through unchanged; may be NULL.
- * @return linears_status_t LINEARS_OK or an error returned verbatim.
- */
-typedef linears_status_t (*filters_pf_fixed_sample_fn)(linears_matrix_t *out, void *context);
-
-/**
  * @brief Caller-owned single-precision particle filter.
  *
  * Before init, point particles at an N-by-n and weights at an N-by-1 float
@@ -74,10 +68,10 @@ typedef linears_status_t (*filters_pf_fixed_sample_fn)(linears_matrix_t *out, vo
  * so the kernels can be applied to them directly.
  */
 typedef struct {
-    linears_matrix_t particles; /**< N-by-n working particles, one per row. */
-    linears_matrix_t weights; /**< N-by-1 normalized working weights. */
-    linears_matrix_t process_noise; /**< n-by-n symmetric SPD Q in signal format. */
-    linears_matrix_t measurement_noise; /**< m-by-m symmetric SPD R in signal format. */
+    linears_matrix_t particles; /**< N-by-n particles, one per row. */
+    linears_matrix_t weights; /**< N-by-1 normalized weights; sum to one. */
+    linears_matrix_t process_noise; /**< n-by-n symmetric SPD Q. */
+    linears_matrix_t measurement_noise; /**< m-by-m symmetric SPD R. */
     size_t particles_capacity; /**< Allocated particle elements; at least N*n. */
     size_t weights_capacity; /**< Allocated weight elements; at least N. */
     size_t process_noise_capacity; /**< Allocated Q elements; at least n*n. */
@@ -88,10 +82,10 @@ typedef struct {
  * @copydoc filters_pf_f32_t
  */
 typedef struct {
-    linears_matrix_t particles; /**< N-by-n working particles, one per row. */
-    linears_matrix_t weights; /**< N-by-1 normalized working weights. */
-    linears_matrix_t process_noise; /**< n-by-n symmetric SPD Q in signal format. */
-    linears_matrix_t measurement_noise; /**< m-by-m symmetric SPD R in signal format. */
+    linears_matrix_t particles; /**< N-by-n particles, one per row. */
+    linears_matrix_t weights; /**< N-by-1 normalized weights; sum to one. */
+    linears_matrix_t process_noise; /**< n-by-n symmetric SPD Q. */
+    linears_matrix_t measurement_noise; /**< m-by-m symmetric SPD R. */
     size_t particles_capacity; /**< Allocated particle elements; at least N*n. */
     size_t weights_capacity; /**< Allocated weight elements; at least N. */
     size_t process_noise_capacity; /**< Allocated Q elements; at least n*n. */
@@ -99,14 +93,25 @@ typedef struct {
 } filters_pf_f64_t;
 
 /**
- * @brief Caller-owned q15 particle filter: F31 particles/weights, raw q15 Q/R.
+ * @brief Caller-owned q15 particle filter; every array holds raw int16_t/2^15 values.
  *
- * Storage rules follow filters_pf_f32_t with linears_fixed_t particle and
- * weight arrays and int16_t/2^15 noise arrays. Arithmetic is integer-only.
+ * Storage rules follow filters_pf_f32_t with int16_t elements. Callbacks,
+ * samplers and scratch are the f32 ones: the filter widens its signals to
+ * float on every call and narrows the results back. Particles must stay
+ * inside [-1,+1]; init and predict fail with RANGE and commit nothing when
+ * a drawn particle leaves the interval.
+ *
+ * Raw weights are scaled so that the largest equals INT16_MAX instead of
+ * summing to one: a sum-normalized vector would leave most of the 15-bit
+ * range unused for large N. They define the distribution up to that common
+ * factor, which every consumer (update, resample, estimate and the q15
+ * effective sample size) divides out. A weight below 2^-16 of the largest
+ * rounds to zero, so a particle more than about 11 nats behind the best one
+ * is lost at the commit.
  */
 typedef struct {
-    linears_matrix_t particles; /**< N-by-n linears_fixed_t particles, one per row. */
-    linears_matrix_t weights; /**< N-by-1 linears_fixed_t normalized weights. */
+    linears_matrix_t particles; /**< N-by-n raw q15 particles, one per row. */
+    linears_matrix_t weights; /**< N-by-1 raw q15 weights; largest is INT16_MAX. */
     linears_matrix_t process_noise; /**< n-by-n symmetric SPD raw q15 Q. */
     linears_matrix_t measurement_noise; /**< m-by-m symmetric SPD raw q15 R. */
     size_t particles_capacity; /**< Allocated particle elements; at least N*n. */
@@ -116,11 +121,16 @@ typedef struct {
 } filters_pf_q15_t;
 
 /**
- * @brief Caller-owned q31 particle filter: F31 particles/weights, raw q31 Q/R.
+ * @brief Caller-owned q31 particle filter; every array holds raw int32_t/2^31 values.
+ *
+ * Rules of filters_pf_q15_t with int32_t elements, double working
+ * arithmetic and the f64 callbacks, sampler and scratch. The largest raw
+ * weight is INT32_MAX; a weight below 2^-32 of it (about 22 nats behind)
+ * rounds to zero.
  */
 typedef struct {
-    linears_matrix_t particles; /**< N-by-n linears_fixed_t particles, one per row. */
-    linears_matrix_t weights; /**< N-by-1 linears_fixed_t normalized weights. */
+    linears_matrix_t particles; /**< N-by-n raw q31 particles, one per row. */
+    linears_matrix_t weights; /**< N-by-1 raw q31 weights; largest is INT32_MAX. */
     linears_matrix_t process_noise; /**< n-by-n symmetric SPD raw q31 Q. */
     linears_matrix_t measurement_noise; /**< m-by-m symmetric SPD raw q31 R. */
     size_t particles_capacity; /**< Allocated particle elements; at least N*n. */
@@ -164,17 +174,24 @@ typedef struct {
                      LINEARS_SIZE_ADD(LINEARS_SIZE_MUL((n), (n)), LINEARS_SIZE_MUL(2, (n))))
 
 /**
- * @brief Fixed-F31 working elements for Q init: floating amount + n*n + n imports.
+ * @brief Working elements for Q init: floating amount + n*n + n.
+ *
+ * Adds the widened prior covariance and mean. Allocate float for q15 and
+ * double for q31.
  */
 #define FILTERS_PF_Q_INIT_STORAGE(N, n) \
     LINEARS_SIZE_ADD(FILTERS_PF_PREDICT_STORAGE((N), (n)), \
                      LINEARS_SIZE_ADD(LINEARS_SIZE_MUL((n), (n)), (n)))
 
 /**
- * @brief Fixed-F31 working elements for Q predict: floating amount + n*n import.
+ * @brief Working elements for Q predict: floating amount + n*n + n.
+ *
+ * Adds the widened Q and the one widened particle row handed to the
+ * transition. Allocate float for q15 and double for q31.
  */
 #define FILTERS_PF_Q_PREDICT_STORAGE(N, n) \
-    LINEARS_SIZE_ADD(FILTERS_PF_PREDICT_STORAGE((N), (n)), LINEARS_SIZE_MUL((n), (n)))
+    LINEARS_SIZE_ADD(FILTERS_PF_PREDICT_STORAGE((N), (n)), \
+                     LINEARS_SIZE_ADD(LINEARS_SIZE_MUL((n), (n)), (n)))
 
 /**
  * @brief Basic scratch bytes for init and predict in every format.
@@ -194,11 +211,14 @@ typedef struct {
                      LINEARS_SIZE_ADD(LINEARS_SIZE_MUL((m), (m)), (m)))
 
 /**
- * @brief Fixed-F31 working elements for Q update: floating amount + m*m + m imports.
+ * @brief Working elements for Q update: floating amount + n + m*m + m.
+ *
+ * Adds the one widened particle row handed to the observation, the widened
+ * R and the widened measurement. Allocate float for q15 and double for q31.
  */
-#define FILTERS_PF_Q_UPDATE_STORAGE(N, m) \
+#define FILTERS_PF_Q_UPDATE_STORAGE(N, n, m) \
     LINEARS_SIZE_ADD(FILTERS_PF_UPDATE_STORAGE((N), (m)), \
-                     LINEARS_SIZE_ADD(LINEARS_SIZE_MUL((m), (m)), (m)))
+                     LINEARS_SIZE_ADD((n), LINEARS_SIZE_ADD(LINEARS_SIZE_MUL((m), (m)), (m))))
 
 /**
  * @brief Basic scratch bytes for update in every format.
@@ -211,9 +231,11 @@ typedef struct {
 #define FILTERS_PF_UPDATE_DECOMP_STORAGE(m) LINEARS_SOLVE_WORKSPACE((m), 1)
 
 /**
- * @brief Working elements for resample: N*n staged particles; no basic/decomposition.
+ * @brief Working elements for Q resample: the N widened weights.
+ *
+ * f32/f64 resample gathers in place and needs no scratch at all.
  */
-#define FILTERS_PF_RESAMPLE_STORAGE(N, n) LINEARS_SIZE_MUL((N), (n))
+#define FILTERS_PF_Q_RESAMPLE_STORAGE(N) ((size_t)(N))
 
 /**
  * @brief Working elements for estimate: 3*N*n + 2*n*n + n; SIZE_MAX on overflow.
@@ -223,17 +245,20 @@ typedef struct {
                      LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(2, LINEARS_SIZE_MUL((n), (n))), (n)))
 
 /**
- * @brief Floating estimate basic-scratch bytes; SIZE_MAX on overflow.
+ * @brief Working elements for Q estimate: floating amount + N*n + N.
+ *
+ * Adds the widened particles and weights. Allocate float for q15 and
+ * double for q31.
+ */
+#define FILTERS_PF_Q_ESTIMATE_STORAGE(N, n) \
+    LINEARS_SIZE_ADD(FILTERS_PF_ESTIMATE_STORAGE((N), (n)), \
+                     LINEARS_SIZE_ADD(LINEARS_SIZE_MUL((N), (n)), (N)))
+
+/**
+ * @brief Estimate basic-scratch bytes in every format; SIZE_MAX on overflow.
  */
 #define FILTERS_PF_ESTIMATE_BASIC_BYTES(N, n) \
     LINEARS_BASIC_WORKSPACE_BYTES((n), FILTERS_KALMAN_MAX_SIZE((N), (n)))
-
-/**
- * @brief Q estimate basic-scratch bytes, including n+n*n units of output staging.
- */
-#define FILTERS_PF_Q_ESTIMATE_BASIC_BYTES(N, n) \
-    FILTERS_KALMAN_MAX_SIZE(FILTERS_PF_ESTIMATE_BASIC_BYTES((N), (n)), \
-        LINEARS_BASIC_WORKSPACE_BYTES(LINEARS_SIZE_ADD((n), LINEARS_SIZE_MUL((n), (n))), 1))
 
 /**
  * @brief Add Gaussian noise L*xi to every row of points in single precision.
@@ -399,16 +424,21 @@ linears_status_t filters_pf_f32_update(filters_pf_f32_t *state, const linears_ma
 /**
  * @brief Systematically resample the particles and reset the weights to 1/N.
  *
+ * The particle rows are gathered in place, which the nondecreasing
+ * systematic indices allow without staging.
+ *
  * @param[in,out] state Non-NULL initialized filter.
  * @param[in] uniform Draw in [0,1).
  * @param[out] indices Array of at least N size_t entries receiving the source
  *                     index of every new particle, for resampling caller-owned
  *                     per-particle data alongside.
  * @param[in] capacity Available indices entries.
- * @param[in] workspace data must meet FILTERS_PF_RESAMPLE_STORAGE(N,n); basic
- *                      and decomposition are ignored.
- * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, WORKSPACE, ALIAS,
- *         RANGE or DOMAIN (uniform outside [0,1) or invalid weights).
+ * @param[in] workspace Ignored by the f32 and f64 filters, which need no
+ *                      scratch; the parameter exists so the four formats share
+ *                      one signature. Pass any value.
+ * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, WORKSPACE for a
+ *         short capacity, ALIAS, RANGE or DOMAIN (uniform outside [0,1) or
+ *         invalid weights).
  * @note Call when filters_pf_*_effective_sample_size of the weights falls
  *       below the caller's threshold. Failure preserves particles and weights.
  */
@@ -421,8 +451,8 @@ linears_status_t filters_pf_f32_resample(filters_pf_f32_t *state, float uniform,
  * @param[in] state Non-NULL initialized filter.
  * @param[in] residual State-space residual, or NULL for plain subtraction.
  * @param[in] residual_context Passed to residual unchanged; may be NULL.
- * @param[in,out] mean Non-NULL n-by-1 destination in signal format.
- * @param[in,out] covariance Non-NULL n-by-n destination in signal format; symmetrized.
+ * @param[in,out] mean Non-NULL n-by-1 destination.
+ * @param[in,out] covariance Non-NULL n-by-n destination; symmetrized.
  * @param[in] workspace Arrays meeting FILTERS_PF_ESTIMATE_STORAGE(N,n) and
  *                      FILTERS_PF_ESTIMATE_BASIC_BYTES(N,n); decomposition is ignored.
  * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, WORKSPACE, ALIAS,
@@ -506,169 +536,138 @@ linears_status_t filters_pf_f64_estimate(const filters_pf_f64_t *state, filters_
                                          linears_matrix_t *covariance, filters_ukf_f64_workspace_t workspace);
 
 /**
- * @brief Add Gaussian noise L*xi to every fixed-F31 row; see the f32 variant.
+ * @brief Effective sample size of raw q15 weights, computed in float.
  *
- * @param[in] points Non-NULL N-by-k working matrix.
- * @param[in] factor Non-NULL k-by-k working L with L*L^T the noise covariance.
- * @param[in] sample Non-NULL F31 standard-normal sampler.
- * @param[in] context Passed to sample unchanged; may be NULL.
- * @param[in,out] out Non-NULL N-by-k working destination; exactly points or disjoint.
- * @param[in] workspace Arrays meeting the FILTERS_PF_PERTURB_* macros.
- * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, WORKSPACE, ALIAS,
- *         RANGE for int64 overflow, or the sampler's error.
- */
-linears_status_t filters_pf_fixed_perturb(const linears_matrix_t *points, const linears_matrix_t *factor,
-                                          filters_pf_fixed_sample_fn sample, void *context,
-                                          linears_matrix_t *out, filters_ukf_fixed_workspace_t workspace);
-
-/**
- * @brief Row-wise fixed-F31 Gaussian exponents; see the f32 variant.
+ * The result is independent of the common weight scale, so it applies to
+ * the filter's INT16_MAX-scaled weights unchanged.
  *
- * @param[in] deviations Non-NULL N-by-k working residual rows.
- * @param[in] factor Non-NULL nonsingular k-by-k working L.
- * @param[in,out] out Non-NULL N-by-1 working destination.
- * @param[in] workspace Arrays meeting the FILTERS_PF_GAUSSIAN_EXPONENT_* macros.
- * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, WORKSPACE, ALIAS,
- *         RANGE for F31/F62 overflow, or SINGULAR.
+ * @param[in] weights Non-NULL nonnegative N-by-1 raw q15 weights.
+ * @param[out] out Non-NULL destination in [1,N]; unchanged on failure.
+ * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, or DOMAIN for a
+ *         negative weight or an all-zero vector.
  */
-linears_status_t filters_pf_fixed_gaussian_exponent(const linears_matrix_t *deviations,
-                                                    const linears_matrix_t *factor, linears_matrix_t *out,
-                                                    filters_ukf_fixed_workspace_t workspace);
-
-/**
- * @brief Fixed-F31 reweight; see the f32 variant.
- *
- * @param[in,out] weights Non-NULL nonnegative N-by-1 F31 weights; normalized on success.
- * @param[in] exponents Non-NULL N-by-1 F31 exponents of any sign.
- * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, ALIAS, RANGE for
- *         F31 overflow, or DOMAIN for a negative weight or zero sum.
- * @note exp(-d) is evaluated with integer arithmetic for d >= 0; results
- *       below 2^-32 are zero, so a particle more than about 22 nats behind
- *       the best one receives weight zero.
- */
-linears_status_t filters_pf_fixed_reweight(linears_matrix_t *weights, const linears_matrix_t *exponents);
-
-/**
- * @brief Fixed-F31 effective sample size; see the f32 variant.
- *
- * @param[in] weights Non-NULL nonnegative N-by-1 F31 weights.
- * @param[out] out Non-NULL F31 destination in [1,N]; unchanged on failure.
- * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, RANGE or DOMAIN.
- */
-linears_status_t filters_pf_fixed_effective_sample_size(const linears_matrix_t *weights, linears_fixed_t *out);
-
-/**
- * @brief Fixed-F31 systematic resampling indices; see the f32 variant.
- *
- * @param[in] weights Non-NULL nonnegative N-by-1 F31 weights with positive sum.
- * @param[in] uniform F31 draw in [0, LINEARS_FIXED_ONE).
- * @param[out] indices Array of at least N size_t entries; written only on success.
- * @param[in] capacity Available indices entries.
- * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE, WORKSPACE, RANGE or DOMAIN.
- */
-linears_status_t filters_pf_fixed_resample_indices(const linears_matrix_t *weights, linears_fixed_t uniform,
-                                                   size_t *indices, size_t capacity);
-
-/**
- * @brief Copy selected fixed-F31 rows; see the f32 variant.
- *
- * @param[in] points Non-NULL N-by-k working matrix.
- * @param[in] indices Non-NULL array of count row indices below N.
- * @param[in] count Number of output rows; equals out->rows.
- * @param[in,out] out Non-NULL count-by-k working destination disjoint from points.
- * @return linears_status_t OK, ARGUMENT, DIMENSION, SIZE or ALIAS.
- */
-linears_status_t filters_pf_fixed_gather(const linears_matrix_t *points, const size_t *indices,
-                                         size_t count, linears_matrix_t *out);
+linears_status_t filters_pf_q15_effective_sample_size(const linears_matrix_t *weights, float *out);
 
 /**
  * @brief Initialize a q15 particle filter from a raw q15 Gaussian prior.
  *
- * Contract as filters_pf_f32_init with int16_t/2^15 mean, covariance, Q and R;
- * the F31 sampler supplies the draws. Workspace: FILTERS_PF_Q_INIT_STORAGE(N,n),
- * FILTERS_PF_PREDICT_BASIC_BYTES(n), FILTERS_PF_PREDICT_DECOMP_STORAGE(n).
+ * Contract as filters_pf_f32_init with int16_t/2^15 mean, covariance, Q and
+ * R, the f32 sampler and float scratch. The mean and covariance are widened
+ * to float, the particles drawn in float and narrowed to q15; the weights
+ * all become INT16_MAX.
  *
  * @param[in,out] state Non-NULL object whose descriptors and capacities are set.
  * @param[in] mean Non-NULL n-by-1 raw q15 prior mean.
  * @param[in] covariance Non-NULL symmetric positive-definite n-by-n raw q15 prior covariance.
- * @param[in] process_noise Non-NULL symmetric SPD n-by-n raw q15 Q.
- * @param[in] measurement_noise Non-NULL symmetric SPD m-by-m raw q15 R.
- * @param[in] sample Non-NULL F31 standard-normal sampler.
+ * @param[in] process_noise Non-NULL symmetric SPD n-by-n raw q15 Q; alias rules of the f32 filter.
+ * @param[in] measurement_noise Non-NULL symmetric SPD m-by-m raw q15 R; same alias rules.
+ * @param[in] sample Non-NULL float standard-normal sampler.
  * @param[in] context Passed to sample unchanged; may be NULL.
- * @param[in] workspace Arrays meeting the Q init macros.
- * @return linears_status_t As filters_pf_f32_init; RANGE means F31 overflow.
+ * @param[in] workspace Float arrays meeting FILTERS_PF_Q_INIT_STORAGE(N,n),
+ *                      FILTERS_PF_PREDICT_BASIC_BYTES(n) and
+ *                      FILTERS_PF_PREDICT_DECOMP_STORAGE(n).
+ * @return linears_status_t As filters_pf_f32_init. RANGE also covers a drawn
+ *         particle element outside [-1,+1]; nothing is committed then.
+ * @note Every particle is range-checked before any is written; exact +1 and
+ *       the rounding cell reaching it narrow to INT16_MAX.
  */
 linears_status_t filters_pf_q15_init(filters_pf_q15_t *state, const linears_matrix_t *mean,
                                      const linears_matrix_t *covariance, const linears_matrix_t *process_noise,
-                                     const linears_matrix_t *measurement_noise, filters_pf_fixed_sample_fn sample,
-                                     void *context, filters_ukf_fixed_workspace_t workspace);
+                                     const linears_matrix_t *measurement_noise, filters_pf_f32_sample_fn sample,
+                                     void *context, filters_ukf_f32_workspace_t workspace);
 
 /**
- * @brief Integer-only q15 particle prediction; contract as filters_pf_f32_predict.
+ * @brief q15 particle prediction computed in float; contract as filters_pf_f32_predict.
+ *
+ * Each particle row is widened to float and handed to the transition as an
+ * n-by-1 float view; the propagated set is perturbed in float and narrowed
+ * back to q15.
  *
  * @param[in,out] state Non-NULL initialized q15 filter.
- * @param[in] transition Non-NULL deterministic F31 working map f.
+ * @param[in] transition Non-NULL deterministic float map f (n-by-1 to n-by-1).
  * @param[in] transition_context Passed to transition unchanged; may be NULL.
- * @param[in] sample Non-NULL F31 standard-normal sampler.
+ * @param[in] sample Non-NULL float standard-normal sampler.
  * @param[in] sample_context Passed to sample unchanged; may be NULL.
- * @param[in] workspace Arrays meeting FILTERS_PF_Q_PREDICT_STORAGE(N,n),
+ * @param[in] workspace Float arrays meeting FILTERS_PF_Q_PREDICT_STORAGE(N,n),
  *                      FILTERS_PF_PREDICT_BASIC_BYTES(n) and
  *                      FILTERS_PF_PREDICT_DECOMP_STORAGE(n).
- * @return linears_status_t As filters_pf_f32_predict; RANGE means F31 overflow.
+ * @return linears_status_t As filters_pf_f32_predict. RANGE also covers a
+ *         predicted particle element outside [-1,+1]; nothing is committed
+ *         then. NOT_POSITIVE_DEFINITE includes positive pivots lost to q15
+ *         quantization of Q.
  */
-linears_status_t filters_pf_q15_predict(filters_pf_q15_t *state, filters_ukf_fixed_fn transition,
-                                        void *transition_context, filters_pf_fixed_sample_fn sample,
-                                        void *sample_context, filters_ukf_fixed_workspace_t workspace);
+linears_status_t filters_pf_q15_predict(filters_pf_q15_t *state, filters_ukf_f32_fn transition,
+                                        void *transition_context, filters_pf_f32_sample_fn sample,
+                                        void *sample_context, filters_ukf_f32_workspace_t workspace);
 
 /**
- * @brief Integer-only q15 particle reweighting; contract as filters_pf_f32_update.
+ * @brief q15 particle reweighting computed in float; contract as filters_pf_f32_update.
+ *
+ * The weights are widened, multiplied by the likelihood, normalized, then
+ * rescaled so the largest is INT16_MAX before narrowing.
  *
  * @param[in,out] state Non-NULL initialized q15 filter with m-by-m R.
  * @param[in] measurement Non-NULL m-by-1 raw q15 z.
- * @param[in] observation Non-NULL F31 working map h.
+ * @param[in] observation Non-NULL float map h (n-by-1 to m-by-1).
  * @param[in] observation_context Passed to observation unchanged; may be NULL.
- * @param[in] residual F31 measurement-space residual, or NULL for plain subtraction.
+ * @param[in] residual Float measurement-space residual, or NULL for plain subtraction.
  * @param[in] residual_context Passed to residual unchanged; may be NULL.
- * @param[in] workspace Arrays meeting FILTERS_PF_Q_UPDATE_STORAGE(N,m),
+ * @param[in] workspace Float arrays meeting FILTERS_PF_Q_UPDATE_STORAGE(N,n,m),
  *                      FILTERS_PF_UPDATE_BASIC_BYTES(m) and
  *                      FILTERS_PF_UPDATE_DECOMP_STORAGE(m).
- * @return linears_status_t As filters_pf_f32_update; RANGE means F31 overflow.
+ * @return linears_status_t As filters_pf_f32_update.
  */
 linears_status_t filters_pf_q15_update(filters_pf_q15_t *state, const linears_matrix_t *measurement,
-                                       filters_ukf_fixed_fn observation, void *observation_context,
-                                       filters_ukf_fixed_residual_fn residual, void *residual_context,
-                                       filters_ukf_fixed_workspace_t workspace);
+                                       filters_ukf_f32_fn observation, void *observation_context,
+                                       filters_ukf_f32_residual_fn residual, void *residual_context,
+                                       filters_ukf_f32_workspace_t workspace);
 
 /**
  * @brief Systematic q15 resampling; contract as filters_pf_f32_resample.
  *
+ * The weights are widened to float for the index computation; the raw
+ * particle rows are gathered in place and the weights reset to INT16_MAX.
+ *
  * @param[in,out] state Non-NULL initialized q15 filter.
- * @param[in] uniform F31 draw in [0, LINEARS_FIXED_ONE).
+ * @param[in] uniform Draw in [0,1).
  * @param[out] indices Array of at least N size_t entries.
  * @param[in] capacity Available indices entries.
- * @param[in] workspace data must meet FILTERS_PF_RESAMPLE_STORAGE(N,n).
+ * @param[in] workspace data must meet FILTERS_PF_Q_RESAMPLE_STORAGE(N) float
+ *                      elements; basic and decomposition are ignored.
  * @return linears_status_t As filters_pf_f32_resample.
  */
-linears_status_t filters_pf_q15_resample(filters_pf_q15_t *state, linears_fixed_t uniform, size_t *indices,
-                                         size_t capacity, filters_ukf_fixed_workspace_t workspace);
+linears_status_t filters_pf_q15_resample(filters_pf_q15_t *state, float uniform, size_t *indices,
+                                         size_t capacity, filters_ukf_f32_workspace_t workspace);
 
 /**
  * @brief Export the q15 weighted mean and covariance; contract as filters_pf_f32_estimate.
  *
+ * Particles and weights are widened to float, the weights divided by their
+ * sum, and the float results narrowed to q15.
+ *
  * @param[in] state Non-NULL initialized q15 filter.
- * @param[in] residual F31 state-space residual, or NULL for plain subtraction.
+ * @param[in] residual Float state-space residual, or NULL for plain subtraction.
  * @param[in] residual_context Passed to residual unchanged; may be NULL.
  * @param[in,out] mean Non-NULL n-by-1 raw q15 destination.
  * @param[in,out] covariance Non-NULL n-by-n raw q15 destination.
- * @param[in] workspace Arrays meeting FILTERS_PF_ESTIMATE_STORAGE(N,n) and
- *                      FILTERS_PF_Q_ESTIMATE_BASIC_BYTES(N,n).
+ * @param[in] workspace Float arrays meeting FILTERS_PF_Q_ESTIMATE_STORAGE(N,n)
+ *                      and FILTERS_PF_ESTIMATE_BASIC_BYTES(N,n).
  * @return linears_status_t As filters_pf_f32_estimate. RANGE also covers a
- *         computed F31 mean or covariance element outside [-1,+1]; exact +1
- *         narrows to INT16_MAX.
+ *         computed mean or covariance element outside [-1,+1]; DOMAIN also
+ *         covers an all-zero weight vector. Nothing is written on failure.
  */
-linears_status_t filters_pf_q15_estimate(const filters_pf_q15_t *state, filters_ukf_fixed_residual_fn residual,
+linears_status_t filters_pf_q15_estimate(const filters_pf_q15_t *state, filters_ukf_f32_residual_fn residual,
                                          void *residual_context, linears_matrix_t *mean,
-                                         linears_matrix_t *covariance, filters_ukf_fixed_workspace_t workspace);
+                                         linears_matrix_t *covariance, filters_ukf_f32_workspace_t workspace);
+
+/**
+ * @brief Effective sample size of raw q31 weights, computed in double.
+ *
+ * @param[in] weights Non-NULL nonnegative N-by-1 raw q31 weights.
+ * @param[out] out Non-NULL destination in [1,N]; unchanged on failure.
+ * @return linears_status_t As filters_pf_q15_effective_sample_size.
+ */
+linears_status_t filters_pf_q31_effective_sample_size(const linears_matrix_t *weights, double *out);
 
 /**
  * @brief Initialize a q31 particle filter; contract as filters_pf_q15_init with int32_t/2^31 inputs.
@@ -678,76 +677,83 @@ linears_status_t filters_pf_q15_estimate(const filters_pf_q15_t *state, filters_
  * @param[in] covariance Non-NULL symmetric positive-definite n-by-n raw q31 prior covariance.
  * @param[in] process_noise Non-NULL symmetric SPD n-by-n raw q31 Q.
  * @param[in] measurement_noise Non-NULL symmetric SPD m-by-m raw q31 R.
- * @param[in] sample Non-NULL F31 standard-normal sampler.
+ * @param[in] sample Non-NULL double standard-normal sampler.
  * @param[in] context Passed to sample unchanged; may be NULL.
- * @param[in] workspace Arrays meeting the Q init macros.
- * @return linears_status_t As filters_pf_q15_init.
+ * @param[in] workspace Double arrays meeting FILTERS_PF_Q_INIT_STORAGE(N,n),
+ *                      FILTERS_PF_PREDICT_BASIC_BYTES(n) and
+ *                      FILTERS_PF_PREDICT_DECOMP_STORAGE(n).
+ * @return linears_status_t As filters_pf_q15_init; exact +1 narrows to INT32_MAX.
  */
 linears_status_t filters_pf_q31_init(filters_pf_q31_t *state, const linears_matrix_t *mean,
                                      const linears_matrix_t *covariance, const linears_matrix_t *process_noise,
-                                     const linears_matrix_t *measurement_noise, filters_pf_fixed_sample_fn sample,
-                                     void *context, filters_ukf_fixed_workspace_t workspace);
+                                     const linears_matrix_t *measurement_noise, filters_pf_f64_sample_fn sample,
+                                     void *context, filters_ukf_f64_workspace_t workspace);
 
 /**
- * @brief Integer-only q31 particle prediction; contract as filters_pf_q15_predict.
+ * @brief q31 particle prediction computed in double; contract as filters_pf_q15_predict.
  *
  * @param[in,out] state Non-NULL initialized q31 filter.
- * @param[in] transition Non-NULL deterministic F31 working map f.
+ * @param[in] transition Non-NULL deterministic double map f (n-by-1 to n-by-1).
  * @param[in] transition_context Passed to transition unchanged; may be NULL.
- * @param[in] sample Non-NULL F31 standard-normal sampler.
+ * @param[in] sample Non-NULL double standard-normal sampler.
  * @param[in] sample_context Passed to sample unchanged; may be NULL.
- * @param[in] workspace Arrays meeting the Q predict macros.
+ * @param[in] workspace Double arrays meeting FILTERS_PF_Q_PREDICT_STORAGE(N,n),
+ *                      FILTERS_PF_PREDICT_BASIC_BYTES(n) and
+ *                      FILTERS_PF_PREDICT_DECOMP_STORAGE(n).
  * @return linears_status_t As filters_pf_q15_predict.
  */
-linears_status_t filters_pf_q31_predict(filters_pf_q31_t *state, filters_ukf_fixed_fn transition,
-                                        void *transition_context, filters_pf_fixed_sample_fn sample,
-                                        void *sample_context, filters_ukf_fixed_workspace_t workspace);
+linears_status_t filters_pf_q31_predict(filters_pf_q31_t *state, filters_ukf_f64_fn transition,
+                                        void *transition_context, filters_pf_f64_sample_fn sample,
+                                        void *sample_context, filters_ukf_f64_workspace_t workspace);
 
 /**
- * @brief Integer-only q31 particle reweighting; contract as filters_pf_q15_update.
+ * @brief q31 particle reweighting computed in double; contract as filters_pf_q15_update.
  *
  * @param[in,out] state Non-NULL initialized q31 filter with m-by-m R.
  * @param[in] measurement Non-NULL m-by-1 raw q31 z.
- * @param[in] observation Non-NULL F31 working map h.
+ * @param[in] observation Non-NULL double map h (n-by-1 to m-by-1).
  * @param[in] observation_context Passed to observation unchanged; may be NULL.
- * @param[in] residual F31 measurement-space residual, or NULL for plain subtraction.
+ * @param[in] residual Double measurement-space residual, or NULL for plain subtraction.
  * @param[in] residual_context Passed to residual unchanged; may be NULL.
- * @param[in] workspace Arrays meeting the Q update macros.
+ * @param[in] workspace Double arrays meeting FILTERS_PF_Q_UPDATE_STORAGE(N,n,m),
+ *                      FILTERS_PF_UPDATE_BASIC_BYTES(m) and
+ *                      FILTERS_PF_UPDATE_DECOMP_STORAGE(m).
  * @return linears_status_t As filters_pf_q15_update.
  */
 linears_status_t filters_pf_q31_update(filters_pf_q31_t *state, const linears_matrix_t *measurement,
-                                       filters_ukf_fixed_fn observation, void *observation_context,
-                                       filters_ukf_fixed_residual_fn residual, void *residual_context,
-                                       filters_ukf_fixed_workspace_t workspace);
+                                       filters_ukf_f64_fn observation, void *observation_context,
+                                       filters_ukf_f64_residual_fn residual, void *residual_context,
+                                       filters_ukf_f64_workspace_t workspace);
 
 /**
  * @brief Systematic q31 resampling; contract as filters_pf_q15_resample.
  *
  * @param[in,out] state Non-NULL initialized q31 filter.
- * @param[in] uniform F31 draw in [0, LINEARS_FIXED_ONE).
+ * @param[in] uniform Draw in [0,1).
  * @param[out] indices Array of at least N size_t entries.
  * @param[in] capacity Available indices entries.
- * @param[in] workspace data must meet FILTERS_PF_RESAMPLE_STORAGE(N,n).
+ * @param[in] workspace data must meet FILTERS_PF_Q_RESAMPLE_STORAGE(N) double
+ *                      elements; basic and decomposition are ignored.
  * @return linears_status_t As filters_pf_q15_resample.
  */
-linears_status_t filters_pf_q31_resample(filters_pf_q31_t *state, linears_fixed_t uniform, size_t *indices,
-                                         size_t capacity, filters_ukf_fixed_workspace_t workspace);
+linears_status_t filters_pf_q31_resample(filters_pf_q31_t *state, double uniform, size_t *indices,
+                                         size_t capacity, filters_ukf_f64_workspace_t workspace);
 
 /**
  * @brief Export the q31 weighted mean and covariance; contract as filters_pf_q15_estimate.
  *
  * @param[in] state Non-NULL initialized q31 filter.
- * @param[in] residual F31 state-space residual, or NULL for plain subtraction.
+ * @param[in] residual Double state-space residual, or NULL for plain subtraction.
  * @param[in] residual_context Passed to residual unchanged; may be NULL.
  * @param[in,out] mean Non-NULL n-by-1 raw q31 destination.
  * @param[in,out] covariance Non-NULL n-by-n raw q31 destination.
- * @param[in] workspace Arrays meeting FILTERS_PF_ESTIMATE_STORAGE(N,n) and
- *                      FILTERS_PF_Q_ESTIMATE_BASIC_BYTES(N,n).
+ * @param[in] workspace Double arrays meeting FILTERS_PF_Q_ESTIMATE_STORAGE(N,n)
+ *                      and FILTERS_PF_ESTIMATE_BASIC_BYTES(N,n).
  * @return linears_status_t As filters_pf_q15_estimate; exact +1 narrows to INT32_MAX.
  */
-linears_status_t filters_pf_q31_estimate(const filters_pf_q31_t *state, filters_ukf_fixed_residual_fn residual,
+linears_status_t filters_pf_q31_estimate(const filters_pf_q31_t *state, filters_ukf_f64_residual_fn residual,
                                          void *residual_context, linears_matrix_t *mean,
-                                         linears_matrix_t *covariance, filters_ukf_fixed_workspace_t workspace);
+                                         linears_matrix_t *covariance, filters_ukf_f64_workspace_t workspace);
 
 #ifdef __cplusplus
 }

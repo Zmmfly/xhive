@@ -3,13 +3,15 @@
 namespace {
 using namespace pf_test;
 
+template<class A> class ParticleKernels : public ::testing::Test {};
+TYPED_TEST_SUITE(ParticleKernels, KernelFormats);
 template<class A> class ParticleFilter : public ::testing::Test {};
 TYPED_TEST_SUITE(ParticleFilter, Formats);
 
-TYPED_TEST(ParticleFilter, ReweightMatchesLongDoubleOverTwentyTwoNats) {
+TYPED_TEST(ParticleKernels, ReweightMatchesLongDoubleOverTwentyTwoNats) {
     using A = TypeParam;
-    /* Exponents 0..22 in half-nat steps exercise the whole useful range of the
-     * fixed exp(-x); negative exponents exercise the shift. */
+    /* Exponents 0..22 in half-nat steps span the range the Q filters can still
+     * store after reweighting; negative exponents exercise the shift. */
     Dense weights(45, 1, Vec(45, 1)), exponents(45, 1);
     for (std::size_t i = 0; i < 45; ++i) exponents.values[i] = 0.5L * static_cast<long double>(i);
     std::mt19937 random(0x50465257u);
@@ -33,14 +35,6 @@ TYPED_TEST(ParticleFilter, ReweightMatchesLongDoubleOverTwentyTwoNats) {
         }
         expect_near<A>(sum, 1, 45);
     }
-    /* Fixed exp underflows to exactly zero beyond about 22 nats. */
-    if constexpr (A::bits != 0) {
-        WorkMatrix<A> w(Dense(2, 1, {1, 1})), e(Dense(2, 1, {0, 23}));
-        auto wv = w.view(), ev = e.view();
-        ASSERT_EQ(Pf<A>::reweight(&wv, &ev), LINEARS_OK);
-        EXPECT_EQ(w.data[0], LINEARS_FIXED_ONE);
-        EXPECT_EQ(w.data[1], 0);
-    }
     WorkMatrix<A> negative(Dense(2, 1, {0.5L, -0.25L})), zero(Dense(2, 1, {0, 0})), e(Dense(2, 1, {0, 1}));
     WorkMatrix<A> three(Dense(3, 1, {1, 1, 1}));
     auto nv = negative.view(), zv = zero.view(), ev = e.view(), tv = three.view();
@@ -49,16 +43,14 @@ TYPED_TEST(ParticleFilter, ReweightMatchesLongDoubleOverTwentyTwoNats) {
     EXPECT_EQ(Pf<A>::reweight(&tv, &ev), LINEARS_ERROR_DIMENSION);
     EXPECT_EQ(Pf<A>::reweight(&ev, &ev), LINEARS_ERROR_ALIAS);
     EXPECT_EQ(Pf<A>::reweight(nullptr, &ev), LINEARS_ERROR_ARGUMENT);
-    if constexpr (A::bits == 0) {
-        WorkMatrix<A> bad(Dense(2, 1, {1, 1}));
-        bad.data[1] = std::numeric_limits<Work<A>>::infinity();
-        auto bv = bad.view();
-        EXPECT_EQ(Pf<A>::reweight(&bv, &ev), LINEARS_ERROR_RANGE);
-        EXPECT_EQ(Pf<A>::reweight(&ev, &bv), LINEARS_ERROR_RANGE);
-    }
+    WorkMatrix<A> bad(Dense(2, 1, {1, 1}));
+    bad.data[1] = std::numeric_limits<Work<A>>::infinity();
+    auto bv = bad.view();
+    EXPECT_EQ(Pf<A>::reweight(&bv, &ev), LINEARS_ERROR_RANGE);
+    EXPECT_EQ(Pf<A>::reweight(&ev, &bv), LINEARS_ERROR_RANGE);
 }
 
-TYPED_TEST(ParticleFilter, EffectiveSampleSizeClosedForm) {
+TYPED_TEST(ParticleKernels, EffectiveSampleSizeClosedForm) {
     using A = TypeParam;
     std::mt19937 random(0x50464553u);
     Dense uniform(8, 1, Vec(8, 0.125L)), one_hot(8, 1), skewed = random_dense(random, 8, 1, 0.1L);
@@ -82,7 +74,31 @@ TYPED_TEST(ParticleFilter, EffectiveSampleSizeClosedForm) {
     EXPECT_EQ(work_decode<A>(ess), -1);
 }
 
-TYPED_TEST(ParticleFilter, SystematicResamplingMatchesReferenceAndCounts) {
+TYPED_TEST(ParticleFilter, RawEffectiveSampleSizeIsScaleFree) {
+    using A = TypeParam;
+    if constexpr (A::bits == 0) {
+        GTEST_SKIP() << "Only the Q filters read raw weights.";
+    } else {
+        /* Raw weights scaled to the maximum, as the filters store them. */
+        Matrix<A> weights(Dense(4, 1, {1, 0.5L, 0.25L, 0}));
+        auto wv = weights.view();
+        Work<A> ess = -1;
+        ASSERT_EQ(Pf<A>::effective_sample_size(&wv, &ess), LINEARS_OK);
+        expect_near<A>(ess, PfReference::effective_sample_size(decode<A>(wv).values));
+        Matrix<A> zero(Dense(3, 1, {0, 0, 0})), negative(Dense(3, 1, {0.5L, 0.5L, -0.5L}));
+        auto zv = zero.view(), nv = negative.view();
+        ess = -1;
+        EXPECT_EQ(Pf<A>::effective_sample_size(&zv, &ess), LINEARS_ERROR_DOMAIN);
+        EXPECT_EQ(Pf<A>::effective_sample_size(&nv, &ess), LINEARS_ERROR_DOMAIN);
+        EXPECT_EQ(Pf<A>::effective_sample_size(&nv, nullptr), LINEARS_ERROR_ARGUMENT);
+        EXPECT_EQ(Pf<A>::effective_sample_size(nullptr, &ess), LINEARS_ERROR_ARGUMENT);
+        auto wide = nv; wide.cols = 3; wide.rows = 1;
+        EXPECT_EQ(Pf<A>::effective_sample_size(&wide, &ess), LINEARS_ERROR_DIMENSION);
+        EXPECT_EQ(ess, -1);
+    }
+}
+
+TYPED_TEST(ParticleKernels, SystematicResamplingMatchesReferenceAndCounts) {
     using A = TypeParam;
     std::mt19937 random(0x50465253u);
     const std::size_t count = 40;
@@ -127,9 +143,7 @@ TYPED_TEST(ParticleFilter, SystematicResamplingMatchesReferenceAndCounts) {
     EXPECT_EQ(Pf<A>::resample_indices(&wv, half, indices.data(), 2), LINEARS_ERROR_WORKSPACE);
     EXPECT_EQ(Pf<A>::resample_indices(&wv, half, nullptr, 3), LINEARS_ERROR_ARGUMENT);
     EXPECT_EQ(Pf<A>::resample_indices(nullptr, half, indices.data(), 3), LINEARS_ERROR_ARGUMENT);
-    if constexpr (A::bits == 0) {
-        EXPECT_EQ(Pf<A>::resample_indices(&wv, std::numeric_limits<Work<A>>::quiet_NaN(), indices.data(), 3), LINEARS_ERROR_RANGE);
-    }
+    EXPECT_EQ(Pf<A>::resample_indices(&wv, std::numeric_limits<Work<A>>::quiet_NaN(), indices.data(), 3), LINEARS_ERROR_RANGE);
     for (auto index : indices) EXPECT_EQ(index, SIZE_MAX);
     ASSERT_EQ(Pf<A>::resample_indices(&wv, zero_draw, indices.data(), 3), LINEARS_OK);
     EXPECT_EQ(indices, (std::vector<std::size_t>{0, 1, 2}));
@@ -140,7 +154,7 @@ TYPED_TEST(ParticleFilter, SystematicResamplingMatchesReferenceAndCounts) {
     EXPECT_EQ(indices, (std::vector<std::size_t>{1, 1, 1}));
 }
 
-TYPED_TEST(ParticleFilter, GatherCopiesRowsAndRejectsBadIndices) {
+TYPED_TEST(ParticleKernels, GatherCopiesRowsAndRejectsBadIndices) {
     using A = TypeParam;
     std::mt19937 random(0x50464741u);
     const Dense points = random_dense(random, 5, 3, 0.5L);
@@ -163,7 +177,7 @@ TYPED_TEST(ParticleFilter, GatherCopiesRowsAndRejectsBadIndices) {
     EXPECT_EQ(out.data, before);
 }
 
-TYPED_TEST(ParticleFilter, PerturbAddsFactoredDrawsInPlaceOrToACopy) {
+TYPED_TEST(ParticleKernels, PerturbAddsFactoredDrawsInPlaceOrToACopy) {
     using A = TypeParam;
     std::mt19937 random(0x50465054u);
     const Dense points = random_dense(random, 4, 2, 0.5L);
@@ -208,15 +222,13 @@ TYPED_TEST(ParticleFilter, PerturbAddsFactoredDrawsInPlaceOrToACopy) {
     EXPECT_EQ(Pf<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &ov, ws.view()), LINEARS_ERROR_SINGULAR);
     EXPECT_EQ(sampler.calls, 3);
     sampler.fail_at = -1;
-    if constexpr (A::bits == 0) {
-        sampler.nonfinite = true;
-        EXPECT_EQ(Pf<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &ov, ws.view()), LINEARS_ERROR_RANGE);
-        sampler.nonfinite = false;
-    }
+    sampler.nonfinite = true;
+    EXPECT_EQ(Pf<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &ov, ws.view()), LINEARS_ERROR_RANGE);
+    sampler.nonfinite = false;
     ws.guards();
 }
 
-TYPED_TEST(ParticleFilter, GaussianExponentMatchesEigen) {
+TYPED_TEST(ParticleKernels, GaussianExponentMatchesEigen) {
     using A = TypeParam;
     std::mt19937 random(0x50464745u);
     const Dense deviations = random_dense(random, 6, 3, 0.3L);
@@ -265,8 +277,8 @@ TYPED_TEST(ParticleFilter, PendulumTransactionsMatchLongDoubleReference) {
     PfState<A> fixture(count, 2, 2);
     auto init_ws = pf_init_workspace<A>(count, 2);
     auto predict_ws = pf_predict_workspace<A>(count, 2);
-    auto update_ws = pf_update_workspace<A>(count, 2);
-    auto resample_ws = pf_resample_workspace<A>(count, 2);
+    auto update_ws = pf_update_workspace<A>(count, 2, 2);
+    auto resample_ws = pf_resample_workspace<A>(count);
     auto estimate_ws = pf_estimate_workspace<A>(count, 2);
     Sampler sampler(0x50465044u);
     std::vector<std::size_t> indices(count);
@@ -299,6 +311,7 @@ TYPED_TEST(ParticleFilter, PendulumTransactionsMatchLongDoubleReference) {
         ASSERT_EQ(Pf<A>::update(&fixture.state, &zv, map_callback<A>, &observation, nullptr, nullptr, update_ws.view()), LINEARS_OK);
         reference.update(decode<A>(zv), observation, decode<A>(rv));
         for (std::size_t i = 0; i < count; ++i) expect_near<A>(fixture.weight_values()[i], reference.weights[i]);
+        expect_raw_weight_scale<A>(fixture.weights);
         Work<A> ess = work_encode<A>(0);
         ASSERT_EQ(Pf<A>::effective_sample_size(&fixture.state.weights, &ess), LINEARS_OK);
         expect_near<A>(work_decode<A>(ess), PfReference::effective_sample_size(fixture.weight_values()));
@@ -311,6 +324,7 @@ TYPED_TEST(ParticleFilter, PendulumTransactionsMatchLongDoubleReference) {
             reference.resample(expected);
             EXPECT_EQ(fixture.particle_rows(), reference.particles);
             for (std::size_t i = 0; i < count; ++i) expect_near<A>(fixture.weight_values()[i], reference.weights[i]);
+            expect_raw_weight_scale<A>(fixture.weights);
             ++resamples;
         }
         reference.particles = fixture.particle_rows();
@@ -338,8 +352,8 @@ TYPED_TEST(ParticleFilter, PendulumTrackingStaysWithinItsOwnSpread) {
     PfState<A> fixture(count, 2, 2);
     auto init_ws = pf_init_workspace<A>(count, 2);
     auto predict_ws = pf_predict_workspace<A>(count, 2);
-    auto update_ws = pf_update_workspace<A>(count, 2);
-    auto resample_ws = pf_resample_workspace<A>(count, 2);
+    auto update_ws = pf_update_workspace<A>(count, 2, 2);
+    auto resample_ws = pf_resample_workspace<A>(count);
     auto estimate_ws = pf_estimate_workspace<A>(count, 2);
     Sampler sampler(0x50465452u);
     std::vector<std::size_t> indices(count);
@@ -390,7 +404,7 @@ TYPED_TEST(ParticleFilter, LinearGaussianModelAgreesWithKalmanFilter) {
     PfState<A> fixture(count, n, m);
     auto init_ws = pf_init_workspace<A>(count, n);
     auto predict_ws = pf_predict_workspace<A>(count, n);
-    auto update_ws = pf_update_workspace<A>(count, m);
+    auto update_ws = pf_update_workspace<A>(count, n, m);
     auto estimate_ws = pf_estimate_workspace<A>(count, n);
     Sampler sampler(0x4b414c4du);
     ASSERT_EQ(Pf<A>::init(&fixture.state, &xv, &pv, &qv, &rv, sample_callback<A>, &sampler, init_ws.view()), LINEARS_OK);
@@ -427,14 +441,14 @@ TYPED_TEST(ParticleFilter, AngleResidualWrapsTheEstimateAndTheLikelihood) {
     auto xv = x0.view(), pv = p0.view(), qv = q.view(), rv = r.view(), mv = mean_out.view(), cv = covariance_out.view();
     PfState<A> fixture(3, 1, 1);
     auto init_ws = pf_init_workspace<A>(3, 1);
-    auto update_ws = pf_update_workspace<A>(3, 1);
+    auto update_ws = pf_update_workspace<A>(3, 1, 1);
     auto estimate_ws = pf_estimate_workspace<A>(3, 1);
     Sampler sampler(3);
     sampler.script = {{0}};
     ASSERT_EQ(Pf<A>::init(&fixture.state, &xv, &pv, &qv, &rv, sample_callback<A>, &sampler, init_ws.view()), LINEARS_OK);
     /* Place three particles around the cut by hand: two just below, one just above. */
     const Vec placed{half - 0.1L, half - 0.05L, -half + 0.05L};
-    for (std::size_t i = 0; i < 3; ++i) fixture.particles[1 + i] = work_encode<A>(placed[i]);
+    for (std::size_t i = 0; i < 3; ++i) fixture.particles[1 + i] = A::encode(placed[i]);
     PfReference reference;
     reference.particles = fixture.particle_rows();
     reference.weights = fixture.weight_values();
@@ -462,12 +476,13 @@ TYPED_TEST(ParticleFilter, AngleResidualWrapsTheEstimateAndTheLikelihood) {
     fixture.guards(); init_ws.guards(); update_ws.guards(); estimate_ws.guards();
 }
 
-TYPED_TEST(ParticleFilter, FixedParticlesMayLeaveTheSignalIntervalButEstimatesMayNot) {
+TYPED_TEST(ParticleFilter, FixedParticlesMustStayInsideTheSignalInterval) {
     using A = TypeParam;
     if constexpr (A::bits == 0) {
-        GTEST_SKIP() << "Only fixed formats narrow the estimate to a signal interval.";
+        GTEST_SKIP() << "Only fixed formats store particles in a signal interval.";
     } else {
-        Model contract{[](const Vec& x) { return Vec{0.5L * x[0]}; }};
+        Model shift{[](const Vec& x) { return Vec{x[0] + 0.05L}; }};
+        Model keep{[](const Vec& x) { return Vec{x[0]}; }};
         Matrix<A> x0(Dense(1, 1, {0.9L})), p0(Dense(1, 1, {0.04L})), q(Dense(1, 1, {1e-4L})), r(Dense(1, 1, {0.25L}));
         Matrix<A> mean_out(Dense(1, 1)), covariance_out(Dense(1, 1));
         auto xv = x0.view(), pv = p0.view(), qv = q.view(), rv = r.view(), mv = mean_out.view(), cv = covariance_out.view();
@@ -476,21 +491,28 @@ TYPED_TEST(ParticleFilter, FixedParticlesMayLeaveTheSignalIntervalButEstimatesMa
         auto predict_ws = pf_predict_workspace<A>(2, 1);
         auto estimate_ws = pf_estimate_workspace<A>(2, 1);
         Sampler sampler(4);
-        sampler.script = {{1.5L}, {0}};
-        ASSERT_EQ(Pf<A>::init(&fixture.state, &xv, &pv, &qv, &rv, sample_callback<A>, &sampler, init_ws.view()), LINEARS_OK);
         const long double x_start = decode<A>(xv).values[0], sigma = std::sqrt(decode<A>(pv).values[0]);
-        expect_near<A>(fixture.particle_rows()[0][0], x_start + 1.5L * sigma);
+        /* A draw of 1.5 sigma lands at 1.2: the whole init fails and writes nothing. */
+        sampler.script = {{1.5L}, {0}};
+        ASSERT_GT(x_start + 1.5L * sigma, 1);
+        const auto untouched = fixture.snapshot();
+        EXPECT_EQ(Pf<A>::init(&fixture.state, &xv, &pv, &qv, &rv, sample_callback<A>, &sampler, init_ws.view()), LINEARS_ERROR_RANGE);
+        EXPECT_EQ(sampler.calls, 2);
+        EXPECT_EQ(fixture.snapshot(), untouched);
+        sampler.script = {{0.4L}, {0}};
+        sampler.scripted = 0;
+        ASSERT_EQ(Pf<A>::init(&fixture.state, &xv, &pv, &qv, &rv, sample_callback<A>, &sampler, init_ws.view()), LINEARS_OK);
+        expect_near<A>(fixture.particle_rows()[0][0], x_start + 0.4L * sigma);
         expect_near<A>(fixture.particle_rows()[1][0], x_start);
-        ASSERT_GT(fixture.particle_rows()[0][0], 1);
-        const auto mean_before = mean_out.data, covariance_before = covariance_out.data;
-        EXPECT_EQ(Pf<A>::estimate(&fixture.state, nullptr, nullptr, &mv, &cv, estimate_ws.view()), LINEARS_ERROR_RANGE);
-        EXPECT_EQ(mean_out.data, mean_before);
-        EXPECT_EQ(covariance_out.data, covariance_before);
-        /* Contracting the particles with zero process draws brings the estimate back in range. */
+        /* Shifting the upper particle past +1 fails predict atomically. */
         sampler.script = {{0}};
-        ASSERT_EQ(Pf<A>::predict(&fixture.state, map_callback<A>, &contract, sample_callback<A>, &sampler, predict_ws.view()), LINEARS_OK);
+        const auto snapshot = fixture.snapshot();
+        EXPECT_EQ(Pf<A>::predict(&fixture.state, map_callback<A>, &shift, sample_callback<A>, &sampler, predict_ws.view()), LINEARS_ERROR_RANGE);
+        EXPECT_EQ(shift.calls, 2);
+        EXPECT_EQ(fixture.snapshot(), snapshot);
+        ASSERT_EQ(Pf<A>::predict(&fixture.state, map_callback<A>, &keep, sample_callback<A>, &sampler, predict_ws.view()), LINEARS_OK);
         ASSERT_EQ(Pf<A>::estimate(&fixture.state, nullptr, nullptr, &mv, &cv, estimate_ws.view()), LINEARS_OK);
-        const long double a = 0.5L * (x_start + 1.5L * sigma), b = 0.5L * x_start;
+        const long double a = x_start + 0.4L * sigma, b = x_start;
         expect_matrix<A>(mv, Dense(1, 1, {(a + b) / 2}));
         expect_matrix<A>(cv, Dense(1, 1, {(a - b) * (a - b) / 4}));
         fixture.guards(); init_ws.guards(); predict_ws.guards(); estimate_ws.guards();
@@ -499,7 +521,8 @@ TYPED_TEST(ParticleFilter, FixedParticlesMayLeaveTheSignalIntervalButEstimatesMa
 
 TYPED_TEST(ParticleFilter, InitValidationCapacitiesAndAliasRules) {
     using A = TypeParam;
-    Matrix<A> x0(Dense(2, 1, {0.25L, -0.125L})), p0(Dense::identity(2, 0.25L)), q(Dense::identity(2, 0.01L));
+    /* Q particles must stay inside [-1,+1], so their prior is tighter. */
+    Matrix<A> x0(Dense(2, 1, {0.25L, -0.125L})), p0(Dense::identity(2, A::bits ? 0.04L : 0.25L)), q(Dense::identity(2, 0.01L));
     Matrix<A> r(Dense::identity(1, 0.25L));
     Matrix<A> asymmetric(Dense(2, 2, {0.25L, 0.125L, 0, 0.25L})), negative(Dense::identity(2, -0.25L)), zero(Dense::identity(2, 0));
     auto xv = x0.view(), pv = p0.view(), qv = q.view(), rv = r.view(), av = asymmetric.view(), nv = negative.view(), zv = zero.view();
@@ -548,12 +571,12 @@ TYPED_TEST(ParticleFilter, InitValidationCapacitiesAndAliasRules) {
         EXPECT_EQ(Pf<A>::init(&fixture.state, &xv, &pv, &qv, &nan, sample, &sampler, ws.view()), LINEARS_ERROR_RANGE);
     }
     EXPECT_EQ(sampler.calls, 0);
-    for (auto& v : fixture.particles) EXPECT_EQ(v, PfState<A>::work_sentinel);
+    for (auto& v : fixture.particles) EXPECT_EQ(v, PfState<A>::sentinel);
     /* A failing sampler leaves an uninitialized state untouched too. */
     sampler.fail_at = 3;
     EXPECT_EQ(Pf<A>::init(&fixture.state, &xv, &pv, &qv, &rv, sample, &sampler, ws.view()), LINEARS_ERROR_NO_CONVERGENCE);
     EXPECT_EQ(sampler.calls, 4);
-    for (auto& v : fixture.particles) EXPECT_EQ(v, PfState<A>::work_sentinel);
+    for (auto& v : fixture.particles) EXPECT_EQ(v, PfState<A>::sentinel);
     sampler.fail_at = -1; sampler.scripted = 0; sampler.log.clear();
     ASSERT_EQ(Pf<A>::init(&fixture.state, &xv, &pv, &qv, &rv, sample, &sampler, ws.view()), LINEARS_OK);
     PfReference reference;
@@ -593,15 +616,16 @@ TYPED_TEST(ParticleFilter, WorkspaceBoundsAliasAndFailureAtomicity) {
     using A = TypeParam;
     Model transition{[](const Vec& x) { return Vec{0.5L * x[0] + 0.1L * x[1], 0.5L * x[1]}; }};
     Model observation{[](const Vec& x) { return Vec{0.5L * x[0]}; }};
-    Matrix<A> x0(Dense(2, 1, {0.25L, -0.125L})), p0(Dense::identity(2, 0.25L)), q(Dense::identity(2, 0.01L));
+    /* Q particles must stay inside [-1,+1], so their prior is tighter. */
+    Matrix<A> x0(Dense(2, 1, {0.25L, -0.125L})), p0(Dense::identity(2, A::bits ? 0.04L : 0.25L)), q(Dense::identity(2, 0.01L));
     Matrix<A> r(Dense::identity(1, 0.25L)), z(Dense(1, 1, {0.125L})), mean_out(Dense(2, 1)), covariance_out(Dense(2, 2));
     auto xv = x0.view(), pv = p0.view(), qv = q.view(), rv = r.view(), zv = z.view(), mv = mean_out.view(), cv = covariance_out.view();
     const std::size_t count = 6;
     PfState<A> fixture(count, 2, 1);
     auto init_ws = pf_init_workspace<A>(count, 2);
     auto predict_ws = pf_predict_workspace<A>(count, 2);
-    auto update_ws = pf_update_workspace<A>(count, 1);
-    auto resample_ws = pf_resample_workspace<A>(count, 2);
+    auto update_ws = pf_update_workspace<A>(count, 2, 1);
+    auto resample_ws = pf_resample_workspace<A>(count);
     auto estimate_ws = pf_estimate_workspace<A>(count, 2);
     Sampler sampler(6);
     const auto sample = sample_callback<A>;
@@ -629,8 +653,10 @@ TYPED_TEST(ParticleFilter, WorkspaceBoundsAliasAndFailureAtomicity) {
         EXPECT_EQ(Pf<A>::update(&fixture.state, &zv, map_callback<A>, &observation, nullptr, nullptr, u), LINEARS_ERROR_WORKSPACE);
         if (part < 2) EXPECT_EQ(Pf<A>::estimate(&fixture.state, nullptr, nullptr, &mv, &cv, e), LINEARS_ERROR_WORKSPACE);
     }
-    auto short_resample = resample_ws.view(); --short_resample.capacity;
-    EXPECT_EQ(Pf<A>::resample(&fixture.state, work_encode<A>(0.5L), indices.data(), count, short_resample), LINEARS_ERROR_WORKSPACE);
+    if constexpr (A::bits != 0) {
+        auto short_resample = resample_ws.view(); --short_resample.capacity;
+        EXPECT_EQ(Pf<A>::resample(&fixture.state, work_encode<A>(0.5L), indices.data(), count, short_resample), LINEARS_ERROR_WORKSPACE);
+    }
     EXPECT_EQ(Pf<A>::resample(&fixture.state, work_encode<A>(0.5L), indices.data(), count - 1, resample_ws.view()), LINEARS_ERROR_WORKSPACE);
     auto w = predict_ws.view(); w.data = nullptr;
     EXPECT_EQ(Pf<A>::predict(&fixture.state, map_callback<A>, &transition, sample, &sampler, w), LINEARS_ERROR_WORKSPACE);
@@ -699,13 +725,13 @@ TYPED_TEST(ParticleFilter, WorkspaceBoundsAliasAndFailureAtomicity) {
     EXPECT_EQ(transition.calls, 0); EXPECT_EQ(observation.calls, 0); EXPECT_EQ(sampler.calls, 0);
     EXPECT_EQ(fixture.snapshot(), snapshot);
     /* Zeroed weights make update, resample and the ESS fail; particles stay. */
-    std::fill(fixture.weights.begin() + 1, fixture.weights.end() - 1, work_encode<A>(0));
+    std::fill(fixture.weights.begin() + 1, fixture.weights.end() - 1, A::encode(0));
     const auto zeroed = fixture.snapshot();
     EXPECT_EQ(Pf<A>::update(&fixture.state, &zv, map_callback<A>, &observation, nullptr, nullptr, update_ws.view()), LINEARS_ERROR_DOMAIN);
     EXPECT_EQ(Pf<A>::resample(&fixture.state, work_encode<A>(0.5L), indices.data(), count, resample_ws.view()), LINEARS_ERROR_DOMAIN);
     EXPECT_EQ(fixture.snapshot(), zeroed);
     for (auto index : indices) EXPECT_EQ(index, SIZE_MAX);
-    std::fill(fixture.weights.begin() + 1, fixture.weights.end() - 1, work_encode<A>(1.0L / count));
+    std::fill(fixture.weights.begin() + 1, fixture.weights.end() - 1, A::encode(1.0L / count));
     ASSERT_EQ(Pf<A>::predict(&fixture.state, map_callback<A>, &transition, sample, &sampler, predict_ws.view()), LINEARS_OK);
     ASSERT_EQ(Pf<A>::update(&fixture.state, &zv, map_callback<A>, &observation, nullptr, nullptr, update_ws.view()), LINEARS_OK);
     ASSERT_EQ(Pf<A>::resample(&fixture.state, work_encode<A>(0.5L), indices.data(), count, resample_ws.view()), LINEARS_OK);
@@ -723,37 +749,36 @@ TEST(ParticleFilterWorkspace, ConstantExpressionsAndOverflowSentinels) {
     static_assert(FILTERS_PF_GAUSSIAN_EXPONENT_DECOMP_STORAGE(3) == 12, "exponent solve scratch");
     static_assert(FILTERS_PF_PREDICT_STORAGE(10, 2) == 20 + 4 + 4, "predict storage");
     static_assert(FILTERS_PF_Q_INIT_STORAGE(10, 2) == 28 + 4 + 2, "Q init storage");
-    static_assert(FILTERS_PF_Q_PREDICT_STORAGE(10, 2) == 28 + 4, "Q predict storage");
+    static_assert(FILTERS_PF_Q_PREDICT_STORAGE(10, 2) == 28 + 4 + 2, "Q predict storage");
     static_assert(FILTERS_PF_PREDICT_BASIC_BYTES(2) == 2 * sizeof(linears_workspace_unit_t), "predict basic");
     static_assert(FILTERS_PF_PREDICT_DECOMP_STORAGE(2) == 4, "predict Cholesky");
     static_assert(FILTERS_PF_UPDATE_STORAGE(10, 3) == 60 + 20 + 9 + 3, "update storage");
-    static_assert(FILTERS_PF_Q_UPDATE_STORAGE(10, 3) == 92 + 9 + 3, "Q update storage");
+    static_assert(FILTERS_PF_Q_UPDATE_STORAGE(10, 2, 3) == 92 + 2 + 9 + 3, "Q update storage");
     static_assert(FILTERS_PF_UPDATE_BASIC_BYTES(3) == 3 * sizeof(linears_workspace_unit_t), "update basic");
     static_assert(FILTERS_PF_UPDATE_DECOMP_STORAGE(3) == 12, "update solve scratch");
-    static_assert(FILTERS_PF_RESAMPLE_STORAGE(10, 2) == 20, "resample storage");
+    static_assert(FILTERS_PF_Q_RESAMPLE_STORAGE(10) == 10, "Q resample storage");
     static_assert(FILTERS_PF_ESTIMATE_STORAGE(10, 2) == 60 + 8 + 2, "estimate storage");
     static_assert(FILTERS_PF_ESTIMATE_BASIC_BYTES(10, 2) == 20 * sizeof(linears_workspace_unit_t), "estimate basic");
     static_assert(FILTERS_PF_ESTIMATE_BASIC_BYTES(1, 3) == 9 * sizeof(linears_workspace_unit_t), "estimate basic, n dominates");
-    static_assert(FILTERS_PF_Q_ESTIMATE_BASIC_BYTES(1, 3) == 12 * sizeof(linears_workspace_unit_t), "Q estimate staging dominates");
-    static_assert(FILTERS_PF_Q_ESTIMATE_BASIC_BYTES(10, 2) == 20 * sizeof(linears_workspace_unit_t), "Q estimate kernels dominate");
+    static_assert(FILTERS_PF_Q_ESTIMATE_STORAGE(10, 2) == 70 + 20 + 10, "Q estimate storage");
     const std::size_t huge = SIZE_MAX / 2 + 1;
     EXPECT_EQ(FILTERS_PF_PERTURB_STORAGE(huge), SIZE_MAX);
     EXPECT_EQ(FILTERS_PF_PREDICT_STORAGE(huge, 2), SIZE_MAX);
     EXPECT_EQ(FILTERS_PF_PREDICT_STORAGE(2, huge), SIZE_MAX);
     EXPECT_EQ(FILTERS_PF_Q_INIT_STORAGE(huge, 2), SIZE_MAX);
     EXPECT_EQ(FILTERS_PF_UPDATE_STORAGE(huge, 1), SIZE_MAX);
-    EXPECT_EQ(FILTERS_PF_Q_UPDATE_STORAGE(1, huge), SIZE_MAX);
-    EXPECT_EQ(FILTERS_PF_RESAMPLE_STORAGE(huge, 2), SIZE_MAX);
+    EXPECT_EQ(FILTERS_PF_Q_UPDATE_STORAGE(1, 1, huge), SIZE_MAX);
+    EXPECT_EQ(FILTERS_PF_Q_RESAMPLE_STORAGE(huge), huge);
     EXPECT_EQ(FILTERS_PF_ESTIMATE_STORAGE(huge, 1), SIZE_MAX);
     EXPECT_EQ(FILTERS_PF_ESTIMATE_BASIC_BYTES(huge, 1), SIZE_MAX);
-    EXPECT_EQ(FILTERS_PF_Q_ESTIMATE_BASIC_BYTES(1, huge), SIZE_MAX);
+    EXPECT_EQ(FILTERS_PF_Q_ESTIMATE_STORAGE(1, huge), SIZE_MAX);
     EXPECT_EQ(FILTERS_PF_GAUSSIAN_EXPONENT_DECOMP_STORAGE(huge), SIZE_MAX);
     float predict[FILTERS_PF_PREDICT_STORAGE(10, 2)];
-    linears_fixed_t q_update[FILTERS_PF_Q_UPDATE_STORAGE(10, 3)];
-    linears_workspace_unit_t basic[LINEARS_WORKSPACE_UNITS(FILTERS_PF_Q_ESTIMATE_BASIC_BYTES(1, 3))];
+    double q31_update[FILTERS_PF_Q_UPDATE_STORAGE(10, 2, 3)];
+    linears_workspace_unit_t basic[LINEARS_WORKSPACE_UNITS(FILTERS_PF_ESTIMATE_BASIC_BYTES(1, 3))];
     EXPECT_EQ(sizeof predict / sizeof predict[0], 28u);
-    EXPECT_EQ(sizeof q_update / sizeof q_update[0], 104u);
-    EXPECT_EQ(sizeof basic / sizeof basic[0], 12u);
+    EXPECT_EQ(sizeof q31_update / sizeof q31_update[0], 106u);
+    EXPECT_EQ(sizeof basic / sizeof basic[0], 9u);
 }
 
 } // namespace

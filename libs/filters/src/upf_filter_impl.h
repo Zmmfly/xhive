@@ -17,24 +17,22 @@
 } while (0)
 #define U_TAKE(rows, cols) U_WORK_LOCAL(take)(&cursor, (rows), (cols))
 #define U_BASIC workspace.basic, workspace.basic_bytes
+#include "ukf_signal_impl.h"
 #if U_FIXED
-#define U_CHECK_FINITE(matrix) ((void)0)
-#define U_IMPORT_VIEW(matrix) U_JOIN(ukf_import_, U_TAG)((matrix), &cursor)
-#define U_DIVIDE(a, b, out) linears_fixed_div((a), (b), (out))
+#define U_INIT_STORAGE FILTERS_PF_Q_INIT_STORAGE
+#define U_STEP_STORAGE FILTERS_UPF_Q_STEP_STORAGE
+#define U_RESAMPLE_STORAGE FILTERS_PF_Q_RESAMPLE_STORAGE
 #else
-#define U_CHECK_FINITE(matrix) U_TRY(U_FINITE(matrix))
-/* Floating signals are already working values; the cursor stays where it is. */
-#define U_IMPORT_VIEW(matrix) ((void)cursor, *(matrix))
-#define U_DIVIDE(a, b, out) U_LOCAL(divide)((a), (b), (out))
+#define U_INIT_STORAGE FILTERS_PF_PREDICT_STORAGE
+#define U_STEP_STORAGE FILTERS_UPF_STEP_STORAGE
+#define U_RESAMPLE_STORAGE(N) ((size_t)0)
 #endif
 
-#if !U_FIXED
 static linears_status_t U_LOCAL(divide)(U_WORK a, U_WORK b, U_WORK *out)
 {
     *out = a / b;
     return isfinite(*out) ? LINEARS_OK : LINEARS_ERROR_RANGE;
 }
-#endif
 
 /* The UPF object, the four PF arrays and the per-particle covariances. */
 static linears_status_t U_LOCAL(state)(ukf_spans_t *spans, const U_STATE *state,
@@ -47,7 +45,41 @@ static linears_status_t U_LOCAL(state)(ukf_spans_t *spans, const U_STATE *state,
     square = LINEARS_SIZE_MUL(*states, *states);
     if (square == SIZE_MAX) return LINEARS_ERROR_SIZE;
     return ukf_owned(spans, &state->covariances, *particles, square, state->covariances_capacity,
-                     sizeof(U_WORK), U_ALIGNOF(U_WORK));
+                     sizeof(U_SIGNAL), U_ALIGNOF(U_SIGNAL));
+}
+
+/* Shape the views through which the kernels read one particle and its
+ * covariance; Q reserves scratch at the cursor to widen into. */
+static void U_LOCAL(particle_slots)(size_t n, U_WORK **cursor, linears_matrix_t *particle,
+                                    linears_matrix_t *covariance)
+{
+#if U_FIXED
+    *particle = U_WORK_LOCAL(take)(cursor, n, 1);
+    *covariance = U_WORK_LOCAL(take)(cursor, n, n);
+#else
+    (void)cursor;
+    particle->data = NULL;
+    particle->rows = n;
+    particle->cols = 1;
+    covariance->data = NULL;
+    covariance->rows = n;
+    covariance->cols = n;
+#endif
+}
+
+/* Point the slots at particle i: widen its raw rows, or view the state arrays. */
+static void U_LOCAL(load_particle)(const U_STATE *state, size_t i, linears_matrix_t *particle,
+                                   linears_matrix_t *covariance)
+{
+    size_t n = state->base.particles.cols;
+#if U_FIXED
+    U_JOIN(ukf_widen_, U_TAG)((const U_SIGNAL *)state->base.particles.data + i * n, n, (U_WORK *)particle->data);
+    U_JOIN(ukf_widen_, U_TAG)((const U_SIGNAL *)state->covariances.data + i * n * n, n * n,
+                              (U_WORK *)covariance->data);
+#else
+    particle->data = (U_WORK *)state->base.particles.data + i * n;
+    covariance->data = (U_WORK *)state->covariances.data + i * n * n;
+#endif
 }
 
 linears_status_t U_API(init)(U_STATE *state, U_WORK alpha, U_WORK beta, U_WORK kappa,
@@ -58,8 +90,6 @@ linears_status_t U_API(init)(U_STATE *state, U_WORK alpha, U_WORK beta, U_WORK k
     linears_status_t status;
     ukf_spans_t spans;
     U_WEIGHTS weights;
-    linears_matrix_t prior;
-    U_WORK *cursor;
     size_t count, n, m, i;
     spans.count = 0;
     U_TRY(U_LOCAL(state)(&spans, state, &count, &n, &m));
@@ -73,10 +103,9 @@ linears_status_t U_API(init)(U_STATE *state, U_WORK alpha, U_WORK beta, U_WORK k
     /* The particle set is validated again and drawn by the PF; it commits atomically. */
     U_TRY(U_PF_API(init)(&state->base, mean, covariance, process_noise, measurement_noise, sample, context,
                          workspace));
-    cursor = workspace.data;
-    prior = U_IMPORT_VIEW(covariance);
+    /* Every particle starts with the prior covariance, copied in the signal format. */
     for (i = 0; i < count; ++i)
-        memcpy((U_WORK *)state->covariances.data + i * n * n, prior.data, n * n * sizeof(U_WORK));
+        memcpy((U_SIGNAL *)state->covariances.data + i * n * n, covariance->data, n * n * sizeof(U_SIGNAL));
     state->sigma_weights = weights;
     return LINEARS_OK;
 }
@@ -113,7 +142,6 @@ linears_status_t U_API(step)(U_STATE *state, const linears_matrix_t *measurement
     staged_covariances = U_TAKE(count, n * n);
     staged_particles = U_TAKE(count, n);
     exponents = U_TAKE(count, 1);
-    staged_weights = U_TAKE(count, 1);
     draw = U_TAKE(n, 1);
     factor = U_TAKE(n, n);
     prior_mean = U_TAKE(n, 1);
@@ -130,26 +158,27 @@ linears_status_t U_API(step)(U_STATE *state, const linears_matrix_t *measurement
     q_in = U_IMPORT_VIEW(&state->base.process_noise);
     r_in = U_IMPORT_VIEW(&state->base.measurement_noise);
     z_in = U_IMPORT_VIEW(measurement);
+    staged_weights = U_PF_LOCAL(stage_weights)(&state->base.weights, &cursor);
+    U_LOCAL(particle_slots)(n, &cursor, &particle, &covariance);
     kernel = U_WORK_LOCAL(remaining)(workspace, cursor);
     /* Both noise factors are needed for the weights; check them before any callback. */
     U_TRY(U_LINEAR(cholesky)(&q_in, &q_factor, workspace.decomposition));
     U_TRY(U_LINEAR(cholesky)(&r_in, &r_factor, workspace.decomposition));
-    memcpy(staged_weights.data, state->base.weights.data, count * sizeof(U_WORK));
     draw_row = draw;
     draw_row.rows = 1;
     draw_row.cols = n;
     predicted_row = predicted;
     predicted_row.rows = 1;
     predicted_row.cols = n;
-    covariance.rows = covariance.cols = new_covariance.rows = new_covariance.cols = n;
+    particle_row = particle;
+    particle_row.rows = 1;
+    particle_row.cols = n;
+    new_covariance.rows = new_covariance.cols = n;
     exponent.rows = exponent.cols = weight.rows = weight.cols = 1;
     diagonal = (const U_WORK *)factor.data;
     for (i = 0; i < count; ++i) {
-        particle = U_WORK_LOCAL(row)(&state->base.particles, i);
-        particle_row = particle;
-        particle_row.rows = 1;
-        particle_row.cols = n;
-        covariance.data = (U_WORK *)state->covariances.data + i * n * n;
+        U_LOCAL(load_particle)(state, i, &particle, &covariance);
+        particle_row.data = particle.data;
         new_covariance.data = (U_WORK *)staged_covariances.data + i * n * n;
         new_particle = U_WORK_LOCAL(row)(&staged_particles, i);
         new_row = new_particle;
@@ -167,20 +196,20 @@ linears_status_t U_API(step)(U_STATE *state, const linears_matrix_t *measurement
                                      &posterior_mean, &new_covariance, kernel));
         U_TRY(U_LINEAR(cholesky)(&new_covariance, &factor, workspace.decomposition));
         U_TRY(sample(&draw, sample_context));
-        U_CHECK_FINITE(&draw);
+        U_TRY(U_JOIN(ukf_finite_, U_KERNEL)(&draw));
         U_TRY(U_LINEAR(mul)(&factor, &draw, &new_particle, U_BASIC));
         U_TRY(U_LINEAR(add)(&new_particle, &posterior_mean, &new_particle, U_BASIC));
         /* Proposal density exponent -(1/2)*xi^T*xi; its sqrt(det C_i) enters the
-         * weight as a ratio to particle 0 so F31 weights keep their precision. */
+         * weight as a ratio to particle 0 so the products stay near one. */
         U_TRY(U_LINEAR(mul)(&draw_row, &draw, &exponent, U_BASIC));
-        U_TRY(U_LINEAR(axpby)(U_NEG_HALF, &exponent, U_ZERO, &exponent, &exponent, U_BASIC));
+        U_TRY(U_LINEAR(axpby)((U_WORK)-0.5, &exponent, (U_WORK)0, &exponent, &exponent, U_BASIC));
         for (j = 0; j < n; ++j) {
             if (i == 0) {
                 ((U_WORK *)reference.data)[j] = diagonal[j * n + j];
                 continue;
             }
-            U_TRY(U_DIVIDE(diagonal[j * n + j], ((const U_WORK *)reference.data)[j], &ratio));
-            U_TRY(U_LINEAR(axpby)(ratio, &weight, U_ZERO, &weight, &weight, U_BASIC));
+            U_TRY(U_LOCAL(divide)(diagonal[j * n + j], ((const U_WORK *)reference.data)[j], &ratio));
+            U_TRY(U_LINEAR(axpby)(ratio, &weight, (U_WORK)0, &weight, &weight, U_BASIC));
         }
         /* Likelihood exponent of z given the new particle. */
         U_TRY(U_UKF_API(propagate)(&new_row, model->observation, model->observation_context, &measured));
@@ -196,9 +225,11 @@ linears_status_t U_API(step)(U_STATE *state, const linears_matrix_t *measurement
         U_TRY(U_LINEAR(add)(&exponent, &term, &exponent, U_BASIC));
     }
     U_TRY(U_KERNEL_API(reweight)(&staged_weights, &exponents));
-    memcpy(state->base.particles.data, staged_particles.data, count * n * sizeof(U_WORK));
-    memcpy(state->covariances.data, staged_covariances.data, count * n * n * sizeof(U_WORK));
-    memcpy(state->base.weights.data, staged_weights.data, count * sizeof(U_WORK));
+    U_FITS(&staged_particles);
+    U_FITS(&staged_covariances);
+    U_STORE(&staged_particles, &state->base.particles);
+    U_STORE(&staged_covariances, &state->covariances);
+    U_PF_LOCAL(store_weights)(&staged_weights, &state->base.weights);
     return LINEARS_OK;
 }
 
@@ -207,29 +238,29 @@ linears_status_t U_API(resample)(U_STATE *state, U_WORK uniform, size_t *indices
 {
     linears_status_t status;
     ukf_spans_t spans;
-    linears_matrix_t staged_particles, staged_covariances;
-    U_WORK *cursor, weight;
+    linears_matrix_t weights;
+    U_WORK *cursor;
     size_t count, n, m;
     spans.count = 0;
     U_TRY(U_LOCAL(state)(&spans, state, &count, &n, &m));
     if (indices == NULL) return LINEARS_ERROR_ARGUMENT;
     if (capacity < count) return LINEARS_ERROR_WORKSPACE;
     U_TRY(ukf_span(&spans, indices, LINEARS_SIZE_MUL(count, sizeof(size_t)), U_ALIGNOF(size_t), UKF_WRITABLE));
-    U_TRY(U_WORK_LOCAL(workspace)(&spans, workspace, FILTERS_UPF_RESAMPLE_STORAGE(count, n), 0, 0));
-    U_TRY(U_PF_LOCAL(uniform)(count, &weight));
-    U_TRY(U_KERNEL_API(resample_indices)(&state->base.weights, uniform, indices, capacity));
+    U_TRY(U_WORK_LOCAL(workspace)(&spans, workspace, U_RESAMPLE_STORAGE(count), 0, 0));
     cursor = workspace.data;
-    staged_particles = U_TAKE(count, n);
-    staged_covariances = U_TAKE(count, n * n);
-    U_TRY(U_KERNEL_API(gather)(&state->base.particles, indices, count, &staged_particles));
-    U_TRY(U_KERNEL_API(gather)(&state->covariances, indices, count, &staged_covariances));
-    memcpy(state->base.particles.data, staged_particles.data, count * n * sizeof(U_WORK));
-    memcpy(state->covariances.data, staged_covariances.data, count * n * n * sizeof(U_WORK));
-    U_PF_LOCAL(fill)(&state->base.weights, weight);
+    weights = U_PF_LOCAL(load_weights)(&state->base.weights, &cursor);
+    U_TRY(U_KERNEL_API(resample_indices)(&weights, uniform, indices, capacity));
+    ukf_gather_rows(state->base.particles.data, n * sizeof(U_SIGNAL), indices, count);
+    ukf_gather_rows(state->covariances.data, n * n * sizeof(U_SIGNAL), indices, count);
+    U_PF_LOCAL(reset_weights)(&state->base.weights);
     return LINEARS_OK;
 }
 
-#undef U_DIVIDE
+#undef U_RESAMPLE_STORAGE
+#undef U_STEP_STORAGE
+#undef U_INIT_STORAGE
+#undef U_STORE
+#undef U_FITS
 #undef U_IMPORT_VIEW
 #undef U_CHECK_FINITE
 #undef U_BASIC
@@ -257,7 +288,3 @@ linears_status_t U_API(resample)(U_STATE *state, U_WORK uniform, size_t *indices
 #undef U_WORKSPACE
 #undef U_SAMPLE_FN
 #undef U_FINITE
-#undef U_ZERO
-#undef U_NEG_HALF
-#undef U_INIT_STORAGE
-#undef U_STEP_STORAGE

@@ -12,11 +12,7 @@
     if (status != LINEARS_OK) return status; \
 } while (0)
 #define U_BASIC workspace.basic, workspace.basic_bytes
-#if U_FIXED
-#define U_CHECK_FINITE(matrix) ((void)0)
-#else
 #define U_CHECK_FINITE(matrix) U_TRY(U_FINITE(matrix))
-#endif
 
 /* out may be exactly the points storage (in place) or disjoint from it. */
 static linears_status_t U_LOCAL(in_out)(ukf_spans_t *spans, const linears_matrix_t *points,
@@ -108,7 +104,7 @@ linears_status_t U_API(gaussian_exponent)(const linears_matrix_t *deviations, co
         result.data = (U_WORK *)out->data + i;
         U_TRY(U_LINEAR(solve)(factor, &deviation, &solved, workspace.decomposition));
         U_TRY(U_LINEAR(mul)(&transposed, &solved, &result, U_BASIC));
-        U_TRY(U_LINEAR(axpby)(U_HALF, &result, U_ZERO, &result, &result, U_BASIC));
+        U_TRY(U_LINEAR(axpby)((U_WORK)0.5, &result, (U_WORK)0, &result, &result, U_BASIC));
     }
     return LINEARS_OK;
 }
@@ -119,7 +115,7 @@ linears_status_t U_API(reweight)(linears_matrix_t *weights, const linears_matrix
     ukf_spans_t spans;
     U_WORK *w;
     const U_WORK *e;
-    U_WORK lowest, sum = U_ZERO;
+    U_WORK lowest, sum = (U_WORK)0;
     size_t count, i;
     spans.count = 0;
     U_TRY(ukf_matrix(&spans, weights, 0, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_WRITABLE));
@@ -136,27 +132,12 @@ linears_status_t U_API(reweight)(linears_matrix_t *weights, const linears_matrix
         if (e[i] < lowest) lowest = e[i];
     /* Shifting by the smallest exponent keeps the best particle at exp(0). */
     for (i = 0; i < count; ++i) {
-#if U_FIXED
-        U_WORK shifted;
-        U_TRY(linears_fixed_sub(e[i], lowest, &shifted));
-        U_TRY(linears_fixed_mul(w[i], pf_fixed_exp_neg(shifted), &w[i]));
-        U_TRY(linears_fixed_add(sum, w[i], &sum));
-#else
         w[i] *= U_EXP_NEG(e[i] - lowest);
         sum += w[i];
-#endif
     }
-#if !U_FIXED
     if (!isfinite(sum)) return LINEARS_ERROR_RANGE;
-#endif
     if (sum == 0) return LINEARS_ERROR_DOMAIN;
-    for (i = 0; i < count; ++i) {
-#if U_FIXED
-        U_TRY(linears_fixed_div(w[i], sum, &w[i]));
-#else
-        w[i] /= sum;
-#endif
-    }
+    for (i = 0; i < count; ++i) w[i] /= sum;
     return LINEARS_OK;
 }
 
@@ -165,11 +146,8 @@ linears_status_t U_API(effective_sample_size)(const linears_matrix_t *weights, U
     linears_status_t status;
     ukf_spans_t spans;
     const U_WORK *w;
-    U_WORK sum = U_ZERO, squares = U_ZERO, result;
+    U_WORK sum = (U_WORK)0, squares = (U_WORK)0, result;
     size_t count, i;
-#if U_FIXED
-    linears_accum_t accumulator = {0, 0};
-#endif
     if (out == NULL) return LINEARS_ERROR_ARGUMENT;
     spans.count = 0;
     U_TRY(ukf_matrix(&spans, weights, 0, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
@@ -178,25 +156,13 @@ linears_status_t U_API(effective_sample_size)(const linears_matrix_t *weights, U
     w = (const U_WORK *)weights->data;
     count = weights->rows;
     for (i = 0; i < count; ++i) {
-#if U_FIXED
-        U_TRY(linears_fixed_add(sum, w[i], &sum));
-        U_TRY(linears_fixed_mac(&accumulator, w[i], w[i]));
-#else
         sum += w[i];
         squares += w[i] * w[i];
         if (!isfinite(sum) || !isfinite(squares)) return LINEARS_ERROR_RANGE;
-#endif
     }
     if (sum == 0) return LINEARS_ERROR_DOMAIN;
-#if U_FIXED
-    /* Exact F62 sum of squares rounded once; sum^2 / squares then rounds twice. */
-    U_TRY(linears_accum_to_fixed(accumulator, &squares));
-    U_TRY(linears_fixed_mul(sum, sum, &result));
-    U_TRY(linears_fixed_div(result, squares, &result));
-#else
     result = sum * sum / squares;
     if (!isfinite(result)) return LINEARS_ERROR_RANGE;
-#endif
     *out = result;
     return LINEARS_OK;
 }
@@ -207,11 +173,8 @@ linears_status_t U_API(resample_indices)(const linears_matrix_t *weights, U_WORK
     linears_status_t status;
     ukf_spans_t spans;
     const U_WORK *w;
-    U_WORK total = U_ZERO, cumulative, target;
+    U_WORK total = (U_WORK)0, cumulative, target;
     size_t count, i, j;
-#if U_FIXED
-    linears_fixed_t divisor, position;
-#endif
     spans.count = 0;
     U_TRY(ukf_matrix(&spans, weights, 0, 1, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
     count = weights->rows;
@@ -220,39 +183,20 @@ linears_status_t U_API(resample_indices)(const linears_matrix_t *weights, U_WORK
     U_TRY(ukf_span(&spans, indices, LINEARS_SIZE_MUL(count, sizeof(size_t)), U_ALIGNOF(size_t), UKF_WRITABLE));
     U_TRY(ukf_disjoint(&spans));
     U_CHECK_FINITE(weights);
-#if !U_FIXED
     if (!isfinite(uniform)) return LINEARS_ERROR_RANGE;
     if (!(uniform >= 0 && uniform < 1)) return LINEARS_ERROR_DOMAIN;
-#else
-    if (uniform < 0 || uniform >= LINEARS_FIXED_ONE) return LINEARS_ERROR_DOMAIN;
-#endif
     U_TRY(U_LOCAL(nonnegative)(weights));
     w = (const U_WORK *)weights->data;
     for (i = 0; i < count; ++i) {
-#if U_FIXED
-        U_TRY(linears_fixed_add(total, w[i], &total));
-#else
         total += w[i];
         if (!isfinite(total)) return LINEARS_ERROR_RANGE;
-#endif
     }
     if (total == 0) return LINEARS_ERROR_DOMAIN;
-#if U_FIXED
-    /* Targets grow with i, so the last one fitting int64 proves the others do. */
-    U_TRY(linears_fixed_from_int((int64_t)count, &divisor));
-    position = uniform + (linears_fixed_t)(count - 1) * LINEARS_FIXED_ONE;
-    U_TRY(linears_fixed_muldiv(position, total, divisor, &target));
-#endif
     /* Systematic resampling: one draw, N equally spaced targets, running sum. */
     j = 0;
     cumulative = w[0];
     for (i = 0; i < count; ++i) {
-#if U_FIXED
-        position = uniform + (linears_fixed_t)i * LINEARS_FIXED_ONE;
-        U_TRY(linears_fixed_muldiv(position, total, divisor, &target));
-#else
         target = ((U_WORK)i + uniform) / (U_WORK)count * total;
-#endif
         while (cumulative < target && j + 1 < count) {
             ++j;
             cumulative += w[j]; /* Partial sums never exceed the checked total. */
@@ -298,10 +242,7 @@ linears_status_t U_API(gather)(const linears_matrix_t *points, const size_t *ind
 #undef U_JOIN_INNER
 #undef U_TAG
 #undef U_WORK
-#undef U_FIXED
 #undef U_WORKSPACE
 #undef U_SAMPLE_FN
-#undef U_ZERO
-#undef U_HALF
 #undef U_FINITE
 #undef U_EXP_NEG

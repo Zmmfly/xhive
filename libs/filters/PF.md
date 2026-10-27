@@ -54,11 +54,11 @@ because `xhat - M = L*xi` and `(L*xi)^T C^-1 (L*xi) = xi^T xi`. The Gaussian
 normalizers of `R` and `Q` are constant across particles and drop out of the
 normalized weights; `sqrt(det C_i) = prod_j L_i[j][j]` does not and is kept.
 Inside the implementation the determinant factor is applied as the ratio
-`prod_j L_i[j][j] / L_0[j][j]` to particle 0 so that fixed-point weights are
-not scaled by tiny absolute determinants before normalization; the
-normalized result is the same. `resample` gathers particles and covariances
-together; `estimate` and `effective_sample_size` are the PF functions applied
-to the embedded `base`.
+`prod_j L_i[j][j] / L_0[j][j]` to particle 0 so that the weight products stay
+near one instead of being scaled by tiny absolute determinants before
+normalization; the normalized result is the same. `resample` gathers
+particles and covariances together; `estimate` and `effective_sample_size`
+are the PF functions applied to the embedded `base`.
 
 ### Source and reasoning
 
@@ -90,11 +90,11 @@ allocation, I/O, recursion, variable-length array, mutable global state or
 random generator. Serialize calls sharing a state or scratch; independent
 instances are reentrant.
 
-Particles and weights are stored in the kernels' working format (`float`,
-`double`, or `linears_fixed_t` F31 for q15/q31): a Q particle may wander
-outside the signal interval without failing the filter, and only `estimate`
-narrows its outputs. Q, R, the init mean/covariance, measurements and the
-estimate outputs are signal matrices. `weights` and `particles` are public
+Every persistent array is stored in the signal type: `float`/`double` for
+f32/f64, raw `int16_t/2^15` or `int32_t/2^31` for q15/q31. Particles,
+weights, (UPF) covariances, Q, R, the init mean/covariance, measurements and
+the estimate outputs all follow that rule, so a Q particle must stay inside
+`[-1,+1]`; see the Q contract below. `weights` and `particles` are public
 fields so the kernels can be applied to them directly; `covariances` of the
 UPF likewise.
 
@@ -115,14 +115,17 @@ vector on failure, which the filters avoid by reweighting a staged copy.
 `resample` writes `indices[0..N)` and the state only on success; the kernel
 `resample_indices` likewise writes nothing on failure. Indices are
 nondecreasing and every particle is copied `floor(N*w_i)` or `ceil(N*w_i)`
-times. A zero weight sum, a negative weight, or a uniform draw outside
-`[0,1)` fails with `DOMAIN`.
+times. Because the indices are nondecreasing, the rows are gathered in
+place (a forward pass for sources above the destination, a backward pass for
+sources below), so `resample` needs no staging scratch in f32/f64. A zero
+weight sum, a negative weight, or a uniform draw outside `[0,1)` fails with
+`DOMAIN`.
 
 ## Kernels
 
-The steps are public working-format kernels (tags `f32`, `f64` and `fixed`
-for q15/q31), one point per row, so other particle schemes can be composed
-from them together with the UKF kernels:
+The steps are public working-format kernels (tags `f32` and `f64`; the q15
+filters run on `f32`, q31 on `f64`), one point per row, so other particle
+schemes can be composed from them together with the UKF kernels:
 
 | Kernel | Computes |
 | --- | --- |
@@ -139,30 +142,40 @@ are the per-particle UKF of the UPF.
 
 ## Fixed-fraction Q contract
 
-- q15/q31 states hold `linears_fixed_t` particles, weights and (UPF)
-  covariances; Q, R, the init mean/covariance, measurements and estimate
-  outputs are raw `int16_t/2^15` or `int32_t/2^31`. Sampler and model
-  callbacks see F31 working vectors; `alpha`, `beta`, `kappa` and uniform
-  draws are F31 with `LINEARS_FIXED_ONE` meaning one.
-- All arithmetic is integer-only. `exp(-x)` for the weights is evaluated in
-  F31: `x = k*ln2 + r`, `exp(-r) = exp(-r/4)^4` by a degree-8 Taylor polynomial
-  in Horner form, then a rounded shift by `k`. Measured against `expl` over
-  `0 <= x <= 22.5` in steps of `0.0005`: absolute error below `2e-9` (eight F31
-  ulps); relative error `2.7e-9` for results at or above 0.5 and `2.4e-8` at
-  or above 0.01; below that the `2^-32` output quantization dominates. Results
-  below `2^-32` round to zero, so a particle more than about 22 nats behind the
-  best one receives weight exactly zero (`exp(-22.18)` is the last nonzero
-  value, one ulp).
-- `effective_sample_size` accumulates `sum w^2` exactly in F62 and rounds
-  once; normalized weights satisfy `sum w^2 >= 1/N`, so it cannot underflow to
-  zero for any practical N. Unnormalized weights below about `2^-16` can.
-- Weight precision is bounded by F31 rounding of the exponents: the prior
-  term `(1/2)*d^T Q^-1 d` of the UPF amplifies working rounding of the new
-  particle by `|d|/Q`, so with `Q = 1e-4` and `|d| = 0.03` a weight carries a
-  few hundred ulps (about `1e-7`) of relative error rather than a few.
-- `estimate` range-checks its computed F31 mean and covariance against
-  `[-1,+1]` and narrows once with the positive-endpoint policy; narrowing is
-  staged in basic scratch so a late `RANGE` writes neither output.
+- q15/q31 states hold raw `int16_t/2^15` or `int32_t/2^31` particles,
+  weights, (UPF) covariances, Q and R; the init mean/covariance,
+  measurements and estimate outputs are raw too. Nothing is stored wider
+  than the signal type.
+- Intermediates need range beyond the signal interval, so the q15 filters
+  compute in float and the q31 filters in double (the significand covers
+  the signal). Sampler and model callbacks see float/double vectors;
+  `alpha`, `beta`, `kappa` and uniform draws are float/double. The kernels,
+  workspace and model types are the `f32`/`f64` ones.
+- Signals widen once on entry. Q and R, the init mean/covariance and the
+  measurement are widened whole; particles are widened one row at a time
+  into an `n`-element scratch slot as they are handed to the transition or
+  observation, so the per-call scratch grows with `n`, not `N·n` (UPF: one
+  particle and one `n·n` covariance slot). `estimate` widens the whole set.
+- Results narrow once on commit after a `[-1,+1]` range check on the
+  computed working values, with the positive-endpoint policy of
+  `linears_numeric.h` (exact +1 and the rounding cell reaching it map to
+  MAX, ties away from zero). `init` and `predict` check every new particle,
+  the UPF `step` every new particle and covariance, `estimate` both outputs,
+  all before anything is written: a particle that leaves the interval fails
+  its transaction with `RANGE` and the state stays byte-identical. Scale the
+  problem so particles keep a margin inside the interval.
+- Raw Q weights are scaled so that the largest equals `INT16_MAX` or
+  `INT32_MAX` instead of summing to one: a sum-normalized vector would leave
+  most of the fixed range unused once `1/N` is a few LSBs. The weights define
+  the distribution up to that common factor, which `update`, `resample`,
+  `estimate` and the raw `filters_pf_q15/q31_effective_sample_size` divide
+  out (`estimate` normalizes the widened weights to sum one and fails with
+  `DOMAIN` when they sum to zero). `init` and `resample` reset every weight
+  to the raw maximum. A weight below `2^-16` (q15) or `2^-32` (q31) of the
+  largest rounds to zero, so a particle more than about 11 or 22 nats behind
+  the best one is lost at the commit; floating weights keep `exp(-87)`
+  (f32) or `exp(-708)` (f64).
+- `exp(-x)` is `expf`/`exp`; there is no fixed-point exponential.
 
 ## Workspace and RAM cost
 
@@ -174,22 +187,26 @@ rejected). Only required prefixes are accessed. `W` is the UKF kernel amount
 | Call | `data` elements (float / Q adds) | `basic` bytes | `decomposition` elements |
 | --- | --- | --- | --- |
 | PF `init` | `FILTERS_PF_PREDICT_STORAGE(N,n)` = `N·n + n² + 2n` / `FILTERS_PF_Q_INIT_STORAGE` `+ n² + n` | `FILTERS_PF_PREDICT_BASIC_BYTES(n)` = `n` units | `FILTERS_PF_PREDICT_DECOMP_STORAGE(n)` = `n²` |
-| PF `predict` | `FILTERS_PF_PREDICT_STORAGE(N,n)` / `FILTERS_PF_Q_PREDICT_STORAGE` `+ n²` | `n` units | `n²` |
-| PF `update` | `FILTERS_PF_UPDATE_STORAGE(N,m)` = `2N·m + 2N + m² + m` / `FILTERS_PF_Q_UPDATE_STORAGE` `+ m² + m` | `FILTERS_PF_UPDATE_BASIC_BYTES(m)` = `m` units | `FILTERS_PF_UPDATE_DECOMP_STORAGE(m)` = `m² + m` |
-| PF `resample` | `FILTERS_PF_RESAMPLE_STORAGE(N,n)` = `N·n` | 0 | 0 |
-| PF `estimate` | `FILTERS_PF_ESTIMATE_STORAGE(N,n)` = `3N·n + 2n² + n` | `FILTERS_PF_ESTIMATE_BASIC_BYTES(N,n)` = `n·max(N,n)` units; Q `FILTERS_PF_Q_ESTIMATE_BASIC_BYTES` also covers `n + n²` staging units | 0 |
+| PF `predict` | `FILTERS_PF_PREDICT_STORAGE(N,n)` / `FILTERS_PF_Q_PREDICT_STORAGE` `+ n² + n` | `n` units | `n²` |
+| PF `update` | `FILTERS_PF_UPDATE_STORAGE(N,m)` = `2N·m + 2N + m² + m` / `FILTERS_PF_Q_UPDATE_STORAGE(N,n,m)` `+ n + m² + m` | `FILTERS_PF_UPDATE_BASIC_BYTES(m)` = `m` units | `FILTERS_PF_UPDATE_DECOMP_STORAGE(m)` = `m² + m` |
+| PF `resample` | 0 / `FILTERS_PF_Q_RESAMPLE_STORAGE(N)` = `N` | 0 | 0 |
+| PF `estimate` | `FILTERS_PF_ESTIMATE_STORAGE(N,n)` = `3N·n + 2n² + n` / `FILTERS_PF_Q_ESTIMATE_STORAGE` `+ N·n + N` | `FILTERS_PF_ESTIMATE_BASIC_BYTES(N,n)` = `n·max(N,n)` units | 0 |
 | UPF `init` | as PF `init` | as PF `init` | as PF `init` |
-| UPF `step` | `FILTERS_UPF_STEP_STORAGE(N,n,m)` = `N·(n² + n + 2) + 3n² + 6n + m² + 2m + 1 + W` / `FILTERS_UPF_Q_STEP_STORAGE` `+ n² + m² + m` | `FILTERS_UPF_STEP_BASIC_BYTES(n,m)` = `max(n,m)·(2n+1)` units | `FILTERS_UPF_STEP_DECOMP_STORAGE(n,m)` = `max(n² + n, m² + mn)` |
-| UPF `resample` | `FILTERS_UPF_RESAMPLE_STORAGE(N,n)` = `N·(n + n²)` | 0 | 0 |
+| UPF `step` | `FILTERS_UPF_STEP_STORAGE(N,n,m)` = `N·(n² + n + 2) + 3n² + 6n + m² + 2m + 1 + W` / `FILTERS_UPF_Q_STEP_STORAGE` `+ n + 2n² + m² + m` | `FILTERS_UPF_STEP_BASIC_BYTES(n,m)` = `max(n,m)·(2n+1)` units | `FILTERS_UPF_STEP_DECOMP_STORAGE(n,m)` = `max(n² + n, m² + mn)` |
+| UPF `resample` | as PF `resample` | 0 | 0 |
 
 The kernels have their own macros (`FILTERS_PF_PERTURB_*`,
-`FILTERS_PF_GAUSSIAN_EXPONENT_*`). The UPF step evaluates the likelihood and
-prior exponents per particle, so its scratch grows with `N·n²` (the staged
-covariances) rather than with `N·m`; the state itself adds `N·n²` working
-elements for the covariances. For `N = 64, n = 2, m = 1` an f32 PF needs at
-most 394 working floats (estimate), 128 basic units and 4 decomposition
-floats across all calls; a UPF step needs 615 working floats, 10 basic units
-and 6 decomposition floats.
+`FILTERS_PF_GAUSSIAN_EXPONENT_*`). Q `data` is float for q15 and double for
+q31. The UPF step evaluates the likelihood and prior exponents per particle,
+so its scratch grows with `N·n²` (the staged covariances) rather than with
+`N·m`; the state itself adds `N·n²` signal elements for the covariances. For
+`N = 64, n = 2, m = 1` an f32 PF needs at most 394 working floats
+(estimate), 128 basic units and 4 decomposition floats across all calls; a
+UPF step needs 615 working floats, 10 basic units and 6 decomposition floats.
+The state arrays are `N·n + N + n² + m²` signal elements (PF) plus `N·n²`
+(UPF): for the same dimensions the UPF state is 453 elements, 906 bytes in
+q15 and 1812 bytes in q31 or f32; the q15 PF's 64 particles and weights take
+384 bytes.
 
 A C99 f32 particle filter for the pendulum of `UKF.md` with a caller-owned
 generator and an angle residual; one estimate-sized workspace serves every
@@ -322,27 +339,34 @@ and update (solve with R) requirements.
   `P0` must be positive definite; the UKF accepts a semidefinite `P0` at init,
   the PF does not.
 - Floating formats reject nonfinite inputs, draws and callback outputs;
-  f32 weights of very unequal particles underflow to zero below `exp(-87)`
-  and F31 weights below `exp(-22)` relative to the best particle.
+  weights of very unequal particles underflow to zero below `exp(-87)` (f32,
+  also q15 working arithmetic) or `exp(-708)` (f64, q31), and the raw Q
+  weights additionally drop particles below `2^-16` (q15) or `2^-32` (q31) of
+  the best one when committed.
+- Q particles, covariances and estimates must lie in `[-1,+1]`; a transaction
+  that would leave the interval fails with `RANGE` and commits nothing.
 - Estimates are Monte Carlo: the statistical error scales with
   `1/sqrt(ESS)`, independent of the numeric format.
 
 ## Validation
 
 Host tests live in `test/pf.cc` and `test/upf.cc`, sharing `test/pf_support.h`
-and `test/ukf_support.h` with the UKF suite, and run for all four formats:
+and `test/ukf_support.h` with the UKF suite. The kernel cases run for the
+`f32` and `f64` kernels, the filter cases for all four formats:
 
-- `xmake test -g xhive -v 'filters_test_pf/pf'`: 53 GoogleTest cases, 51 pass
-  and the 2 floating instances of the Q-only range case are skipped by design.
+- `xmake test -g xhive -v 'filters_test_pf/pf'`: 45 GoogleTest cases, 41 pass
+  and the 4 floating instances of the two Q-only cases are skipped by design.
 - `xmake test -g xhive -v 'filters_test_upf/upf'`: 17 cases, all pass.
 
 Oracles are independent of the production code:
 
 - `reweight` against `expl` over exponents 0..22 in half-nat steps (both
-  uniform and random weights, shifted and unshifted), the exact zero beyond
-  22 nats in F31, and `DOMAIN`/`ALIAS`/`DIMENSION`/`RANGE` rejection.
+  uniform and random weights, shifted and unshifted) and
+  `DOMAIN`/`ALIAS`/`DIMENSION`/`RANGE` rejection.
 - `effective_sample_size` against the closed form for uniform, one-hot and
-  random weights; `resample_indices` against an independent systematic
+  random weights, and the raw q15/q31 version on maximum-scaled raw weights
+  with its `DOMAIN`/`ARGUMENT`/`DIMENSION` rejection; `resample_indices`
+  against an independent systematic
   implementation on the quantized weights for 12 random weight vectors
   (including zero entries and unnormalized totals), with nondecreasing
   indices and `floor`/`ceil` copy counts; `gather` and `perturb` against
@@ -354,7 +378,9 @@ Oracles are independent of the production code:
   (quantized) draws, reseeded from the committed state before every
   transaction: particles after `predict`, weights after `update`, the ESS,
   indices and gathered particles after `resample`, and mean/covariance after
-  `estimate` all match within the per-format envelopes without multipliers.
+  `estimate` all match within the per-format envelopes without multipliers;
+  Q weights are compared as the distribution they define, and the committed
+  raw vector is checked to carry the raw maximum.
 - A 24-particle, 20-step pendulum UPF against a long-double UPF built from
   the Eigen UKF reference of the UKF suite plus the weight formula above,
   alternating NULL and explicit subtraction residuals; particles and
@@ -372,8 +398,9 @@ Oracles are independent of the production code:
   and covariance match the reference and stay on the short side, the naive
   estimate lands across the cut, and a measurement beyond the cut weights the
   particles by short-way distances.
-- Q particles above +1 are accepted while `estimate` fails atomically with
-  `RANGE` until the cloud contracts back into range.
+- A Q init whose scripted draw lands a particle at 1.2 fails atomically with
+  `RANGE`, as does a predict that shifts a particle past +1; in-range draws
+  and an identity transition commit and estimate normally.
 - Init validation, capacities, exact/own-descriptor alias acceptance, partial
   and cross alias rejection, workspace bounds and misalignment, NULL
   callbacks, pre-callback Q/R checks (`DOMAIN`, `NOT_POSITIVE_DEFINITE` with
@@ -387,10 +414,11 @@ Oracles are independent of the production code:
 
 Comparisons use the per-format envelopes of `KALMAN.md` (`tolerance * (1 +
 |reference|)`, f32 `2e-5`, f64 `2e-12`, q15 `4e-3`, q31 `2e-7`), with the one
-multiplier noted above. Additional runs: GCC `-O2 -fstrict-aliasing` release
-build of the production objects and both tests, and a Clang
-`-fsanitize=address,undefined` build with `halt_on_error`, both with no
-sanitizer diagnostics; `pf.c` passes GCC and Clang `-std=c99 -pedantic-errors
--Wall -Wextra -Werror -Wvla -fsyntax-only`. The example above compiles and
-returns zero with both compilers. Host simulation is not MCU, hardware or
-interrupt-timing validation.
+multiplier noted above; the q31 envelope holds with double working
+arithmetic. Additional runs: GCC `-O2` release build of the production
+objects and both tests, and a Clang `-fsanitize=address,undefined` build with
+`-fno-sanitize-recover=undefined`, both with no sanitizer diagnostics; `pf.c`
+passes GCC and Clang `-std=c99 -pedantic-errors -Wall -Wextra -Werror -Wvla
+-fsyntax-only`. The example above compiles and returns zero with both
+compilers. Host simulation is not MCU, hardware or interrupt-timing
+validation.

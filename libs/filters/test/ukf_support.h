@@ -26,7 +26,7 @@ inline Dense dense_matrix(const EigenMatrix& value) {
                  Vec(value.data(), value.data() + value.size()));
 }
 
-/* UKF entry points per signal format; q15/q31 share the fixed working kernels. */
+/* UKF entry points per signal format; q15 runs on the f32 kernels, q31 on f64. */
 template<class A> struct Ukf;
 #define UKF_TEST_API(tag, kernel) \
 template<> struct Ukf<tag> { \
@@ -49,14 +49,16 @@ template<> struct Ukf<tag> { \
 };
 UKF_TEST_API(f32, f32)
 UKF_TEST_API(f64, f64)
-UKF_TEST_API(q15, fixed)
-UKF_TEST_API(q31, fixed)
+UKF_TEST_API(q15, f32)
+UKF_TEST_API(q31, f64)
 #undef UKF_TEST_API
 
-/* Working elements seen by callbacks and kernels: float, double or F31. */
-template<class A> using Work = typename A::Coefficient;
-template<class A> Work<A> work_encode(long double value) { return A::coefficient(value); }
-template<class A> long double work_decode(Work<A> value) { return A::decode_coefficient(value); }
+/* Working elements seen by callbacks and kernels: the signal type for f32/f64,
+ * float for q15 and double for q31. */
+template<class A> using Work = std::conditional_t<A::bits == 0, typename A::Scalar,
+                                                  std::conditional_t<A::bits == 15, float, double>>;
+template<class A> Work<A> work_encode(long double value) { return static_cast<Work<A>>(value); }
+template<class A> long double work_decode(Work<A> value) { return value; }
 template<class A> Dense decode_work(const linears_matrix_t& matrix) {
     Dense result(matrix.rows, matrix.cols);
     const auto *raw = static_cast<const Work<A>*>(matrix.data);
@@ -162,16 +164,12 @@ template<class A> struct UkfWorkspace {
         std::memset(basic.data(), 0x35, basic.size() * sizeof(basic[0]));
     }
     static UkfWorkspace predict(std::size_t n) {
-        return A::bits ? UkfWorkspace(FILTERS_UKF_Q_PREDICT_STORAGE(n), FILTERS_UKF_Q_PREDICT_BASIC_BYTES(n),
-                                      FILTERS_UKF_PREDICT_DECOMP_STORAGE(n))
-                       : UkfWorkspace(FILTERS_UKF_PREDICT_STORAGE(n), FILTERS_UKF_PREDICT_BASIC_BYTES(n),
-                                      FILTERS_UKF_PREDICT_DECOMP_STORAGE(n));
+        return UkfWorkspace(A::bits ? FILTERS_UKF_Q_PREDICT_STORAGE(n) : FILTERS_UKF_PREDICT_STORAGE(n),
+                            FILTERS_UKF_PREDICT_BASIC_BYTES(n), FILTERS_UKF_PREDICT_DECOMP_STORAGE(n));
     }
     static UkfWorkspace update(std::size_t n, std::size_t m) {
-        return A::bits ? UkfWorkspace(FILTERS_UKF_Q_UPDATE_STORAGE(n, m), FILTERS_UKF_Q_UPDATE_BASIC_BYTES(n, m),
-                                      FILTERS_UKF_UPDATE_DECOMP_STORAGE(n, m))
-                       : UkfWorkspace(FILTERS_UKF_UPDATE_STORAGE(n, m), FILTERS_UKF_UPDATE_BASIC_BYTES(n, m),
-                                      FILTERS_UKF_UPDATE_DECOMP_STORAGE(n, m));
+        return UkfWorkspace(A::bits ? FILTERS_UKF_Q_UPDATE_STORAGE(n, m) : FILTERS_UKF_UPDATE_STORAGE(n, m),
+                            FILTERS_UKF_UPDATE_BASIC_BYTES(n, m), FILTERS_UKF_UPDATE_DECOMP_STORAGE(n, m));
     }
     typename Ukf<A>::Workspace view() {
         return {data.data() + 1, data_count, basic.data() + 1, basic_bytes,

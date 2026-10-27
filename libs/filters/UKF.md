@@ -103,8 +103,8 @@ even for a valid model; the next Cholesky then fails. Choose `alpha`, `beta`,
 
 The steps are public kernels so particle and unscented particle filters can
 reuse them with their own point sets and weights. They operate on working
-matrices (float, double, or `linears_fixed_t` F31 for the shared `fixed`
-kernels used by q15 and q31), one point per row:
+matrices (float for the `f32` kernels, double for `f64`; the q15 filters run
+on the `f32` kernels and q31 on `f64`), one point per row:
 
 | Kernel | Computes |
 | --- | --- |
@@ -131,21 +131,23 @@ the imported inputs.
 ## Fixed-fraction Q contract
 
 - q15/q31 state and noise arrays hold raw `int16_t/2^15` and `int32_t/2^31`
-  signals; init copies them unchanged.
-- Callbacks, residuals and the `fixed` kernels see `linears_fixed_t` working
-  matrices (int64 raw/2^31). Sigma points and weights legitimately exceed the
-  signal interval; `alpha`, `beta`, `kappa` are F31 coefficients with
-  `LINEARS_FIXED_ONE` meaning one. Compute inside callbacks with
-  `linears_fixed_*` scalar helpers or `linears_*_fixed` matrix operations.
-- All arithmetic is integer-only F31/F62 through the shared kernels. Only the
-  final `x` and `P` are range-checked on their computed F31 values and narrowed
-  once, with the positive-endpoint policy of `linears_numeric.h` (exact +1 maps
-  to MAX = 1-LSB). The check applies to the computed working result, not to an
-  ideal unrounded expression, as for the dense linear filter.
-- Narrowing is staged in basic scratch units and committed only after every
-  element passed, so a late `RANGE` leaves the state unchanged.
-- Tiny `alpha` makes `scale` tiny and the weights large; sigma points then
-  carry few significant F31 bits. Keep `alpha` near one for Q filters.
+  signals; init copies them unchanged. Every persistent array is stored in
+  the signal type; nothing is widened for storage.
+- Intermediates need range beyond the signal interval, so the q15 filters
+  compute in float and the q31 filters in double: the significand (24 and
+  53 bits) covers the signal (15 and 31 bits), and the floating range
+  absorbs sigma points and weights that exceed `[-1,+1]`. There is no
+  separate fixed working type; q15 uses the `f32` kernels, callbacks,
+  weights, workspace and `float alpha/beta/kappa`, q31 the `f64` ones.
+- Signals widen exactly once on entry (`x`, `P`, `Q`, `R`, `z` into the
+  working scratch). Only the final `x` and `P` are range-checked against
+  `[-1,+1]` on their computed working values and narrowed once, with the
+  positive-endpoint policy of `linears_numeric.h` (exact +1 and the rounding
+  cell reaching it map to MAX = 1-LSB, ties away from zero). The check
+  applies to the computed working result, not to an ideal unrounded
+  expression, as for the dense linear filter.
+- Both outputs are checked before either is written, so a `RANGE` leaves the
+  state unchanged.
 - Positive noise must remain positive after quantization. A zero `R` fails the
   Cholesky check with `NOT_POSITIVE_DEFINITE`.
 
@@ -158,18 +160,17 @@ rejected, never allocated). Only required prefixes are accessed. `s = 2n+1`.
 | Field | Element type | Predict | Update |
 | --- | --- | --- | --- |
 | float `data` | float/double | `FILTERS_UKF_PREDICT_STORAGE(n)` = `8n²+8n+2` | `FILTERS_UKF_UPDATE_STORAGE(n,m)` = `7n²+2m²+10nm+7n+5m+2+s·max(n,m)` |
-| Q `data` | `linears_fixed_t` | `FILTERS_UKF_Q_PREDICT_STORAGE(n)` = `10n²+9n+2` | `FILTERS_UKF_Q_UPDATE_STORAGE(n,m)` = float count `+ n²+m²+n+m` |
+| Q `data` | float for q15, double for q31 | `FILTERS_UKF_Q_PREDICT_STORAGE(n)` = `10n²+9n+2` | `FILTERS_UKF_Q_UPDATE_STORAGE(n,m)` = float count `+ n²+m²+n+m` |
 | `basic` | `linears_workspace_unit_t` | `FILTERS_UKF_PREDICT_BASIC_BYTES(n)` (`n·s` units) | `FILTERS_UKF_UPDATE_BASIC_BYTES(n,m)` (`max(n,m)·s` units) |
-| Q `basic` | `linears_workspace_unit_t` | `FILTERS_UKF_Q_PREDICT_BASIC_BYTES(n)` | `FILTERS_UKF_Q_UPDATE_BASIC_BYTES(n,m)` |
-| `decomposition` | float/double or `linears_fixed_t` | `FILTERS_UKF_PREDICT_DECOMP_STORAGE(n)` = `n²` | `FILTERS_UKF_UPDATE_DECOMP_STORAGE(n,m)` = `max(n², m²+mn)` |
+| `decomposition` | float for f32/q15, double for f64/q31 | `FILTERS_UKF_PREDICT_DECOMP_STORAGE(n)` = `n²` | `FILTERS_UKF_UPDATE_DECOMP_STORAGE(n,m)` = `max(n², m²+mn)` |
 
 The kernels have their own macros (`FILTERS_UKF_SIGMA_POINTS_*`,
 `FILTERS_UKF_MEAN_*`, `FILTERS_UKF_DEVIATIONS_BASIC_BYTES`,
 `FILTERS_UKF_WEIGHTED_COVARIANCE_*`). Inside `predict`/`update` every kernel
 borrows dead blocks adjacent to its inputs, so the filter totals above already
-include the kernels' needs. For `n=2, m=1` a q15 update needs 89 working F31
-elements, 10 basic units and 4 decomposition elements; the state adds 2+4+4+1
-raw q15 elements.
+include the kernels' needs. For `n=2, m=1` a q15 update needs 89 float
+working elements, 10 basic units and 4 float decomposition elements; the
+state adds 2+4+4+1 raw q15 elements (22 bytes).
 
 A C99 f32 pendulum filter with an angle residual:
 
@@ -276,9 +277,10 @@ design). Oracles are independent of the production code:
 
 All comparisons use the unchanged per-format envelopes of `KALMAN.md`
 (`tolerance * (1 + |reference|)`, f32 `2e-5`, f64 `2e-12`, q15 `4e-3`,
-q31 `2e-7`) without multipliers. Additional runs: GCC `-O2 -fstrict-aliasing`
-release build of the production objects and test, and a Clang
-`-fsanitize=address,undefined` build with `halt_on_error`, both 31 passed with
+q31 `2e-7`) without multipliers; the q31 envelope holds with double working
+arithmetic. Additional runs: GCC `-O2` release build of the production
+objects and test, and a Clang `-fsanitize=address,undefined` build with
+`-fno-sanitize-recover=undefined`, both 31 passed (2 float-only skips) with
 no sanitizer diagnostics; `ukf.c` passes GCC and Clang
 `-std=c99 -pedantic-errors -Wall -Wextra -Werror -Wvla -fsyntax-only`. The
 example above compiles and returns zero with both compilers. Host simulation

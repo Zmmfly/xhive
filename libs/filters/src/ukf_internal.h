@@ -16,7 +16,6 @@ U_ALIGNMENT_TYPE(double);
 U_ALIGNMENT_TYPE(int16_t);
 U_ALIGNMENT_TYPE(int32_t);
 U_ALIGNMENT_TYPE(size_t);
-U_ALIGNMENT_TYPE(linears_fixed_t);
 U_ALIGNMENT_TYPE(linears_workspace_unit_t);
 U_ALIGNMENT_TYPE(linears_matrix_t);
 #define U_ALIGN_NAME_INNER(type) ukf_align_##type
@@ -173,65 +172,66 @@ U_SYMMETRIC_TYPE(f32, float)
 U_SYMMETRIC_TYPE(f64, double)
 U_SYMMETRIC_TYPE(q15, int16_t)
 U_SYMMETRIC_TYPE(q31, int32_t)
-U_SYMMETRIC_TYPE(fixed, linears_fixed_t)
 #undef U_SYMMETRIC_TYPE
 
-/* Widen a raw Q signal matrix into F31 working scratch at the cursor. */
-#define U_IMPORT_TYPE(suffix, type, convert) \
-static inline linears_matrix_t ukf_import_##suffix(const linears_matrix_t *source, linears_fixed_t **cursor) \
+/* Q signals widen exactly to the floating working type whose significand
+ * covers them: q15 to float, q31 to double. widen converts a block; import
+ * also carves the destination from a scratch cursor. */
+#define U_WIDEN_TYPE(suffix, type, work, scale) \
+static inline void ukf_widen_##suffix(const type *input, size_t count, work *output) \
 { \
-    size_t i, count = source->rows * source->cols; \
+    size_t i; \
+    for (i = 0; i < count; ++i) output[i] = (work)input[i] * (scale); \
+} \
+static inline linears_matrix_t ukf_import_##suffix(const linears_matrix_t *source, work **cursor) \
+{ \
+    size_t count = source->rows * source->cols; \
     linears_matrix_t result = {*cursor, source->rows, source->cols}; \
-    const type *input = (const type *)source->data; \
-    linears_fixed_t *output = *cursor; \
-    for (i = 0; i < count; ++i) output[i] = convert(input[i]); \
+    ukf_widen_##suffix((const type *)source->data, count, *cursor); \
     *cursor += count; \
     return result; \
 }
-U_IMPORT_TYPE(q15, int16_t, linears_fixed_from_q15)
-U_IMPORT_TYPE(q31, int32_t, linears_fixed_from_q31)
-#undef U_IMPORT_TYPE
+U_WIDEN_TYPE(q15, int16_t, float, 1.0f / 32768.0f)
+U_WIDEN_TYPE(q31, int32_t, double, 1.0 / 2147483648.0)
+#undef U_WIDEN_TYPE
 
-/* Narrow two working matrices to Q signals through staging units so a late
- * RANGE writes nothing; the floating variants copy directly. */
-#define U_EXPORT_TYPE(suffix, type, convert, field) \
-static inline linears_status_t ukf_export_##suffix(const linears_matrix_t *a, const linears_matrix_t *b, \
-                                                   linears_matrix_t *out_a, linears_matrix_t *out_b, \
-                                                   linears_workspace_unit_t *staging) \
+/* Narrowing is split into a range check that writes nothing and a store that
+ * cannot fail, so a transaction checks every output before committing any.
+ * Rounding is to nearest with ties away from zero; exact +1 and the rounding
+ * cell that reaches it map to the positive maximum (the linears policy). */
+#define U_NARROW_TYPE(suffix, type, work, scale, maximum, round) \
+static inline linears_status_t ukf_fits_##suffix(const work *values, size_t count) \
 { \
-    linears_status_t status; \
-    size_t i, count_a = a->rows * a->cols, count_b = b->rows * b->cols; \
-    const linears_fixed_t *x = (const linears_fixed_t *)a->data; \
-    const linears_fixed_t *y = (const linears_fixed_t *)b->data; \
-    type *out_x = (type *)out_a->data, *out_y = (type *)out_b->data; \
-    for (i = 0; i < count_a; ++i) { \
-        status = convert(x[i], &staging[i].field); \
-        if (status != LINEARS_OK) return status; \
-    } \
-    for (i = 0; i < count_b; ++i) { \
-        status = convert(y[i], &staging[count_a + i].field); \
-        if (status != LINEARS_OK) return status; \
-    } \
-    for (i = 0; i < count_a; ++i) out_x[i] = staging[i].field; \
-    for (i = 0; i < count_b; ++i) out_y[i] = staging[count_a + i].field; \
+    size_t i; \
+    for (i = 0; i < count; ++i) \
+        if (!(values[i] >= (work)-1 && values[i] <= (work)1)) return LINEARS_ERROR_RANGE; \
     return LINEARS_OK; \
+} \
+static inline void ukf_store_##suffix(const work *values, size_t count, type *output) \
+{ \
+    size_t i; \
+    for (i = 0; i < count; ++i) { \
+        work scaled = values[i] * (scale); \
+        /* Below the cell that rounds to the maximum, |scaled| fits a 32-bit long. */ \
+        output[i] = scaled >= (work)(maximum) + (work)0.5 ? (maximum) : (type)round(scaled); \
+    } \
 }
-U_EXPORT_TYPE(q15, int16_t, linears_fixed_to_q15, q15)
-U_EXPORT_TYPE(q31, int32_t, linears_fixed_to_q31, q31)
-#undef U_EXPORT_TYPE
+U_NARROW_TYPE(q15, int16_t, float, 32768.0f, INT16_MAX, lroundf)
+U_NARROW_TYPE(q31, int32_t, double, 2147483648.0, INT32_MAX, lround)
+#undef U_NARROW_TYPE
 
-#define U_COPY_TYPE(suffix, type) \
-static inline linears_status_t ukf_export_##suffix(const linears_matrix_t *a, const linears_matrix_t *b, \
-                                                   linears_matrix_t *out_a, linears_matrix_t *out_b, \
-                                                   linears_workspace_unit_t *staging) \
-{ \
-    (void)staging; \
-    memcpy(out_a->data, a->data, a->rows * a->cols * sizeof(type)); \
-    memcpy(out_b->data, b->data, b->rows * b->cols * sizeof(type)); \
-    return LINEARS_OK; \
+/* Gather rows in place for nondecreasing indices (systematic resampling).
+ * Forward moves copy from later rows, which no earlier forward move has
+ * overwritten; backward moves copy from earlier rows p = indices[i] < i,
+ * which no forward move touched because indices[p] <= indices[i] = p. */
+static inline void ukf_gather_rows(void *rows, size_t row_bytes, const size_t *indices, size_t count)
+{
+    unsigned char *bytes = (unsigned char *)rows;
+    size_t i;
+    for (i = 0; i < count; ++i)
+        if (indices[i] > i) memcpy(bytes + i * row_bytes, bytes + indices[i] * row_bytes, row_bytes);
+    for (i = count; i-- > 0;)
+        if (indices[i] < i) memcpy(bytes + i * row_bytes, bytes + indices[i] * row_bytes, row_bytes);
 }
-U_COPY_TYPE(f32, float)
-U_COPY_TYPE(f64, double)
-#undef U_COPY_TYPE
 
 #endif

@@ -9,6 +9,8 @@
 namespace pf_test {
 using namespace ukf_test;
 
+/* The kernels exist for f32/f64 only; q15 filters run on the f32 kernels and
+ * q31 on f64, with their own raw effective sample size. */
 template<class A> struct Pf;
 #define PF_TEST_API(tag, kernel) \
 template<> struct Pf<tag> { \
@@ -18,7 +20,7 @@ template<> struct Pf<tag> { \
     static constexpr auto perturb = filters_pf_##kernel##_perturb; \
     static constexpr auto gaussian_exponent = filters_pf_##kernel##_gaussian_exponent; \
     static constexpr auto reweight = filters_pf_##kernel##_reweight; \
-    static constexpr auto effective_sample_size = filters_pf_##kernel##_effective_sample_size; \
+    static constexpr auto effective_sample_size = filters_pf_##tag##_effective_sample_size; \
     static constexpr auto resample_indices = filters_pf_##kernel##_resample_indices; \
     static constexpr auto gather = filters_pf_##kernel##_gather; \
     static constexpr auto init = filters_pf_##tag##_init; \
@@ -29,9 +31,11 @@ template<> struct Pf<tag> { \
 };
 PF_TEST_API(f32, f32)
 PF_TEST_API(f64, f64)
-PF_TEST_API(q15, fixed)
-PF_TEST_API(q31, fixed)
+PF_TEST_API(q15, f32)
+PF_TEST_API(q31, f64)
 #undef PF_TEST_API
+
+using KernelFormats = ::testing::Types<f32, f64>;
 
 /* Standard-normal draws from a seeded generator or a fixed script; every draw
  * is logged as the kernel saw it (after working-format quantization) so a
@@ -74,34 +78,47 @@ template<class A> linears_status_t sample_callback(linears_matrix_t *out, void *
     return LINEARS_OK;
 }
 
+template<class A> std::vector<Vec> decode_rows(const linears_matrix_t& matrix) {
+    const Dense all = decode<A>(matrix);
+    std::vector<Vec> rows(all.rows, Vec(all.cols));
+    for (std::size_t i = 0; i < all.rows; ++i)
+        for (std::size_t j = 0; j < all.cols; ++j) rows[i][j] = all(i, j);
+    return rows;
+}
+/* The distribution a weight vector defines: Q weights carry a common scale
+ * (largest = raw maximum), so they are divided by their sum. */
+template<class A> Vec distribution(const linears_matrix_t& weights) {
+    Vec values = decode<A>(weights).values;
+    if constexpr (A::bits != 0) {
+        long double sum = 0;
+        for (auto value : values) sum += value;
+        if (sum != 0) for (auto& value : values) value /= sum;
+    }
+    return values;
+}
+/* Committed Q weights are scaled so the largest raw value is the maximum. */
+template<class A> void expect_raw_weight_scale(const std::vector<typename A::Raw>& guarded) {
+    if constexpr (A::bits != 0)
+        EXPECT_EQ(*std::max_element(guarded.begin() + 1, guarded.end() - 1), std::numeric_limits<typename A::Raw>::max());
+}
+
+/* Raw particle and weight arrays with sentinels. */
 template<class A> struct PfState {
     using Raw = typename A::Raw;
-    using W = Work<A>;
     static constexpr Raw sentinel = static_cast<Raw>(-12345);
-    static constexpr W work_sentinel = static_cast<W>(-23456);
-    std::vector<W> particles, weights;
-    std::vector<Raw> q, r;
+    std::vector<Raw> particles, weights, q, r;
     typename Pf<A>::State state;
     PfState(std::size_t count, std::size_t n, std::size_t m)
-        : particles(count * n + 2, work_sentinel), weights(count + 2, work_sentinel),
+        : particles(count * n + 2, sentinel), weights(count + 2, sentinel),
           q(n * n + 2, sentinel), r(m * m + 2, sentinel),
           state{{particles.data() + 1, count, n}, {weights.data() + 1, count, 1},
                 {q.data() + 1, n, n}, {r.data() + 1, m, m}, count * n, count, n * n, m * m} {}
     void guards() const {
-        EXPECT_EQ(particles.front(), work_sentinel); EXPECT_EQ(particles.back(), work_sentinel);
-        EXPECT_EQ(weights.front(), work_sentinel); EXPECT_EQ(weights.back(), work_sentinel);
-        EXPECT_EQ(q.front(), sentinel); EXPECT_EQ(q.back(), sentinel);
-        EXPECT_EQ(r.front(), sentinel); EXPECT_EQ(r.back(), sentinel);
+        for (const auto *v : {&particles, &weights, &q, &r}) { EXPECT_EQ(v->front(), sentinel); EXPECT_EQ(v->back(), sentinel); }
     }
     auto snapshot() const { return std::make_tuple(bytes(state), particles, weights, q, r); }
-    std::vector<Vec> particle_rows() const {
-        const Dense all = decode_work<A>(state.particles);
-        std::vector<Vec> rows(all.rows, Vec(all.cols));
-        for (std::size_t i = 0; i < all.rows; ++i)
-            for (std::size_t j = 0; j < all.cols; ++j) rows[i][j] = all(i, j);
-        return rows;
-    }
-    Vec weight_values() const { return decode_work<A>(state.weights).values; }
+    std::vector<Vec> particle_rows() const { return decode_rows<A>(state.particles); }
+    Vec weight_values() const { return distribution<A>(state.weights); }
 };
 
 template<class A> UkfWorkspace<A> pf_init_workspace(std::size_t count, std::size_t n) {
@@ -112,16 +129,16 @@ template<class A> UkfWorkspace<A> pf_predict_workspace(std::size_t count, std::s
     return UkfWorkspace<A>(A::bits ? FILTERS_PF_Q_PREDICT_STORAGE(count, n) : FILTERS_PF_PREDICT_STORAGE(count, n),
                            FILTERS_PF_PREDICT_BASIC_BYTES(n), FILTERS_PF_PREDICT_DECOMP_STORAGE(n));
 }
-template<class A> UkfWorkspace<A> pf_update_workspace(std::size_t count, std::size_t m) {
-    return UkfWorkspace<A>(A::bits ? FILTERS_PF_Q_UPDATE_STORAGE(count, m) : FILTERS_PF_UPDATE_STORAGE(count, m),
+template<class A> UkfWorkspace<A> pf_update_workspace(std::size_t count, std::size_t n, std::size_t m) {
+    return UkfWorkspace<A>(A::bits ? FILTERS_PF_Q_UPDATE_STORAGE(count, n, m) : FILTERS_PF_UPDATE_STORAGE(count, m),
                            FILTERS_PF_UPDATE_BASIC_BYTES(m), FILTERS_PF_UPDATE_DECOMP_STORAGE(m));
 }
-template<class A> UkfWorkspace<A> pf_resample_workspace(std::size_t count, std::size_t n) {
-    return UkfWorkspace<A>(FILTERS_PF_RESAMPLE_STORAGE(count, n), 0, 0);
+template<class A> UkfWorkspace<A> pf_resample_workspace(std::size_t count) {
+    return UkfWorkspace<A>(A::bits ? FILTERS_PF_Q_RESAMPLE_STORAGE(count) : 0, 0, 0);
 }
 template<class A> UkfWorkspace<A> pf_estimate_workspace(std::size_t count, std::size_t n) {
-    return UkfWorkspace<A>(FILTERS_PF_ESTIMATE_STORAGE(count, n),
-                           A::bits ? FILTERS_PF_Q_ESTIMATE_BASIC_BYTES(count, n) : FILTERS_PF_ESTIMATE_BASIC_BYTES(count, n), 0);
+    return UkfWorkspace<A>(A::bits ? FILTERS_PF_Q_ESTIMATE_STORAGE(count, n) : FILTERS_PF_ESTIMATE_STORAGE(count, n),
+                           FILTERS_PF_ESTIMATE_BASIC_BYTES(count, n), 0);
 }
 
 /* Independent long-double bootstrap particle filter driven by logged draws. */

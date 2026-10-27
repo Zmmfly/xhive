@@ -238,12 +238,13 @@ working-format kernels. Algorithm, storage formulas and validation are in
   (accepted by `init`) fails with `NOT_POSITIVE_DEFINITE`.
 - `W_c[0]` is negative for small `alpha`, which can make a computed covariance
   indefinite even for a valid model; the next Cholesky then fails. `alpha` near
-  one with `kappa = 0` or `3-n` is the safe starting point, and in Q formats a
-  tiny `alpha` additionally loses sigma-point precision in F31.
-- Q callbacks and the shared `fixed` kernels receive `linears_fixed_t` working
-  matrices, not raw Q signals, because sigma points and weights exceed `[-1,+1]`;
-  only the final `x`/`P` are range-checked and narrowed. A measurement noise
-  that quantizes to zero fails the Cholesky check.
+  one with `kappa = 0` or `3-n` is the safe starting point.
+- q15/q31 store `x`, `P`, `Q`, `R` raw and compute in float (q15) or double
+  (q31) through the `f32`/`f64` kernels, so Q callbacks see float/double
+  matrices and the hyperparameters, weights and workspace are the floating
+  ones; sigma points may exceed `[-1,+1]`, only the final `x`/`P` are
+  range-checked and narrowed. A measurement noise that quantizes to zero
+  fails the Cholesky check.
 - Sigma points are formed by plain addition and are passed to the callbacks
   unnormalized; keep angle states bounded inside `f`. The residual-aware mean
   is a single center-relative pass, not an iterated manifold mean.
@@ -276,9 +277,12 @@ formulas and validation are in [PF.md](PF.md). Known limits:
 - `Q` must be positive definite (its Cholesky factor generates the process
   noise and, in the UPF, the prior exponent), and so must `P0` at init; a
   semidefinite `Q` or `P0` fails with `NOT_POSITIVE_DEFINITE`.
-- Q particles and weights are `linears_fixed_t` working values; only
-  `estimate` narrows to the signal interval. F31 weights of particles more
-  than about 22 nats behind the best one become exactly zero.
+- q15/q31 store particles, weights and (UPF) covariances raw and compute in
+  float (q15) or double (q31) through the `f32`/`f64` kernels. Particles
+  must stay inside `[-1,+1]`: a transaction that would move one outside
+  fails with `RANGE` and commits nothing. Raw Q weights are scaled so the
+  largest is the raw maximum (consumers divide the scale out), and a weight
+  below `2^-16` (q15) or `2^-32` (q31) of the best particle's becomes zero.
 - The UPF transition must be deterministic, each step costs a full UKF
   predict/update per particle, the state grows with `N*n*n`, and its weights
   are not near-uniform even for linear Gaussian models because every
@@ -295,7 +299,11 @@ formulas and validation are in [PF.md](PF.md). Known limits:
 - `linears_fixed_t` has an invariant 31-bit fraction and a signed 64-bit raw
   integer. `LINEARS_FIXED_ONE` is exactly 2147483648. Its wide integer part is
   used only where coefficients, recursive state or intermediate values need
-  headroom; public signal buffers remain raw Q1.15/Q1.31.
+  headroom (FIR/SOS coefficients, scalar and matrix Kalman); public signal
+  buffers remain raw Q1.15/Q1.31. The UKF, PF and UPF instead keep every
+  persistent array in the signal type and compute q15 in float and q31 in
+  double, widening once on entry and narrowing once, range-checked, on
+  commit.
 - Arithmetic rounds to nearest with halfway cases away from zero. Signal export
   checks its supplied numeric value against `[-1,+1]` before narrowing. Exact +1,
   or an in-range value whose rounding reaches +1, maps to MAX with at most one
