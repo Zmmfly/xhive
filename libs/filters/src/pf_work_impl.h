@@ -11,7 +11,10 @@
     status = (expression); \
     if (status != LINEARS_OK) return status; \
 } while (0)
-#define U_BASIC workspace.basic, workspace.basic_bytes
+#define U_BASIC_MEMBER_f32 f32
+#define U_BASIC_MEMBER_f64 floating
+#define U_BASIC_MEMBER U_JOIN(U_BASIC_MEMBER_, U_TAG)
+#define U_ISFINITE U_JOIN(ukf_isfinite_, U_TAG)
 #define U_CHECK_FINITE(matrix) U_TRY(U_FINITE(matrix))
 
 /* out may be exactly the points storage (in place) or disjoint from it. */
@@ -45,8 +48,9 @@ linears_status_t U_API(perturb)(const linears_matrix_t *points, const linears_ma
     linears_status_t status;
     ukf_spans_t spans;
     linears_matrix_t draw, noise, source, target;
+    const U_WORK *fv;
     U_WORK *cursor;
-    size_t k, i;
+    size_t k, i, j, c;
     if (sample == NULL) return LINEARS_ERROR_ARGUMENT;
     spans.count = 0;
     U_TRY(U_LOCAL(in_out)(&spans, points, out));
@@ -56,17 +60,32 @@ linears_status_t U_API(perturb)(const linears_matrix_t *points, const linears_ma
                                FILTERS_PF_PERTURB_BASIC_BYTES(k), 0));
     U_CHECK_FINITE(points);
     U_CHECK_FINITE(factor);
-    workspace.basic_bytes = FILTERS_PF_PERTURB_BASIC_BYTES(k);
     cursor = workspace.data;
     draw = U_SCRATCH(take)(&cursor, k, 1);
     noise = U_SCRATCH(take)(&cursor, k, 1);
+    fv = (const U_WORK *)factor->data;
     for (i = 0; i < points->rows; ++i) {
         U_TRY(sample(&draw, context));
         U_CHECK_FINITE(&draw);
-        U_TRY(U_LINEAR(mul)(factor, &draw, &noise, U_BASIC));
+        for (j = 0; j < k; ++j) {
+            U_WORK sum = (U_WORK)0;
+            for (c = 0; c < k; ++c) {
+                U_WORK product = fv[j * k + c] * ((const U_WORK *)draw.data)[c];
+                sum += product;
+                if (!U_ISFINITE(sum)) return LINEARS_ERROR_RANGE;
+            }
+            ((U_WORK *)noise.data)[j] = sum;
+        }
         source = U_SCRATCH(row)(points, i);
         target = U_SCRATCH(row)(out, i);
-        U_TRY(U_LINEAR(add)(&source, &noise, &target, U_BASIC));
+        /* Like the basic kernels, commit a row only after every element fits. */
+        for (j = 0; j < k; ++j) {
+            U_WORK value = ((const U_WORK *)source.data)[j] + ((const U_WORK *)noise.data)[j];
+            if (!U_ISFINITE(value)) return LINEARS_ERROR_RANGE;
+            workspace.basic[j].U_BASIC_MEMBER = value;
+        }
+        for (j = 0; j < k; ++j)
+            ((U_WORK *)target.data)[j] = workspace.basic[j].U_BASIC_MEMBER;
     }
     return LINEARS_OK;
 }
@@ -76,9 +95,9 @@ linears_status_t U_API(gaussian_exponent)(const linears_matrix_t *deviations, co
 {
     linears_status_t status;
     ukf_spans_t spans;
-    linears_matrix_t solved, transposed, deviation, result;
+    linears_matrix_t solved, deviation;
     U_WORK *cursor;
-    size_t k, i;
+    size_t k, i, j;
     spans.count = 0;
     U_TRY(ukf_matrix(&spans, deviations, 0, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
     k = deviations->cols;
@@ -89,22 +108,22 @@ linears_status_t U_API(gaussian_exponent)(const linears_matrix_t *deviations, co
                                FILTERS_PF_GAUSSIAN_EXPONENT_DECOMP_STORAGE(k)));
     U_CHECK_FINITE(deviations);
     U_CHECK_FINITE(factor);
-    workspace.basic_bytes = FILTERS_PF_GAUSSIAN_EXPONENT_BASIC_BYTES;
     workspace.decomposition.capacity = FILTERS_PF_GAUSSIAN_EXPONENT_DECOMP_STORAGE(k);
     cursor = workspace.data;
     solved = U_SCRATCH(take)(&cursor, k, 1);
-    transposed = solved;
-    transposed.rows = 1;
-    transposed.cols = k;
-    result.rows = 1;
-    result.cols = 1;
-    /* L*y = d, then d^T*(L*L^T)^-1*d = y^T*y, halved in place in the output row. */
+    /* Keep the general pivoted solve: L need not be a triangular factor. */
     for (i = 0; i < deviations->rows; ++i) {
+        U_WORK sum = (U_WORK)0;
         deviation = U_SCRATCH(row)(deviations, i);
-        result.data = (U_WORK *)out->data + i;
         U_TRY(U_LINEAR(solve)(factor, &deviation, &solved, workspace.decomposition));
-        U_TRY(U_LINEAR(mul)(&transposed, &solved, &result, U_BASIC));
-        U_TRY(U_LINEAR(axpby)((U_WORK)0.5, &result, (U_WORK)0, &result, &result, U_BASIC));
+        for (j = 0; j < k; ++j) {
+            U_WORK value = ((const U_WORK *)solved.data)[j];
+            U_WORK product = value * value;
+            sum += product;
+            if (!U_ISFINITE(sum)) return LINEARS_ERROR_RANGE;
+        }
+        /* A finite sum of squares can be halved without another failure. */
+        ((U_WORK *)out->data)[i] = (U_WORK)0.5 * sum + (U_WORK)0 * sum;
     }
     return LINEARS_OK;
 }
@@ -232,7 +251,10 @@ linears_status_t U_API(gather)(const linears_matrix_t *points, const size_t *ind
 }
 
 #undef U_CHECK_FINITE
-#undef U_BASIC
+#undef U_ISFINITE
+#undef U_BASIC_MEMBER
+#undef U_BASIC_MEMBER_f64
+#undef U_BASIC_MEMBER_f32
 #undef U_TRY
 #undef U_LINEAR
 #undef U_SCRATCH

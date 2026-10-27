@@ -175,7 +175,7 @@ linears_status_t U_API(step)(U_STATE *state, const linears_matrix_t *measurement
         U_TRY(U_PF_LOCAL(gaussian)((const U_WORK *)draw.data, (const U_WORK *)q_factor.data,
                                     n, kernel.data, &term));
         exponent += term;
-        if (!isfinite(exponent)) return LINEARS_ERROR_RANGE;
+        if (!U_JOIN(ukf_isfinite_, U_KERNEL)(exponent)) return LINEARS_ERROR_RANGE;
         exponents[i] = exponent;
         U_TRY(U_JOIN(ukf_fits_, U_TAG)((const U_WORK *)prior_mean.data, n));
         U_TRY(U_JOIN(ukf_fits_, U_TAG)((const U_WORK *)covariance.data, n * n));

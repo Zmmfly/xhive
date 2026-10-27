@@ -12,6 +12,7 @@
 #define Q_TRY(expression) do { status = (expression); if (status != LINEARS_OK) return status; } while (0)
 
 #if U_BITS == 15
+#define Q_SIGNAL_MAX INT16_MAX
 typedef int64_t Q_LOCAL(accum_t);
 #define Q_ACCUM_ZERO INT64_C(0)
 static inline void Q_LOCAL(mac)(Q_LOCAL(accum_t) *sum, int64_t product)
@@ -25,6 +26,7 @@ static inline U_WORK Q_LOCAL(accum_value)(Q_LOCAL(accum_t) sum)
     return (U_WORK)sum * (U_WORK)0x1p-30;
 }
 #else
+#define Q_SIGNAL_MAX INT32_MAX
 typedef linears_accum_t Q_LOCAL(accum_t);
 #define Q_ACCUM_ZERO {UINT64_C(0), UINT64_C(0)}
 static inline void Q_LOCAL(mac)(Q_LOCAL(accum_t) *sum, int64_t product)
@@ -41,7 +43,8 @@ static inline U_WORK Q_LOCAL(accum_value)(Q_LOCAL(accum_t) sum)
         sum.low = ~sum.low + UINT64_C(1);
         sum.high = ~sum.high + (sum.low == 0);
     }
-    value = ((U_WORK)sum.high * (U_WORK)0x1p64 + (U_WORK)sum.low) * (U_WORK)0x1p-62;
+    if (sum.high == 0) value = (U_WORK)sum.low * (U_WORK)0x1p-62;
+    else value = ((U_WORK)sum.high * (U_WORK)0x1p64 + (U_WORK)sum.low) * (U_WORK)0x1p-62;
     return negative ? -value : value;
 }
 #endif
@@ -85,13 +88,13 @@ static void Q_LOCAL(columns)(const linears_matrix_t *points, U_WORK first_weight
         for (i = 0; i < count; ++i) {
             U_WORK value = values[i * k + j], magnitude = U_ABS(value);
             if (magnitude > maximum[j]) maximum[j] = magnitude;
-            if (value < (U_WORK)-1 || value > (U_WORK)1) {
+            if (!U_IN_UNIT(value)) {
                 valid[j] = (U_WORK)0;
                 raw[i * k + j] = 0;
             } else {
                 U_WORK difference;
                 Q_JOIN(ukf_store_, U_TAG)(&value, 1, raw + i * k + j);
-                difference = U_ABS(value - (U_WORK)raw[i * k + j] * U_LSB);
+                difference = U_ABS(value - Q_JOIN(ukf_widen_value_, U_TAG)(raw[i * k + j]));
                 /* A nonzero sub-LSB deviation must not collapse a positive
                  * working covariance needed by the next UPF solve. */
                 if (value != (U_WORK)0 && raw[i * k + j] == 0) valid[j] = (U_WORK)0;
@@ -137,20 +140,43 @@ static linears_status_t Q_LOCAL(mean)(const linears_matrix_t *points, const U_WE
         }
         for (j = 0; j < k; ++j) result[j] += values[j];
     } else {
+        U_WORK bound = (U_WORK)0;
+        U_WORK term_bound = U_ABS(weights->other) * (U_LSB * (U_WORK)0.5);
+        int bounded_error;
+        /* A nonsaturating cell contributes at most half an LSB. Repeated
+         * positive additions preserve the original error sum's rounding
+         * order, so monotonicity makes this a sufficient bound. */
+        for (i = 1; i < count; ++i) bound += term_bound;
+        bounded_error = bound <= U_LSB * (U_WORK)0.5;
         for (j = 0; j < k; ++j) {
             U_WORK error = (U_WORK)0;
-            int valid = 1, finite_differences = 1;
+            int valid = 1, finite_differences = 1, has_maximum = 0;
             /* Quantize offsets, not the absolute center. A sub-LSB point
              * cloud then retains its center instead of inventing a variance
              * from a prematurely rounded working mean. */
             for (i = 1; i < count; ++i) {
                 U_WORK delta = values[i * k + j] - values[j];
-                if (!isfinite(delta)) finite_differences = 0;
-                if (!(delta >= (U_WORK)-1 && delta <= (U_WORK)1)) valid = 0;
+                if (!U_ISFINITE(delta)) finite_differences = 0;
+                if (!U_IN_UNIT(delta)) valid = 0;
                 else {
                     Q_JOIN(ukf_store_, U_TAG)(&delta, 1, raw + i * k + j);
                     if (delta != (U_WORK)0 && raw[i * k + j] == 0) valid = 0;
-                    error += U_ABS(weights->other) * U_ABS(delta - (U_WORK)raw[i * k + j] * U_LSB);
+                    if (bounded_error) {
+                        if (raw[i * k + j] == Q_SIGNAL_MAX) has_maximum = 1;
+                    } else {
+                        error += U_ABS(weights->other) *
+                                 U_ABS(delta - Q_JOIN(ukf_widen_value_, U_TAG)(raw[i * k + j]));
+                    }
+                }
+            }
+            /* MAX can represent +1 with a full LSB of error. Such columns
+             * need their actual error, in the original order, not a forced
+             * floating fallback. Invalid columns cannot use the Q mean. */
+            if (bounded_error && has_maximum && valid) {
+                for (i = 1; i < count; ++i) {
+                    U_WORK delta = values[i * k + j] - values[j];
+                    error += U_ABS(weights->other) *
+                             U_ABS(delta - Q_JOIN(ukf_widen_value_, U_TAG)(raw[i * k + j]));
                 }
             }
             if (valid && error <= U_LSB * (U_WORK)0.5) {
@@ -212,7 +238,7 @@ static linears_status_t Q_LOCAL(covariance)(const linears_matrix_t *deviations, 
                 }
             }
             value += q[r * k + c];
-            if (!isfinite(value)) return LINEARS_ERROR_RANGE;
+            if (!U_ISFINITE(value)) return LINEARS_ERROR_RANGE;
             result[r * k + c] = result[c * k + r] = value;
         }
     }
@@ -222,8 +248,8 @@ static linears_status_t Q_LOCAL(covariance)(const linears_matrix_t *deviations, 
 static linears_status_t Q_LOCAL(weights)(const U_WEIGHTS *weights)
 {
     if (weights == NULL) return LINEARS_ERROR_ARGUMENT;
-    if (!isfinite(weights->scale) || !isfinite(weights->mean0) ||
-        !isfinite(weights->covariance0) || !isfinite(weights->other)) return LINEARS_ERROR_RANGE;
+    if (!U_ISFINITE(weights->scale) || !U_ISFINITE(weights->mean0) ||
+        !U_ISFINITE(weights->covariance0) || !U_ISFINITE(weights->other)) return LINEARS_ERROR_RANGE;
     return weights->scale > (U_WORK)0 ? LINEARS_OK : LINEARS_ERROR_DOMAIN;
 }
 
@@ -236,7 +262,7 @@ static linears_status_t Q_LOCAL(factor)(const linears_matrix_t *covariance, U_WO
     U_WORK *target = (U_WORK *)scaled->data;
     for (i = 0; i < count; ++i) {
         target[i] = scale * values[i];
-        if (!isfinite(target[i])) return LINEARS_ERROR_RANGE;
+        if (!U_ISFINITE(target[i])) return LINEARS_ERROR_RANGE;
     }
     return Q_LINEAR(cholesky)(scaled, factor, workspace.decomposition);
 }
@@ -315,18 +341,20 @@ static void Q_LOCAL(factor_signals)(const linears_matrix_t *factor, U_WORK other
     size_t r, j, n = factor->rows;
     for (r = 0; r < n; ++r) {
         U_WORK maximum = 0, error = 0, valid = 1;
-        for (j = 0; j < n; ++j) {
+        for (j = 0; j <= r; ++j) {
             U_WORK value = values[r * n + j], magnitude = U_ABS(value);
             if (magnitude > maximum) maximum = magnitude;
-            if (value < (U_WORK)-1 || value > (U_WORK)1) {
+            if (!U_IN_UNIT(value)) {
                 valid = 0;
                 raw[r * n + j] = 0;
             } else {
                 Q_JOIN(ukf_store_, U_TAG)(&value, 1, raw + r * n + j);
                 if (value != (U_WORK)0 && raw[r * n + j] == 0) valid = 0;
-                error += U_ABS(value - (U_WORK)raw[r * n + j] * U_LSB);
+                error += U_ABS(value - Q_JOIN(ukf_widen_value_, U_TAG)(raw[r * n + j]));
             }
         }
+        /* Cholesky writes exact zeros above the diagonal. */
+        for (j = r + 1; j < n; ++j) raw[r * n + j] = 0;
         metadata[r] = maximum;
         metadata[n + r] = ((U_WORK)2 * U_ABS(other)) * error;
         metadata[2 * n + r] = valid;
@@ -346,7 +374,7 @@ static linears_status_t Q_LOCAL(cross)(const linears_matrix_t *factor, const U_S
             U_WORK value;
             if (Q_LOCAL(product_fits)(factor_metadata, n, r, metadata, m, c)) {
                 value = weight * Q_LOCAL(dot_difference)(raw_factor + r * n,
-                    raw_deviations + m + c, raw_deviations + (n + 1) * m + c, m, n);
+                    raw_deviations + m + c, raw_deviations + (n + 1) * m + c, m, r + 1);
             } else {
                 value = (U_WORK)0;
                 for (j = 0; j < n; ++j) {
@@ -354,7 +382,7 @@ static linears_status_t Q_LOCAL(cross)(const linears_matrix_t *factor, const U_S
                     value -= l[r * n + j] * (weight * d[(j + n + 1) * m + c]);
                 }
             }
-            if (!isfinite(value)) return LINEARS_ERROR_RANGE;
+            if (!U_ISFINITE(value)) return LINEARS_ERROR_RANGE;
             result[r * m + c] = value;
         }
     }
@@ -371,13 +399,13 @@ static linears_status_t Q_LOCAL(gain_row)(const linears_matrix_t *factor, const 
         U_WORK value = rhs[i];
         for (j = 0; j < i; ++j) value -= l[i * m + j] * gain[j];
         gain[i] = value / l[i * m + i];
-        if (!isfinite(gain[i])) return LINEARS_ERROR_RANGE;
+        if (!U_ISFINITE(gain[i])) return LINEARS_ERROR_RANGE;
     }
     for (i = m; i-- > 0;) {
         U_WORK value = gain[i];
         for (j = i + 1; j < m; ++j) value -= l[j * m + i] * gain[j];
         gain[i] = value / l[i * m + i];
-        if (!isfinite(gain[i])) return LINEARS_ERROR_RANGE;
+        if (!U_ISFINITE(gain[i])) return LINEARS_ERROR_RANGE;
     }
     return LINEARS_OK;
 }
@@ -462,12 +490,12 @@ linears_status_t Q_API(update_work)(const linears_matrix_t *mean, const linears_
         Q_TRY(Q_LOCAL(gain_row)(&factor, (const U_WORK *)cross.data + r * m, gain));
         for (j = 0; j < m; ++j) correction += gain[j] * ((const U_WORK *)innovation.data)[j];
         xout[r] = x[r] + correction;
-        if (!isfinite(xout[r])) return LINEARS_ERROR_RANGE;
+        if (!U_ISFINITE(xout[r])) return LINEARS_ERROR_RANGE;
         for (i = 0; i < n; ++i) {
             U_WORK reduction = (U_WORK)0;
             for (j = 0; j < m; ++j) reduction += gain[j] * ((const U_WORK *)cross.data)[i * m + j];
             pout[r * n + i] = p[r * n + i] - reduction;
-            if (!isfinite(pout[r * n + i])) return LINEARS_ERROR_RANGE;
+            if (!U_ISFINITE(pout[r * n + i])) return LINEARS_ERROR_RANGE;
         }
     }
     for (r = 0; r < n; ++r)
@@ -479,6 +507,7 @@ linears_status_t Q_API(update_work)(const linears_matrix_t *mean, const linears_
 }
 
 #undef Q_ACCUM_ZERO
+#undef Q_SIGNAL_MAX
 #undef Q_TRY
 #undef Q_LINEAR
 #undef Q_SCRATCH
@@ -498,3 +527,5 @@ linears_status_t Q_API(update_work)(const linears_matrix_t *mean, const linears_
 #undef U_FN
 #undef U_RESIDUAL_FN
 #undef U_FINITE
+#undef U_ISFINITE
+#undef U_IN_UNIT

@@ -67,6 +67,8 @@ U_ALIGNMENT_TYPE(filters_ukf_q31_t);
 #define U_FN filters_ukf_f32_fn
 #define U_RESIDUAL_FN filters_ukf_f32_residual_fn
 #define U_FINITE ukf_finite_f32
+#define U_ISFINITE ukf_isfinite_f32
+#define U_IN_UNIT ukf_in_unit_f32
 #include "ukf_q_work_impl.h"
 
 #define U_TAG q31
@@ -81,6 +83,8 @@ U_ALIGNMENT_TYPE(filters_ukf_q31_t);
 #define U_FN filters_ukf_f64_fn
 #define U_RESIDUAL_FN filters_ukf_f64_residual_fn
 #define U_FINITE ukf_finite_f64
+#define U_ISFINITE ukf_isfinite_f64
+#define U_IN_UNIT ukf_in_unit_f64
 #include "ukf_q_work_impl.h"
 
 #define U_TAG q15

@@ -148,11 +148,13 @@ static void pf_q_acc_add(linears_workspace_unit_t *storage, uint64_t magnitude, 
 #define PQ_JOIN_INNER(a, b) a##b
 #define PQ_JOIN(a, b) PQ_JOIN_INNER(a, b)
 #define PQ(name) PQ_JOIN(PQ_JOIN(pf_q_, U_TAG), PQ_JOIN(_, name))
-#define PQ_FINITE PQ_JOIN(ukf_finite_, U_KERNEL)
+#define PQ_ISFINITE PQ_JOIN(ukf_isfinite_, U_KERNEL)
+#define PQ_IN_UNIT PQ_JOIN(ukf_in_unit_, U_KERNEL)
 #define PQ_SCALE ((U_WORK)U_SCALE)
 
 static U_WORK PQ(unsigned_value)(pf_q_u128_t value)
 {
+    if (value.hi == 0) return (U_WORK)value.lo;
     return (U_WORK)value.hi * (U_WORK)18446744073709551616.0 + (U_WORK)value.lo;
 }
 
@@ -172,8 +174,51 @@ static U_WORK PQ(signed_value)(pf_q_i128_t value)
  * in the scalar accumulator, rather than clipped to the stored maximum. */
 static int64_t PQ(raw)(U_WORK value)
 {
+#if defined(__GNUC__) && defined(__arm__) && defined(__ARM_EABI__) && defined(__SOFTFP__) && \
+    !defined(__ARM_FP) && !defined(__clang__) && \
+    ((U_BITS == 15 && UKF_IEEE_BINARY32) || (U_BITS == 31 && UKF_IEEE_BINARY64))
+    /* The verified GNU Arm libgcc soft add rounds to nearest-even without
+     * observing or updating fenv. Hardware FP and other targets keep the
+     * expression below, including its rounding-mode and exception effects.
+     * For bounded inputs, scaling is exact. Only the predecessor of 0.5 LSB
+     * double-rounds across an integer: its gap below 0.5 is half the gap
+     * below 1, so adding 0.5 ties to the even 1. All other cells have equal
+     * spacing below their half-integer threshold and target integer. */
+#if U_BITS == 15
+    uint32_t bits, magnitude, rounded;
+    memcpy(&bits, &value, sizeof(bits));
+    magnitude = bits & UINT32_C(0x7fffffff);
+    if (magnitude < UINT32_C(0x37800000)) {
+        rounded = magnitude == UINT32_C(0x377fffff);
+    } else {
+        unsigned shift = 135u - (magnitude >> 23);
+        uint32_t mantissa = (magnitude & UINT32_C(0x007fffff)) | UINT32_C(0x00800000);
+        rounded = (mantissa + (UINT32_C(1) << (shift - 1))) >> shift;
+    }
+    return bits >> 31 ? -(int32_t)rounded : (int32_t)rounded;
+#else
+    uint64_t bits, magnitude, rounded;
+    memcpy(&bits, &value, sizeof(bits));
+    magnitude = bits & UINT64_C(0x7fffffffffffffff);
+    if (magnitude < UINT64_C(0x3df0000000000000)) {
+        rounded = magnitude == UINT64_C(0x3defffffffffffff);
+    } else {
+        unsigned shift = 1044u - (unsigned)(magnitude >> 52);
+        uint64_t mantissa = (magnitude & UINT64_C(0x000fffffffffffff)) | UINT64_C(0x0010000000000000);
+        rounded = (mantissa + (UINT64_C(1) << (shift - 1))) >> shift;
+    }
+    return bits >> 63 ? -(int64_t)rounded : (int64_t)rounded;
+#endif
+#else
     U_WORK scaled = value * PQ_SCALE;
+#if U_BITS == 15
+    /* The rounded bounded operand is in [-32768,+32768]. Keep the same
+     * floating addition before truncation, including its double rounding. */
+    return (int32_t)(scaled >= 0 ? scaled + (U_WORK)0.5 : scaled - (U_WORK)0.5);
+#else
     return (int64_t)(scaled >= 0 ? scaled + (U_WORK)0.5 : scaled - (U_WORK)0.5);
+#endif
+#endif
 }
 
 /* Mixed dot products keep unit-range products in native Q integer MACs.
@@ -181,19 +226,38 @@ static int64_t PQ(raw)(U_WORK value)
  * may exceed that range; only those products use the floating work type. */
 static U_WORK PQ(dot)(const U_WORK *a, size_t astride, const U_WORK *b, size_t bstride, size_t count)
 {
+#if U_BITS == 15
+    /* count is a state/measurement dimension, not the particle count. Its
+     * validated square work array bounds count below 2^31 on 32/64-bit
+     * size_t targets; each bounded product is at most 2^30 in magnitude. */
+    int64_t sum = 0;
+#else
     pf_q_i128_t sum = {0, 0};
-    U_WORK extended = 0;
+#endif
+    U_WORK extended = 0, value;
     size_t i;
     for (i = 0; i < count; ++i) {
         U_WORK x = a[i * astride], y = b[i * bstride];
-        if (x >= -1 && x <= 1 && y >= -1 && y <= 1) {
+        if (PQ_IN_UNIT(x) && PQ_IN_UNIT(y)) {
             int64_t p = PQ(raw)(x) * PQ(raw)(y);
+#if U_BITS == 15
+            sum += p;
+#else
             pf_q_iadd(&sum, pf_q_magnitude(p), p < 0);
+#endif
         } else {
             extended += x * y;
         }
     }
-    return extended + (PQ(signed_value)(sum) / PQ_SCALE) / PQ_SCALE;
+#if U_BITS == 15
+    value = (U_WORK)pf_q_magnitude(sum);
+    if (sum < 0) value = -value;
+#else
+    value = PQ(signed_value)(sum);
+#endif
+    /* The converted integer and both old power-of-two divisions stay
+     * normal (or zero), so one exact power-of-two scale gives the same bits. */
+    return extended + value * ((U_WORK)1 / (PQ_SCALE * PQ_SCALE));
 }
 
 static linears_status_t PQ(arrays)(ukf_spans_t *spans, const U_STATE *state,
@@ -258,7 +322,7 @@ static linears_status_t PQ(resample_indices)(const linears_matrix_t *weights, U_
     linears_status_t status;
     if (indices == NULL) return LINEARS_ERROR_ARGUMENT;
     if (capacity < count) return LINEARS_ERROR_WORKSPACE;
-    if (!isfinite(uniform)) return LINEARS_ERROR_RANGE;
+    if (!PQ_ISFINITE(uniform)) return LINEARS_ERROR_RANGE;
     if (!(uniform >= 0 && uniform < 1)) return LINEARS_ERROR_DOMAIN;
     status = PQ(weight_total)(w, count, &total);
     if (status != LINEARS_OK) return status;
@@ -300,10 +364,10 @@ static linears_status_t PQ(gaussian)(const U_WORK *deviation, const U_WORK *lowe
     for (i = 0; i < k; ++i) {
         value = deviation[i] - PQ(dot)(lower + i * k, 1, solve, 1, i);
         solve[i] = value / lower[i * k + i];
-        if (!isfinite(solve[i])) return LINEARS_ERROR_RANGE;
+        if (!PQ_ISFINITE(solve[i])) return LINEARS_ERROR_RANGE;
     }
     value = (U_WORK)0.5 * PQ(dot)(solve, 1, solve, 1, k);
-    if (!isfinite(value)) return LINEARS_ERROR_RANGE;
+    if (!PQ_ISFINITE(value)) return LINEARS_ERROR_RANGE;
     *out = value;
     return LINEARS_OK;
 }
@@ -324,7 +388,7 @@ static linears_status_t PQ(reweight)(const linears_matrix_t *weights, U_WORK *ex
     int found = 0;
     for (i = 0; i < count; ++i) {
         if (w[i] < 0) return LINEARS_ERROR_DOMAIN;
-        if (!isfinite(exponents[i])) return LINEARS_ERROR_RANGE;
+        if (!PQ_ISFINITE(exponents[i])) return LINEARS_ERROR_RANGE;
         if (w[i] != 0 && (!found || exponents[i] < lowest)) { lowest = exponents[i]; found = 1; }
     }
     if (!found) return LINEARS_ERROR_DOMAIN;
@@ -333,7 +397,11 @@ static linears_status_t PQ(reweight)(const linears_matrix_t *weights, U_WORK *ex
         uint64_t likelihood;
         /* A zero-weight row must not overflow exp when its exponent is lower. */
         exponents[i] = w[i] == 0 ? 0 : U_EXP_NEG(exponents[i] - lowest);
+#if U_BITS == 15
+        likelihood = (uint32_t)(exponents[i] * (U_WORK)U_LIKELIHOOD_SCALE + (U_WORK)0.5);
+#else
         likelihood = (uint64_t)(exponents[i] * (U_WORK)U_LIKELIHOOD_SCALE + (U_WORK)0.5);
+#endif
         product = pf_q_umul(likelihood, (uint64_t)w[i]);
         if (pf_q_ucmp(product, maximum) > 0) maximum = product;
     }
@@ -341,7 +409,11 @@ static linears_status_t PQ(reweight)(const linears_matrix_t *weights, U_WORK *ex
     reciprocal = U_LDEXP((U_WORK)U_SIGNAL_MAX / PQ(unsigned_value)(maximum), (int)shift);
     multiplier = (uint32_t)(reciprocal + (U_WORK)0.5);
     for (i = 0; i < count; ++i) {
+#if U_BITS == 15
+        uint64_t likelihood = (uint32_t)(exponents[i] * (U_WORK)U_LIKELIHOOD_SCALE + (U_WORK)0.5);
+#else
         uint64_t likelihood = (uint64_t)(exponents[i] * (U_WORK)U_LIKELIHOOD_SCALE + (U_WORK)0.5);
+#endif
         pf_q_u128_t product = pf_q_umul(likelihood, (uint64_t)w[i]);
         uint64_t value = pf_q_ucmp(product, maximum) == 0 ? (uint64_t)U_SIGNAL_MAX :
             pf_q_uround(pf_q_umul32(product, multiplier), shift);
@@ -351,7 +423,8 @@ static linears_status_t PQ(reweight)(const linears_matrix_t *weights, U_WORK *ex
 }
 
 #undef PQ_SCALE
-#undef PQ_FINITE
+#undef PQ_IN_UNIT
+#undef PQ_ISFINITE
 #undef PQ
 #undef PQ_JOIN
 #undef PQ_JOIN_INNER

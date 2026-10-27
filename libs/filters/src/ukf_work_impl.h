@@ -12,6 +12,10 @@
     if (status != LINEARS_OK) return status; \
 } while (0)
 #define U_BASIC workspace.basic, workspace.basic_bytes
+#define U_BASIC_MEMBER_f32 f32
+#define U_BASIC_MEMBER_f64 floating
+#define U_BASIC_MEMBER U_JOIN(U_BASIC_MEMBER_, U_TAG)
+#define U_ISFINITE U_JOIN(ukf_isfinite_, U_TAG)
 #define U_CHECK_FINITE(matrix) U_TRY(U_FINITE(matrix))
 
 linears_status_t U_API(weights)(size_t states, U_WORK alpha, U_WORK beta, U_WORK kappa,
@@ -137,9 +141,11 @@ linears_status_t U_API(mean)(const linears_matrix_t *points, const linears_matri
 {
     linears_status_t status;
     ukf_spans_t spans;
-    linears_matrix_t deviations, transposed, reference;
+    linears_matrix_t deviations, reference;
+    const linears_matrix_t *source = points;
+    const U_WORK *values, *w;
     U_WORK *cursor;
-    size_t s, k;
+    size_t s, k, i, j;
     spans.count = 0;
     U_TRY(ukf_matrix(&spans, points, 0, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
     s = points->rows;
@@ -152,19 +158,29 @@ linears_status_t U_API(mean)(const linears_matrix_t *points, const linears_matri
     U_CHECK_FINITE(weights);
     workspace.basic_bytes = FILTERS_UKF_MEAN_BASIC_BYTES(s, k);
     cursor = workspace.data;
-    if (residual == NULL) {
-        transposed = U_LOCAL(take)(&cursor, k, s);
-        U_TRY(U_LINEAR(transpose)(points, &transposed, U_BASIC));
-        return U_LINEAR(mul)(&transposed, weights, out, U_BASIC);
+    if (residual != NULL) {
+        /* Average residuals about row 0, then move back; exact for linear parts. */
+        deviations = U_LOCAL(take)(&cursor, s, k);
+        reference = U_LOCAL(row)(points, 0);
+        U_TRY(U_API(deviations)(points, &reference, residual, context, &deviations, workspace));
+        source = &deviations;
     }
-    /* Average residuals about row 0, then move back; exact for linear parts. */
-    deviations = U_LOCAL(take)(&cursor, s, k);
-    transposed = U_LOCAL(take)(&cursor, k, s);
-    reference = U_LOCAL(row)(points, 0);
-    U_TRY(U_API(deviations)(points, &reference, residual, context, &deviations, workspace));
-    U_TRY(U_LINEAR(transpose)(&deviations, &transposed, U_BASIC));
-    U_TRY(U_LINEAR(mul)(&transposed, weights, out, U_BASIC));
-    return U_LINEAR(add)(&reference, out, out, U_BASIC);
+    values = (const U_WORK *)source->data;
+    w = (const U_WORK *)weights->data;
+    /* Read columns directly, retaining the transposed product's reduction order. */
+    for (j = 0; j < k; ++j) {
+        U_WORK sum = (U_WORK)0;
+        for (i = 0; i < s; ++i) {
+            U_WORK product = values[i * k + j] * w[i];
+            sum += product;
+            if (!U_ISFINITE(sum)) return LINEARS_ERROR_RANGE;
+        }
+        workspace.basic[j].U_BASIC_MEMBER = sum;
+    }
+    for (j = 0; j < k; ++j)
+        ((U_WORK *)out->data)[j] = workspace.basic[j].U_BASIC_MEMBER;
+    if (residual != NULL) return U_LINEAR(add)(&reference, out, out, U_BASIC);
+    return LINEARS_OK;
 }
 
 linears_status_t U_API(weighted_covariance)(const linears_matrix_t *a, const linears_matrix_t *b,
@@ -173,10 +189,9 @@ linears_status_t U_API(weighted_covariance)(const linears_matrix_t *a, const lin
 {
     linears_status_t status;
     ukf_spans_t spans;
-    linears_matrix_t scaled, transposed, source, target;
-    const U_WORK *w;
-    U_WORK *cursor;
-    size_t s, p, q, i;
+    const U_WORK *av, *bv, *w;
+    U_WORK *scaled;
+    size_t s, p, q, i, j, k;
     spans.count = 0;
     U_TRY(ukf_matrix(&spans, a, 0, 0, sizeof(U_WORK), U_ALIGNOF(U_WORK), UKF_INPUT));
     s = a->rows;
@@ -190,18 +205,34 @@ linears_status_t U_API(weighted_covariance)(const linears_matrix_t *a, const lin
     U_CHECK_FINITE(a);
     U_CHECK_FINITE(b);
     U_CHECK_FINITE(weights);
-    workspace.basic_bytes = FILTERS_UKF_WEIGHTED_COVARIANCE_BASIC_BYTES(s, p, q);
-    cursor = workspace.data;
-    scaled = U_LOCAL(take)(&cursor, s, q);
-    transposed = U_LOCAL(take)(&cursor, p, s);
+    scaled = workspace.data;
+    av = (const U_WORK *)a->data;
+    bv = (const U_WORK *)b->data;
     w = (const U_WORK *)weights->data;
     for (i = 0; i < s; ++i) {
-        source = U_LOCAL(row)(b, i);
-        target = U_LOCAL(row)(&scaled, i);
-        U_TRY(U_LINEAR(axpby)(w[i], &source, (U_WORK)0, &source, &target, U_BASIC));
+        for (j = 0; j < q; ++j) {
+            U_WORK left = w[i] * bv[i * q + j];
+            U_WORK right = (U_WORK)0 * bv[i * q + j];
+            U_WORK value = left + right;
+            if (!U_ISFINITE(value)) return LINEARS_ERROR_RANGE;
+            scaled[i * q + j] = value;
+        }
     }
-    U_TRY(U_LINEAR(transpose)(a, &transposed, U_BASIC));
-    return U_LINEAR(mul)(&transposed, &scaled, out, U_BASIC);
+    /* Keep a*(w*b + 0*b), including signed zeros, and the original dot order. */
+    for (i = 0; i < p; ++i) {
+        for (j = 0; j < q; ++j) {
+            U_WORK sum = (U_WORK)0;
+            for (k = 0; k < s; ++k) {
+                U_WORK product = av[k * p + i] * scaled[k * q + j];
+                sum += product;
+                if (!U_ISFINITE(sum)) return LINEARS_ERROR_RANGE;
+            }
+            workspace.basic[i * q + j].U_BASIC_MEMBER = sum;
+        }
+    }
+    for (i = 0; i < p * q; ++i)
+        ((U_WORK *)out->data)[i] = workspace.basic[i].U_BASIC_MEMBER;
+    return LINEARS_OK;
 }
 
 static linears_status_t U_LOCAL(weights_valid)(const U_WEIGHTS *weights)
@@ -391,6 +422,10 @@ linears_status_t U_API(update_work)(const linears_matrix_t *mean, const linears_
 }
 
 #undef U_CHECK_FINITE
+#undef U_ISFINITE
+#undef U_BASIC_MEMBER
+#undef U_BASIC_MEMBER_f64
+#undef U_BASIC_MEMBER_f32
 #undef U_BASIC
 #undef U_TRY
 #undef U_SYMMETRIC

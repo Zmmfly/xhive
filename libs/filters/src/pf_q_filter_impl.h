@@ -10,9 +10,11 @@
 #define P_SCRATCH(name) P_JOIN(P_JOIN(ukf_work_, U_TAG), P_JOIN(_, name))
 #define P_LINEAR(name) P_JOIN(P_JOIN(linears_, name), P_JOIN(_, U_KERNEL))
 #define P_WIDEN P_JOIN(ukf_widen_, U_TAG)
+#define P_WIDEN_VALUE P_JOIN(ukf_widen_value_, U_TAG)
 #define P_FITS P_JOIN(ukf_fits_, U_TAG)
 #define P_STORE P_JOIN(ukf_store_, U_TAG)
 #define P_FINITE P_JOIN(ukf_finite_, U_KERNEL)
+#define P_IN_UNIT P_JOIN(ukf_in_unit_, U_KERNEL)
 #define P_SYMMETRIC P_JOIN(ukf_symmetric_, U_TAG)
 #define P_TRY(expression) do { status = (expression); if (status != LINEARS_OK) return status; } while (0)
 #define P_TAKE(rows, cols) P_SCRATCH(take)(&cursor, (rows), (cols))
@@ -263,7 +265,7 @@ linears_status_t P_API(estimate)(const U_STATE *state, U_RESIDUAL_FN residual, v
             P_TRY(P_FINITE(&difference));
         }
         for (j = 0; j < n; ++j) {
-            if (residual == NULL || (delta[j] >= -1 && delta[j] <= 1)) {
+            if (residual == NULL || P_IN_UNIT(delta[j])) {
                 int64_t value = residual == NULL ? particles[i * n + j] : P_LOCAL(raw)(delta[j]);
                 pf_q_acc_add(workspace.basic + 2 * j, pf_q_magnitude(value) * (uint64_t)weights[i], value < 0);
             } else {
@@ -284,7 +286,7 @@ linears_status_t P_API(estimate)(const U_STATE *state, U_RESIDUAL_FN residual, v
             P_TRY(residual(&input, &reference, &difference, residual_context));
             P_TRY(P_FINITE(&difference));
             for (j = 0; j < n; ++j)
-                if (delta[j] >= -1 && delta[j] <= 1) {
+                if (P_IN_UNIT(delta[j])) {
                     int64_t value = P_LOCAL(raw)(delta[j]);
                     raw_row[j] = (U_SIGNAL)(value > U_SIGNAL_MAX ? U_SIGNAL_MAX : value);
                 }
@@ -296,7 +298,7 @@ linears_status_t P_API(estimate)(const U_STATE *state, U_RESIDUAL_FN residual, v
                     int64_t a = (int64_t)particles[i * n + j] - mean_stage[j];
                     int64_t b = (int64_t)particles[i * n + k] - mean_stage[k];
                     P_LOCAL(covariance_add)(workspace.basic + 2 * element, a, b, weights[i]);
-                } else if (delta[j] >= -1 && delta[j] <= 1 && delta[k] >= -1 && delta[k] <= 1) {
+                } else if (P_IN_UNIT(delta[j]) && P_IN_UNIT(delta[k])) {
                     U_WORK positive_cell = ((U_WORK)U_SIGNAL_MAX + (U_WORK)0.5) / (U_WORK)U_SCALE;
                     int64_t a = delta[j] >= positive_cell ? (int64_t)U_SCALE : raw_row[j];
                     int64_t b = delta[k] >= positive_cell ? (int64_t)U_SCALE : raw_row[k];
@@ -318,8 +320,8 @@ linears_status_t P_API(estimate)(const U_STATE *state, U_RESIDUAL_FN residual, v
             U_WORK value = P_LOCAL(signed_value)(pf_q_acc_read(workspace.basic + 2 * element)) /
                            denominator / covariance_scale + extended[element];
             if (residual == NULL) {
-                U_WORK a = center[j] - (U_WORK)mean_stage[j] / (U_WORK)U_SCALE;
-                U_WORK b = center[k] - (U_WORK)mean_stage[k] / (U_WORK)U_SCALE;
+                U_WORK a = center[j] - P_WIDEN_VALUE(mean_stage[j]);
+                U_WORK b = center[k] - P_WIDEN_VALUE(mean_stage[k]);
                 value -= a * b;
             }
             P_TRY(P_FITS(&value, 1));
@@ -335,9 +337,11 @@ linears_status_t P_API(estimate)(const U_STATE *state, U_RESIDUAL_FN residual, v
 #undef P_TAKE
 #undef P_TRY
 #undef P_SYMMETRIC
+#undef P_IN_UNIT
 #undef P_FINITE
 #undef P_STORE
 #undef P_FITS
+#undef P_WIDEN_VALUE
 #undef P_WIDEN
 #undef P_LINEAR
 #undef P_SCRATCH
