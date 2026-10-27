@@ -4,7 +4,8 @@
  *
  * This umbrella header includes every family: EMA (filters_ema.h), FIR
  * (filters_fir.h), biquad/SOS (filters_iir.h), frequency-designed LPF/HPF/BPF
- * (filters_lpf.h, filters_hpf.h, filters_bpf.h) and Kalman (filters_kalman.h).
+ * (filters_lpf.h, filters_hpf.h, filters_bpf.h), linear Kalman
+ * (filters_kalman.h) and unscented Kalman (filters_ukf.h).
  * It declares the moving-average, median and complementary families itself.
  *
  * All contexts and retained arrays are caller-owned and naturally aligned.
@@ -27,7 +28,7 @@
  * negative feedback near -2 and gains above one remain expressible. Q EMA,
  * LPF/HPF/BPF, complementary and SOS histories retain F31 precision; signal rings
  * retain raw Q1 storage. Kalman-specific state/workspace contracts are defined
- * by filters_kalman.h.
+ * by filters_kalman.h and filters_ukf.h.
  * Q export checks its supplied working value against [-1,+1] before narrowing.
  * Direct final MAC paths check F62; compound matrix Kalman checks its computed
  * F31 result, not an ideal unrounded chain. Exact +1 maps to MAX under the shared
@@ -43,6 +44,7 @@
 #include "filters_hpf.h"
 #include "filters_bpf.h"
 #include "filters_kalman.h"
+#include "filters_ukf.h"
 
 #ifdef __cplusplus
 extern "C" {

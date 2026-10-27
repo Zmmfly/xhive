@@ -118,7 +118,7 @@ Typed family functions use `_f32`, `_f64`, `_q15`, or `_q31` before the
 operation suffix: for example `filters_fir_q15_step`. `filters.h` exposes all
 families. Smaller includes are `filters_ema.h`, `filters_fir.h`,
 `filters_iir.h` (biquad/SOS), `filters_lpf.h`, `filters_hpf.h`,
-`filters_bpf.h` and `filters_kalman.h`.
+`filters_bpf.h`, `filters_kalman.h` and `filters_ukf.h`.
 
 | Family | State and configuration | Scratch | Equation / cost per sample |
 | --- | --- | --- | --- |
@@ -132,6 +132,7 @@ families. Smaller includes are `filters_ema.h`, `filters_fir.h`,
 | Complementary | Context only; `alpha`, positive sample period, initial estimate | None | `alpha*(y_previous+rate*dt)+(1-alpha)*measurement`; O(1) |
 | Scalar Kalman | Estimate and variance in context | None | Separate predict/update; Joseph variance |
 | Matrix Kalman | Caller-owned state vector and covariance matrix | Three explicitly typed arrays | See [KALMAN.md](KALMAN.md) |
+| Unscented Kalman | Caller-owned x, P, Q, R and weights; callback f/h and residuals | Three explicitly typed arrays | 2n+1 sigma points per predict/update; see [UKF.md](UKF.md) |
 `FILTERS_FIR_STATE_COUNT`, `FILTERS_BIQUAD_STATE_COUNT`,
 `FILTERS_BIQUAD_WORKSPACE_COUNT`, `FILTERS_MOVING_AVERAGE_STATE_COUNT`,
 `FILTERS_MEDIAN_STATE_COUNT`, and `FILTERS_MEDIAN_WORKSPACE_COUNT` give required
@@ -150,7 +151,8 @@ count and round once. There is no integer running-sum drift or per-term LSB
 loss. Floating means retain the finite-window recomputation to avoid drift.
 The additional 16-byte Q context state is intentional; not every context or
 workspace becomes smaller. Matrix Kalman working buffers can also grow; see
-its explicit type-specific storage formulas in [KALMAN.md](KALMAN.md).
+its explicit type-specific storage formulas in [KALMAN.md](KALMAN.md) and the
+UKF formulas in [UKF.md](UKF.md).
 
 FIR, SOS, moving-average and median histories initially contain zeros, and reset
 restores that same state. The moving average always divides by the full window,
@@ -218,6 +220,35 @@ if a later section would reduce it. Pole stability, signal units, coefficient
 design and section ordering are caller choices; success is not a stability
 guarantee.
 
+## Unscented Kalman filter
+
+`filters_ukf.h` estimates a nonlinear model through caller callbacks `f(x)`
+and `h(x)` with 2n+1 sigma points; `init` takes `alpha`, `beta`, `kappa` and
+the initial `x`, `P`, `Q`, `R`. Optional residual callbacks replace plain
+subtraction for angle-like components. The individual steps (sigma points,
+propagation, weighted mean, deviations, weighted covariance) are public
+working-format kernels. Algorithm, storage formulas and validation are in
+[UKF.md](UKF.md). Known limits:
+
+- `P` must be symmetric and strictly positive definite at working precision:
+  predict and update factor `(n+lambda)*P` with Cholesky, so a singular PSD `P`
+  (accepted by `init`) fails with `NOT_POSITIVE_DEFINITE`.
+- `W_c[0]` is negative for small `alpha`, which can make a computed covariance
+  indefinite even for a valid model; the next Cholesky then fails. `alpha` near
+  one with `kappa = 0` or `3-n` is the safe starting point, and in Q formats a
+  tiny `alpha` additionally loses sigma-point precision in F31.
+- Q callbacks and the shared `fixed` kernels receive `linears_fixed_t` working
+  matrices, not raw Q signals, because sigma points and weights exceed `[-1,+1]`;
+  only the final `x`/`P` are range-checked and narrowed. A measurement noise
+  that quantizes to zero fails the Cholesky check.
+- Sigma points are formed by plain addition and are passed to the callbacks
+  unnormalized; keep angle states bounded inside `f`. The residual-aware mean
+  is a single center-relative pass, not an iterated manifold mean.
+- There is no square-root or augmented-state variant and no automatic
+  regularization; both transactions regenerate sigma points, so each
+  predict/update cycle performs two Cholesky factorizations of `P` plus the
+  `R` and `S` checks.
+
 ## Numeric, ownership and failure contracts
 
 - `f32` and `f64` use native float/double operations. They reject nonfinite
@@ -271,9 +302,9 @@ guarantee.
 
 Tests are separated into `fir.cc`, `fir_design.cc`, `biquad.cc`, `lpf.cc`,
 `hpf.cc`, `bpf.cc`, `moving_average.cc`, `ema.cc`, `median.cc`,
-`complementary.cc`, `kalman_scalar.cc` and `kalman_matrix.cc`. Every category uses all four numeric
+`complementary.cc`, `kalman_scalar.cc`, `kalman_matrix.cc` and `ukf.cc`. Every category uses all four numeric
 formats. Independent difference equations or sorted-window oracles use the
-quantized public inputs; matrix Kalman uses Eigen only in tests. The exact fixed
+quantized public inputs; matrix Kalman and the UKF use Eigen only in tests. The exact fixed
 FIR oracle uses the host compiler's native `__int128`, deliberately independent
 of the portable production two-limb implementation. These tests are verified
 with Linux GCC/Clang; MSVC test compatibility is not claimed.
@@ -318,6 +349,9 @@ parent-owned `docs/fieldctrl-worklog.md`. Host tests are not hardware validation
   [AHRS complementary-filter exposition](https://ahrs.readthedocs.io/en/latest/filters/complementary.html).
   No angle wrapping or manifold state interpretation is implied.
 - Kalman filtering and its Joseph covariance update are documented in `KALMAN.md`.
+- The unscented Kalman filter follows the scaled sigma-point formulation of
+  Wan and van der Merwe; weights, residual handling, kernel reuse and storage
+  are documented in `UKF.md`.
 
 The implementation is original C code derived from these published algorithms,
 not copied library source. Host tests are not a claim of on-target validation.

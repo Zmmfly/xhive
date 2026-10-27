@@ -17,7 +17,7 @@ there is no separately versioned upstream package:
 | Library | Purpose | Application Kconfig selection |
 | --- | --- | --- |
 | [linears](linears/README.md) | Allocation-free matrix/vector arithmetic and decompositions | `CONFIG_LIBS_ADD_LINEARS=y` |
-| [filters](filters/README.md) | Streaming filters and scalar/matrix Kalman estimation | `CONFIG_LIBS_ADD_FILTERS=y` (selects linears) |
+| [filters](filters/README.md) | Streaming filters, scalar/matrix Kalman and unscented Kalman estimation | `CONFIG_LIBS_ADD_FILTERS=y` (selects linears) |
 | [fieldctrl](fieldctrl/README.md) | Motor-control numerical primitives, VVVF, FOC/SMO, and DTC | `CONFIG_LIBS_ADD_FIELDCTRL=y` (selects linears and filters) |
 
 Each library provides `f32`, `f64`, `q15`, and `q31` APIs. q15/q31 signals are raw
