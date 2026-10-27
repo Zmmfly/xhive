@@ -2,9 +2,12 @@
 
 Allocation-free C99 signal filtering and state estimation in four numeric
 variants: `f32`, `f64`, `q15`, and `q31`. Q signals are ordinary signed integers
-with a fixed binary point: `int16_t/2^15` or `int32_t/2^31`. All Q arithmetic
-uses the shared integer-only `linears` core; no per-value or per-block scale
-metadata, floating conversion, or silent saturation is present.
+with a fixed binary point: `int16_t/2^15` or `int32_t/2^31`, without per-value
+or per-block scale metadata. Streaming filters and the scalar/matrix Kalman
+filters use the integer `linears` core. UKF/PF/UPF use dedicated Q integer
+statistics and particle-weight paths, with local float/double work for
+callbacks, decompositions and values outside the signal range. They are not
+f32/f64 filter wrappers; they also are not wholly integer algorithms.
 
 ## Frequency-designed LPF, HPF and BPF
 
@@ -133,9 +136,9 @@ families. Smaller includes are `filters_ema.h`, `filters_fir.h`,
 | Complementary | Context only; `alpha`, positive sample period, initial estimate | None | `alpha*(y_previous+rate*dt)+(1-alpha)*measurement`; O(1) |
 | Scalar Kalman | Estimate and variance in context | None | Separate predict/update; Joseph variance |
 | Matrix Kalman | Caller-owned state vector and covariance matrix | Three explicitly typed arrays | See [KALMAN.md](KALMAN.md) |
-| Unscented Kalman | Caller-owned x, P, Q, R and weights; callback f/h and residuals | Three explicitly typed arrays | 2n+1 sigma points per predict/update; see [UKF.md](UKF.md) |
-| Particle | Caller-owned N-by-n particles, N weights, Q, R; callback f/h, residuals and sampler | Three explicitly typed arrays | Bootstrap PF with systematic resampling; N callback evaluations per step; see [PF.md](PF.md) |
-| Unscented particle | Particle state plus N-by-(n*n) covariances and sigma weights | Three explicitly typed arrays | One UKF predict/update per particle per step; see [PF.md](PF.md) |
+| Unscented Kalman | Caller-owned x, P, Q, R and weights; callback f/h and residuals | Floating, basic and decomposition arrays; Q adds raw signal staging | 2n+1 sigma points per predict/update; see [UKF.md](UKF.md) |
+| Particle | Caller-owned N-by-n particles, N weights, Q, R; callback f/h, residuals and sampler | Floating, basic and decomposition arrays; Q adds raw signal staging | Bootstrap PF with systematic resampling; N callback evaluations per step; see [PF.md](PF.md) |
+| Unscented particle | Particle state plus N-by-(n*n) covariances and sigma weights | Floating, basic and decomposition arrays; Q adds raw signal staging | One UKF predict/update per particle per step; see [PF.md](PF.md) |
 `FILTERS_FIR_STATE_COUNT`, `FILTERS_BIQUAD_STATE_COUNT`,
 `FILTERS_BIQUAD_WORKSPACE_COUNT`, `FILTERS_MOVING_AVERAGE_STATE_COUNT`,
 `FILTERS_MEDIAN_STATE_COUNT`, and `FILTERS_MEDIAN_WORKSPACE_COUNT` give required
@@ -239,12 +242,14 @@ working-format kernels. Algorithm, storage formulas and validation are in
 - `W_c[0]` is negative for small `alpha`, which can make a computed covariance
   indefinite even for a valid model; the next Cholesky then fails. `alpha` near
   one with `kappa = 0` or `3-n` is the safe starting point.
-- q15/q31 store `x`, `P`, `Q`, `R` raw and compute in float (q15) or double
-  (q31) through the `f32`/`f64` kernels, so Q callbacks see float/double
-  matrices and the hyperparameters, weights and workspace are the floating
-  ones; sigma points may exceed `[-1,+1]`, only the final `x`/`P` are
-  range-checked and narrowed. A measurement noise that quantizes to zero
-  fails the Cholesky check.
+- q15/q31 store `x`, `P`, `Q`, `R` raw and use dedicated Q kernels with
+  integer multiply-accumulate statistics. Callbacks, residuals, sigma weights
+  and hyperparameters remain float (q15) or double (q31); sigma points and
+  residuals may exceed `[-1,+1]`. Local floating work handles that range and
+  decompositions, not the entire filter computation. Final `x`/`P` must pass
+  the signal-range check before either is committed. A measurement noise
+  that quantizes to zero fails the Cholesky check. Q calls now require a
+  typed Q workspace with separate raw staging; see [UKF.md](UKF.md).
 - Sigma points are formed by plain addition and are passed to the callbacks
   unnormalized; keep angle states bounded inside `f`. The residual-aware mean
   is a single center-relative pass, not an iterated manifold mean.
@@ -277,12 +282,15 @@ formulas and validation are in [PF.md](PF.md). Known limits:
 - `Q` must be positive definite (its Cholesky factor generates the process
   noise and, in the UPF, the prior exponent), and so must `P0` at init; a
   semidefinite `Q` or `P0` fails with `NOT_POSITIVE_DEFINITE`.
-- q15/q31 store particles, weights and (UPF) covariances raw and compute in
-  float (q15) or double (q31) through the `f32`/`f64` kernels. Particles
-  must stay inside `[-1,+1]`: a transaction that would move one outside
-  fails with `RANGE` and commits nothing. Raw Q weights are scaled so the
-  largest is the raw maximum (consumers divide the scale out), and a weight
-  below `2^-16` (q15) or `2^-32` (q31) of the best particle's becomes zero.
+- q15/q31 store particles, weights and (UPF) covariances raw. Dedicated Q
+  paths perform weight processing, systematic resampling, ESS and moments
+  with integer arithmetic; callbacks and necessary local range-expanding
+  operations remain float/double. The UPF calls the Q UKF mixed-format
+  kernels, not a complete f32/f64 UKF. Committed particles and covariances
+  must stay inside `[-1,+1]`: an out-of-range candidate fails with `RANGE`
+  and commits nothing. Raw weights represent relative mass rather than
+  fractions summing to one; quantization and workspace details are in
+  [PF.md](PF.md).
 - The UPF transition must be deterministic, each step costs a full UKF
   predict/update per particle, the state grows with `N*n*n`, and its weights
   are not near-uniform even for linear Gaussian models because every
@@ -300,10 +308,12 @@ formulas and validation are in [PF.md](PF.md). Known limits:
   integer. `LINEARS_FIXED_ONE` is exactly 2147483648. Its wide integer part is
   used only where coefficients, recursive state or intermediate values need
   headroom (FIR/SOS coefficients, scalar and matrix Kalman); public signal
-  buffers remain raw Q1.15/Q1.31. The UKF, PF and UPF instead keep every
-  persistent array in the signal type and compute q15 in float and q31 in
-  double, widening once on entry and narrowing once, range-checked, on
-  commit.
+  buffers remain raw Q1.15/Q1.31. The UKF, PF and UPF keep every persistent
+  array in the signal type and use Q-specific computation paths. Their
+  floating callback/decomposition work is separate from raw staging;
+  conversion is local to the operation that needs it, not a whole-filter
+  import into a floating kernel. A final range failure preserves all
+  persistent outputs.
 - Arithmetic rounds to nearest with halfway cases away from zero. Signal export
   checks its supplied numeric value against `[-1,+1]` before narrowing. Exact +1,
   or an in-range value whose rounding reaches +1, maps to MAX with at most one
@@ -318,9 +328,9 @@ formulas and validation are in [PF.md](PF.md). Known limits:
   error (`2^-33` in this example) and endpoint representation error (`2^-31`)
   are separate. Direct `linears_mul_q31` checks that same dot in F62 and rejects
   it. See [KALMAN.md](KALMAN.md) for the explicit regression and contract.
-- Working operations also return `RANGE` on int64/F31 or signed-128/F62
-  overflow. Success does not promise exact real-arithmetic results: finite
-  fractional precision still rounds small terms. Tiny positive noise that
+- Integer `linears` working operations also return `RANGE` on int64/F31 or
+  signed-128/F62 overflow. Success does not promise exact real-arithmetic
+  results: finite fractional precision still rounds small terms. Tiny positive noise that
   quantizes to raw zero is zero and fails a strictly positive-noise contract.
 - Alpha zero holds the EMA and bypasses integration in the complementary
   filter. A raw MAX alpha never takes a floating passthrough shortcut. Nonfinite floating samples fail even at
@@ -345,9 +355,11 @@ formulas and validation are in [PF.md](PF.md). Known limits:
 
 Tests are separated into `fir.cc`, `fir_design.cc`, `biquad.cc`, `lpf.cc`,
 `hpf.cc`, `bpf.cc`, `moving_average.cc`, `ema.cc`, `median.cc`,
-`complementary.cc`, `kalman_scalar.cc`, `kalman_matrix.cc`, `ukf.cc`, `pf.cc` and `upf.cc`. Every category uses all four numeric
-formats. Independent difference equations or sorted-window oracles use the
-quantized public inputs; matrix Kalman, the UKF and the particle filters use Eigen only in tests. The exact fixed
+`complementary.cc`, `kalman_scalar.cc`, `kalman_matrix.cc`, `ukf.cc`, `pf.cc`
+and `upf.cc`, with Q-specific regressions in `q_estimators.cc`. The filter
+family suites exercise all four numeric formats. Independent difference
+equations or sorted-window oracles use the quantized public inputs; matrix
+Kalman, the UKF and the particle filters use Eigen only in tests. The exact fixed
 FIR oracle uses the host compiler's native `__int128`, deliberately independent
 of the portable production two-limb implementation. These tests are verified
 with Linux GCC/Clang; MSVC test compatibility is not claimed.
@@ -366,8 +378,52 @@ xmake test -g xhive -v 'filters_test_*/*'
 xmake test -g xhive -v 'filters_test_lpf/lpf'
 ```
 
-Root build/configuration and accepted command results are recorded in the
-parent-owned `docs/fieldctrl-worklog.md`. Host tests are not hardware validation.
+Confirmed for the dedicated Q implementation, including the final
+translated-small-covariance regressions:
+
+- `xmake b`: passed.
+- `xmake test -g xhive`: all 60 registered host test entries passed, including
+  the final `q_estimators` entry.
+- GCC and Clang checked `src/ukf.c` and `src/pf.c` with
+  `-std=c99 -pedantic-errors -Wall -Wextra -Werror -Wvla -fsyntax-only`:
+  passed. Strict C99 and C++17 public-header checks also passed.
+- Independent GCC `-O2`, Clang `-O2` and Clang
+  `-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer` builds each
+  passed all four estimator suites: UKF 27, PF 41, UPF 25 and Q-specific
+  regressions 20, with 6 format-applicability skips and no sanitizer
+  diagnostics. The Q regressions include translated sub-LSB work
+  covariances, 65537-particle weight pipelines and the input/output weight
+  dynamic-range case; the original PF 4000/UPF 600 statistical cases and
+  numeric tolerances remain unchanged.
+
+Xmake totals count registered test entry points, not individual GoogleTest
+cases. The separate optimized/sanitizer runs each passed 113 GoogleTest
+cases. Root build/configuration records are in `docs/fieldctrl-worklog.md`;
+host checks do not establish hardware operation.
+
+## Measurements
+
+The [recorded measurements and reproduction guide](bench/README.md) compare
+linear and nonlinear Q paths against their paired floating implementations.
+The nonlinear-filter benchmark is separate from Xmake tests:
+[`bench/run.py`](bench/run.py) builds and times UKF/PF/UPF transactions,
+[`bench/compare.py`](bench/compare.py) compares matching Q and floating rows,
+and [`bench/cross_audit.py`](bench/cross_audit.py) records ARM object-code
+calls and sizes without executing a board.
+[`bench/coverage.py`](bench/coverage.py) instruments a retained GCC build to
+record actual Q integer and local-floating branch execution; that coverage
+run is not a latency measurement. Compare q15 with f32 and q31 with f64
+from the same run; a narrower persistent element type alone is not
+evidence of lower total RAM or faster execution. The benchmark records its
+compiler, source hashes, dimensions and counted-memory definition. Its RAM
+count excludes stack and caller callback/RNG state; host wall time and
+compile-only ARM evidence do not measure retired instructions or MCU cycles.
+The [UKF](UKF.md#computation-changes) and [PF/UPF](PF.md#computation-changes)
+notes explain source-backed reductions in repeated factorization, dot
+products and memory passes; speedups must not all be attributed to integer
+arithmetic beating an FPU. Files marked `baseline-470206b` describe the
+previous floating-wrapper implementation, not validation of the dedicated
+Q paths.
 
 ## Algorithms and references
 
@@ -398,8 +454,8 @@ parent-owned `docs/fieldctrl-worklog.md`. Host tests are not hardware validation
 - The particle filter is the bootstrap filter of Gordon, Salmond and Smith
   (1993) with systematic resampling (Kitagawa 1996; Carpenter, Clifford and
   Fearnhead 1999); the unscented particle filter follows van der Merwe,
-  Doucet, de Freitas and Wan (2000). Weight derivation, fixed-point `exp`
-  and storage are documented in `PF.md`.
+  Doucet, de Freitas and Wan (2000). Weight derivation, Q arithmetic
+  boundaries and storage are documented in `PF.md`.
 
 The implementation is original C code derived from these published algorithms,
 not copied library source. Host tests are not a claim of on-target validation.

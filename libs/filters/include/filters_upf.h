@@ -3,8 +3,8 @@
  * @brief Caller-owned unscented particle filters (UPF).
  *
  * Every particle carries its own mean and covariance. One step runs the
- * working-format UKF predict and update kernels of filters_ukf.h per
- * particle with the current measurement, draws the new particle from that
+ * matching UKF predict and update kernels of filters_ukf.h per particle
+ * with the current measurement, draws the new particle from that
  * Gaussian proposal N(xbar_i, Pbar_i), and updates its importance weight by
  * likelihood * prior / proposal. Resampling gathers particles and
  * covariances together. The particle set and weights are a filters_pf_*_t,
@@ -12,11 +12,13 @@
  * the embedded base unchanged.
  *
  * Storage, callback, residual, sampler, workspace, failure and
- * serialization rules are those of filters_pf.h and filters_ukf.h: q15/q31
- * store particles, weights and covariances raw and run the per-particle
- * kernels in float/double. The transition must be deterministic: process
- * noise enters only through Q. See PF.md for the weight derivation, storage
- * layout and validation.
+ * serialization rules are those of filters_pf.h and filters_ukf.h. q15/q31
+ * use their dedicated integer statistical kernels and raw particle,
+ * covariance and weight staging. Floating storage holds one particle's
+ * extended-range intermediates, the callback/decomposition boundary and
+ * one log-density exponent per particle. The transition must be
+ * deterministic: process noise enters only through Q. See PF.md for the
+ * weight derivation, storage layout and validation.
  */
 #ifndef FILTERS_UPF_H
 #define FILTERS_UPF_H
@@ -84,9 +86,11 @@ typedef struct {
 /**
  * @brief Caller-owned q15 unscented particle filter; every array is raw q15.
  *
- * Rules of filters_upf_f32_t with int16_t elements; the model, weights and
- * scratch are the f32 ones. Every per-particle covariance must stay inside
- * [-1,+1] like the particles, or the step fails with RANGE.
+ * Rules of filters_upf_f32_t with int16_t elements, float callbacks and
+ * sigma weights, and filters_ukf_q15_workspace_t scratch. Committed
+ * particles and posterior covariances must stay inside [-1,+1], or the
+ * step fails with RANGE. Sigma points, residuals, normal draws and the
+ * predicted prior are not restricted to that interval.
  */
 typedef struct {
     filters_pf_q15_t base; /**< Raw q15 particles, weights, Q and R. */
@@ -98,8 +102,8 @@ typedef struct {
 /**
  * @brief Caller-owned q31 unscented particle filter; every array is raw q31.
  *
- * Rules of filters_upf_q15_t with int32_t elements and the f64 model,
- * weights and scratch.
+ * Rules of filters_upf_q15_t with int32_t elements, the f64 model and
+ * sigma weights, and filters_ukf_q31_workspace_t scratch.
  */
 typedef struct {
     filters_pf_q31_t base; /**< Raw q31 particles, weights, Q and R. */
@@ -126,18 +130,40 @@ typedef struct {
                          LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(6, (n)), LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(2, (m)), 1))))
 
 /**
- * @brief Working elements for a Q step: floating amount + n + 2*n*n + m*m + m.
+ * @brief Floating working elements for a Q step; SIZE_MAX on overflow.
  *
- * Adds the widened current particle and its covariance, Q, R and the
- * measurement. Allocate float for q15 and double for q31.
+ * N + 4*n*n + 2*m*m + 4*n + 3*m plus the larger mixed-Q UKF work amount.
+ * Only the N log-density exponents need per-particle floating storage:
+ * particles, covariances and weights are staged raw. The other elements
+ * hold one particle's extended-range prior/posterior and the Q/R factors.
+ * Allocate float for q15 and double for q31. N, n and m are positive and
+ * side-effect-free.
  */
 #define FILTERS_UPF_Q_STEP_STORAGE(N, n, m) \
-    LINEARS_SIZE_ADD(FILTERS_UPF_STEP_STORAGE((N), (n), (m)), \
-        LINEARS_SIZE_ADD(LINEARS_SIZE_ADD((n), LINEARS_SIZE_MUL(2, LINEARS_SIZE_MUL((n), (n)))), \
-                         LINEARS_SIZE_ADD(LINEARS_SIZE_MUL((m), (m)), (m))))
+    LINEARS_SIZE_ADD( \
+        LINEARS_SIZE_ADD((N), \
+            FILTERS_KALMAN_MAX_SIZE(FILTERS_UKF_Q_PREDICT_WORK_STORAGE(n), \
+                                    FILTERS_UKF_Q_UPDATE_WORK_STORAGE((n), (m)))), \
+        LINEARS_SIZE_ADD( \
+            LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(4, LINEARS_SIZE_MUL((n), (n))), \
+                             LINEARS_SIZE_MUL(2, LINEARS_SIZE_MUL((m), (m)))), \
+            LINEARS_SIZE_ADD(LINEARS_SIZE_MUL(4, (n)), LINEARS_SIZE_MUL(3, (m)))))
 
 /**
- * @brief Basic scratch bytes for a UPF step in every format.
+ * @brief Raw Q elements for a UPF step; SIZE_MAX on overflow.
+ *
+ * N*(n*n+n+1) elements stage posterior covariances, particles and weights;
+ * the remaining elements are reused by the mixed-Q UKF kernels. Allocate
+ * int16_t for q15 and int32_t for q31.
+ */
+#define FILTERS_UPF_Q_STEP_SIGNAL_STORAGE(N, n, m) \
+    LINEARS_SIZE_ADD( \
+        LINEARS_SIZE_MUL((N), LINEARS_SIZE_ADD(LINEARS_SIZE_MUL((n), (n)), LINEARS_SIZE_ADD((n), 1))), \
+        FILTERS_KALMAN_MAX_SIZE(FILTERS_UKF_Q_PREDICT_SIGNAL_STORAGE(n), \
+                                FILTERS_UKF_Q_UPDATE_SIGNAL_STORAGE((n), (m))))
+
+/**
+ * @brief Basic scratch bytes for a floating UPF step.
  */
 #define FILTERS_UPF_STEP_BASIC_BYTES(n, m) FILTERS_UKF_UPDATE_BASIC_BYTES((n), (m))
 
@@ -149,6 +175,19 @@ typedef struct {
  */
 #define FILTERS_UPF_STEP_DECOMP_STORAGE(n, m) \
     FILTERS_KALMAN_MAX_SIZE(LINEARS_SIZE_ADD(LINEARS_SIZE_MUL((n), (n)), (n)), LINEARS_SOLVE_WORKSPACE((m), (n)))
+
+/**
+ * @brief Basic scratch bytes for a Q UPF step: none.
+ */
+#define FILTERS_UPF_Q_STEP_BASIC_BYTES(n, m) FILTERS_UKF_Q_UPDATE_BASIC_BYTES((n), (m))
+
+/**
+ * @brief Q step decomposition elements: max(n*n,m*m); SIZE_MAX on overflow.
+ *
+ * Allocate float for q15 and double for q31. The Gaussian density uses
+ * direct triangular solves, not a second factorization of each factor.
+ */
+#define FILTERS_UPF_Q_STEP_DECOMP_STORAGE(n, m) FILTERS_UKF_Q_UPDATE_DECOMP_STORAGE((n), (m))
 
 /**
  * @brief Initialize a single-precision UPF from a Gaussian prior.
@@ -261,9 +300,10 @@ linears_status_t filters_upf_f64_resample(filters_upf_f64_t *state, double unifo
  * @param[in] measurement_noise Non-NULL symmetric SPD m-by-m raw q15 R.
  * @param[in] sample Non-NULL float standard-normal sampler.
  * @param[in] context Passed to sample unchanged; may be NULL.
- * @param[in] workspace Float arrays meeting FILTERS_PF_Q_INIT_STORAGE(N,n),
- *                      FILTERS_PF_PREDICT_BASIC_BYTES(n) and
- *                      FILTERS_PF_PREDICT_DECOMP_STORAGE(n).
+ * @param[in] workspace Float data meeting FILTERS_PF_Q_INIT_STORAGE(N,n),
+ *                      raw signal staging meeting FILTERS_PF_Q_INIT_SIGNAL_STORAGE(N,n),
+ *                      basic bytes meeting FILTERS_PF_Q_PREDICT_BASIC_BYTES(n),
+ *                      and FILTERS_PF_PREDICT_DECOMP_STORAGE(n) float elements.
  * @return linears_status_t As filters_pf_q15_init, plus DOMAIN for invalid
  *         sigma hyperparameters.
  */
@@ -272,30 +312,36 @@ linears_status_t filters_upf_q15_init(filters_upf_q15_t *state, float alpha, flo
                                       const linears_matrix_t *process_noise,
                                       const linears_matrix_t *measurement_noise,
                                       filters_pf_f32_sample_fn sample, void *context,
-                                      filters_ukf_f32_workspace_t workspace);
+                                      filters_ukf_q15_workspace_t workspace);
 
 /**
- * @brief One q15 UPF step computed in float; contract as filters_upf_f32_step.
+ * @brief One q15 UPF step using the dedicated mixed-Q UKF kernels.
  *
- * Each particle and its covariance are widened to float for the UKF
- * kernels; the new particles, covariances and weights are narrowed back
- * together after the whole set succeeded.
+ * Contract as filters_upf_f32_step. The predicted prior stays in local
+ * float storage until the measurement update; it need not fit q15 when
+ * the posterior does. New particles, posterior covariances and weights
+ * are staged raw and committed together after the whole set succeeds.
  *
  * @param[in,out] state Non-NULL initialized q15 filter.
  * @param[in] measurement Non-NULL m-by-1 raw q15 z.
  * @param[in] model Non-NULL float callbacks; transition and observation not NULL.
  * @param[in] sample Non-NULL float standard-normal sampler.
  * @param[in] sample_context Passed to sample unchanged; may be NULL.
- * @param[in] workspace Float arrays meeting FILTERS_UPF_Q_STEP_STORAGE(N,n,m),
- *                      FILTERS_UPF_STEP_BASIC_BYTES(n,m) and
- *                      FILTERS_UPF_STEP_DECOMP_STORAGE(n,m).
+ * @param[in] workspace Float data meeting FILTERS_UPF_Q_STEP_STORAGE(N,n,m),
+ *                      raw signal staging meeting FILTERS_UPF_Q_STEP_SIGNAL_STORAGE(N,n,m),
+ *                      basic bytes meeting FILTERS_UPF_Q_STEP_BASIC_BYTES(n,m),
+ *                      and FILTERS_UPF_Q_STEP_DECOMP_STORAGE(n,m) float elements.
  * @return linears_status_t As filters_upf_f32_step. RANGE also covers a new
  *         particle or covariance element outside [-1,+1]; nothing is
  *         committed then.
+ * @note Rows run predict, update, sample and density callbacks in order,
+ *       then undergo their final range check and raw staging. A failure
+ *       returns immediately without processing later rows; persistent
+ *       particles, covariances and weights remain unchanged.
  */
 linears_status_t filters_upf_q15_step(filters_upf_q15_t *state, const linears_matrix_t *measurement,
                                       const filters_upf_f32_model_t *model, filters_pf_f32_sample_fn sample,
-                                      void *sample_context, filters_ukf_f32_workspace_t workspace);
+                                      void *sample_context, filters_ukf_q15_workspace_t workspace);
 
 /**
  * @brief Systematic q15 UPF resampling; contract as filters_pf_q15_resample.
@@ -304,11 +350,11 @@ linears_status_t filters_upf_q15_step(filters_upf_q15_t *state, const linears_ma
  * @param[in] uniform Draw in [0,1).
  * @param[out] indices Array of at least N size_t entries.
  * @param[in] capacity Available indices entries.
- * @param[in] workspace data must meet FILTERS_PF_Q_RESAMPLE_STORAGE(N) float elements.
+ * @param[in] workspace Ignored; raw weights are read directly without scratch.
  * @return linears_status_t As filters_pf_f32_resample.
  */
 linears_status_t filters_upf_q15_resample(filters_upf_q15_t *state, float uniform, size_t *indices,
-                                          size_t capacity, filters_ukf_f32_workspace_t workspace);
+                                          size_t capacity, filters_ukf_q15_workspace_t workspace);
 
 /**
  * @brief Initialize a q31 UPF; contract as filters_upf_q15_init with int32_t/2^31 inputs.
@@ -323,9 +369,10 @@ linears_status_t filters_upf_q15_resample(filters_upf_q15_t *state, float unifor
  * @param[in] measurement_noise Non-NULL symmetric SPD m-by-m raw q31 R.
  * @param[in] sample Non-NULL double standard-normal sampler.
  * @param[in] context Passed to sample unchanged; may be NULL.
- * @param[in] workspace Double arrays meeting FILTERS_PF_Q_INIT_STORAGE(N,n),
- *                      FILTERS_PF_PREDICT_BASIC_BYTES(n) and
- *                      FILTERS_PF_PREDICT_DECOMP_STORAGE(n).
+ * @param[in] workspace Double data meeting FILTERS_PF_Q_INIT_STORAGE(N,n),
+ *                      raw signal staging meeting FILTERS_PF_Q_INIT_SIGNAL_STORAGE(N,n),
+ *                      basic bytes meeting FILTERS_PF_Q_PREDICT_BASIC_BYTES(n),
+ *                      and FILTERS_PF_PREDICT_DECOMP_STORAGE(n) double elements.
  * @return linears_status_t As filters_upf_q15_init.
  */
 linears_status_t filters_upf_q31_init(filters_upf_q31_t *state, double alpha, double beta, double kappa,
@@ -333,24 +380,28 @@ linears_status_t filters_upf_q31_init(filters_upf_q31_t *state, double alpha, do
                                       const linears_matrix_t *process_noise,
                                       const linears_matrix_t *measurement_noise,
                                       filters_pf_f64_sample_fn sample, void *context,
-                                      filters_ukf_f64_workspace_t workspace);
+                                      filters_ukf_q31_workspace_t workspace);
 
 /**
- * @brief One q31 UPF step computed in double; contract as filters_upf_q15_step.
+ * @brief One q31 UPF step using the dedicated mixed-Q UKF kernels.
+ *
+ * Contract as filters_upf_q15_step, with double local intermediates and
+ * int32_t signal staging.
  *
  * @param[in,out] state Non-NULL initialized q31 filter.
  * @param[in] measurement Non-NULL m-by-1 raw q31 z.
  * @param[in] model Non-NULL double callbacks; transition and observation not NULL.
  * @param[in] sample Non-NULL double standard-normal sampler.
  * @param[in] sample_context Passed to sample unchanged; may be NULL.
- * @param[in] workspace Double arrays meeting FILTERS_UPF_Q_STEP_STORAGE(N,n,m),
- *                      FILTERS_UPF_STEP_BASIC_BYTES(n,m) and
- *                      FILTERS_UPF_STEP_DECOMP_STORAGE(n,m).
+ * @param[in] workspace Double data meeting FILTERS_UPF_Q_STEP_STORAGE(N,n,m),
+ *                      raw signal staging meeting FILTERS_UPF_Q_STEP_SIGNAL_STORAGE(N,n,m),
+ *                      basic bytes meeting FILTERS_UPF_Q_STEP_BASIC_BYTES(n,m),
+ *                      and FILTERS_UPF_Q_STEP_DECOMP_STORAGE(n,m) double elements.
  * @return linears_status_t As filters_upf_q15_step.
  */
 linears_status_t filters_upf_q31_step(filters_upf_q31_t *state, const linears_matrix_t *measurement,
                                       const filters_upf_f64_model_t *model, filters_pf_f64_sample_fn sample,
-                                      void *sample_context, filters_ukf_f64_workspace_t workspace);
+                                      void *sample_context, filters_ukf_q31_workspace_t workspace);
 
 /**
  * @brief Systematic q31 UPF resampling; contract as filters_pf_q31_resample.
@@ -359,11 +410,11 @@ linears_status_t filters_upf_q31_step(filters_upf_q31_t *state, const linears_ma
  * @param[in] uniform Draw in [0,1).
  * @param[out] indices Array of at least N size_t entries.
  * @param[in] capacity Available indices entries.
- * @param[in] workspace data must meet FILTERS_PF_Q_RESAMPLE_STORAGE(N) double elements.
+ * @param[in] workspace Ignored; raw weights are read directly without scratch.
  * @return linears_status_t As filters_pf_f32_resample.
  */
 linears_status_t filters_upf_q31_resample(filters_upf_q31_t *state, double uniform, size_t *indices,
-                                          size_t capacity, filters_ukf_f64_workspace_t workspace);
+                                          size_t capacity, filters_ukf_q31_workspace_t workspace);
 
 #ifdef __cplusplus
 }

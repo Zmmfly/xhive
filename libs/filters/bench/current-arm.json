@@ -1,0 +1,1322 @@
+{
+  "revision": "470206ba1c553e533bed28ea5a547dfd71b11357",
+  "source_mode": "working-tree-copy",
+  "compiler": "arm-none-eabi-gcc (15:14.2.rel1-1) 14.2.1 20241119\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+  "commands": [
+    [
+      "arm-none-eabi-gcc",
+      "-std=c99",
+      "-mcpu=cortex-m4",
+      "-mthumb",
+      "-mfloat-abi=soft",
+      "-O3",
+      "-DNDEBUG",
+      "-fno-fast-math",
+      "-ffunction-sections",
+      "-fdata-sections",
+      "-fstack-usage",
+      "-I${SOURCE}/libs/filters/include",
+      "-I${SOURCE}/libs/linears/include",
+      "-c",
+      "${SOURCE}/libs/filters/src/ukf.c",
+      "-o",
+      "${BUILD}/m4-soft/ukf.o"
+    ],
+    [
+      "arm-none-eabi-gcc",
+      "-std=c99",
+      "-mcpu=cortex-m4",
+      "-mthumb",
+      "-mfloat-abi=soft",
+      "-O3",
+      "-DNDEBUG",
+      "-fno-fast-math",
+      "-ffunction-sections",
+      "-fdata-sections",
+      "-fstack-usage",
+      "-I${SOURCE}/libs/filters/include",
+      "-I${SOURCE}/libs/linears/include",
+      "-c",
+      "${SOURCE}/libs/filters/src/pf.c",
+      "-o",
+      "${BUILD}/m4-soft/pf.o"
+    ],
+    [
+      "arm-none-eabi-gcc",
+      "-std=c99",
+      "-mcpu=cortex-m4",
+      "-mthumb",
+      "-mfloat-abi=hard",
+      "-mfpu=fpv4-sp-d16",
+      "-O3",
+      "-DNDEBUG",
+      "-fno-fast-math",
+      "-ffunction-sections",
+      "-fdata-sections",
+      "-fstack-usage",
+      "-I${SOURCE}/libs/filters/include",
+      "-I${SOURCE}/libs/linears/include",
+      "-c",
+      "${SOURCE}/libs/filters/src/ukf.c",
+      "-o",
+      "${BUILD}/m4-hard/ukf.o"
+    ],
+    [
+      "arm-none-eabi-gcc",
+      "-std=c99",
+      "-mcpu=cortex-m4",
+      "-mthumb",
+      "-mfloat-abi=hard",
+      "-mfpu=fpv4-sp-d16",
+      "-O3",
+      "-DNDEBUG",
+      "-fno-fast-math",
+      "-ffunction-sections",
+      "-fdata-sections",
+      "-fstack-usage",
+      "-I${SOURCE}/libs/filters/include",
+      "-I${SOURCE}/libs/linears/include",
+      "-c",
+      "${SOURCE}/libs/filters/src/pf.c",
+      "-o",
+      "${BUILD}/m4-hard/pf.o"
+    ]
+  ],
+  "q_direct_calls": {
+    "m4-soft/ukf.c": {
+      "ukf_q_q15_product_fits": [
+        "__aeabi_fadd",
+        "__aeabi_fcmpeq",
+        "__aeabi_fcmple",
+        "__aeabi_fcmplt",
+        "__aeabi_fmul"
+      ],
+      "ukf_q_q31_product_fits": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpeq",
+        "__aeabi_dcmple",
+        "__aeabi_dcmplt",
+        "__aeabi_dmul"
+      ],
+      "ukf_q_q15_deviations": [
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmpun",
+        "__aeabi_fsub",
+        "memcpy"
+      ],
+      "ukf_q_q31_deviations": [
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmpun",
+        "__aeabi_dsub",
+        "memcpy"
+      ],
+      "ukf_q_q31_mean": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpeq",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmple",
+        "__aeabi_dcmpun",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_i2d",
+        "__aeabi_l2d",
+        "lround",
+        "memset"
+      ],
+      "ukf_q_q15_mean": [
+        "__aeabi_fadd",
+        "__aeabi_fcmpeq",
+        "__aeabi_fcmpge",
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmple",
+        "__aeabi_fcmpun",
+        "__aeabi_fmul",
+        "__aeabi_fsub",
+        "__aeabi_i2f",
+        "__aeabi_l2f",
+        "lroundf",
+        "memset"
+      ],
+      "ukf_q_q31_propagate.isra.0": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmpun",
+        "__aeabi_dsub"
+      ],
+      "ukf_q_q15_propagate.isra.0": [
+        "__aeabi_fadd",
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmpun",
+        "__aeabi_fsub"
+      ],
+      "ukf_q_q15_covariance.isra.0": [
+        "__aeabi_fadd",
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmpun",
+        "__aeabi_fmul",
+        "__aeabi_l2f",
+        "ukf_q_q15_product_fits"
+      ],
+      "ukf_q_q31_covariance.isra.0": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmpun",
+        "__aeabi_dmul",
+        "__aeabi_ul2d",
+        "ukf_q_q31_product_fits"
+      ],
+      "ukf_q_q15_columns.isra.0": [
+        "__aeabi_fadd",
+        "__aeabi_fcmpeq",
+        "__aeabi_fcmpge",
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmplt",
+        "__aeabi_fmul",
+        "__aeabi_fsub",
+        "__aeabi_i2f",
+        "lroundf"
+      ],
+      "ukf_q_q31_columns.isra.0": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpeq",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmplt",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_i2d",
+        "lround"
+      ],
+      "filters_ukf_q15_predict_work": [
+        "__aeabi_fcmpeq",
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmplt",
+        "__aeabi_fcmpun",
+        "__aeabi_fmul",
+        "linears_cholesky_f32",
+        "ukf_q_q15_columns.isra.0",
+        "ukf_q_q15_covariance.isra.0",
+        "ukf_q_q15_deviations",
+        "ukf_q_q15_mean",
+        "ukf_q_q15_propagate.isra.0"
+      ],
+      "filters_ukf_q15_update_work": [
+        "__aeabi_fadd",
+        "__aeabi_fcmpeq",
+        "__aeabi_fcmpge",
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmplt",
+        "__aeabi_fcmpun",
+        "__aeabi_fdiv",
+        "__aeabi_fmul",
+        "__aeabi_fsub",
+        "__aeabi_i2f",
+        "__aeabi_l2f",
+        "linears_cholesky_f32",
+        "lroundf",
+        "ukf_q_q15_columns.isra.0",
+        "ukf_q_q15_covariance.isra.0",
+        "ukf_q_q15_deviations",
+        "ukf_q_q15_mean",
+        "ukf_q_q15_product_fits",
+        "ukf_q_q15_propagate.isra.0"
+      ],
+      "filters_ukf_q31_predict_work": [
+        "__aeabi_dcmpeq",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmplt",
+        "__aeabi_dcmpun",
+        "__aeabi_dmul",
+        "linears_cholesky_f64",
+        "ukf_q_q31_columns.isra.0",
+        "ukf_q_q31_covariance.isra.0",
+        "ukf_q_q31_deviations",
+        "ukf_q_q31_mean",
+        "ukf_q_q31_propagate.isra.0"
+      ],
+      "filters_ukf_q31_update_work": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpeq",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmplt",
+        "__aeabi_dcmpun",
+        "__aeabi_ddiv",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_i2d",
+        "__aeabi_ul2d",
+        "linears_cholesky_f64",
+        "lround",
+        "ukf_q_q31_columns.isra.0",
+        "ukf_q_q31_covariance.isra.0",
+        "ukf_q_q31_deviations",
+        "ukf_q_q31_mean",
+        "ukf_q_q31_product_fits",
+        "ukf_q_q31_propagate.isra.0"
+      ],
+      "filters_ukf_q15_init": [
+        "__aeabi_fadd",
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmpun",
+        "__aeabi_fdiv",
+        "__aeabi_fmul",
+        "__aeabi_fsub",
+        "__aeabi_ui2f",
+        "memcpy",
+        "ukf_filter_q15_state.constprop.0"
+      ],
+      "filters_ukf_q15_predict": [
+        "__aeabi_fcmpge",
+        "__aeabi_fcmple",
+        "__aeabi_fmul",
+        "__aeabi_i2f",
+        "filters_ukf_q15_predict_work",
+        "lroundf",
+        "ukf_filter_q15_state.constprop.0"
+      ],
+      "filters_ukf_q15_update": [
+        "__aeabi_fcmpge",
+        "__aeabi_fcmple",
+        "__aeabi_fmul",
+        "__aeabi_i2f",
+        "filters_ukf_q15_update_work",
+        "lroundf",
+        "ukf_filter_q15_state.constprop.0"
+      ],
+      "filters_ukf_q31_init": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmpun",
+        "__aeabi_ddiv",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_ui2d",
+        "memcpy",
+        "ukf_filter_q31_state.constprop.0"
+      ],
+      "filters_ukf_q31_predict": [
+        "__aeabi_dcmpge",
+        "__aeabi_dcmple",
+        "__aeabi_dmul",
+        "__aeabi_i2d",
+        "filters_ukf_q31_predict_work",
+        "lround",
+        "ukf_filter_q31_state.constprop.0"
+      ],
+      "filters_ukf_q31_update": [
+        "__aeabi_dcmpge",
+        "__aeabi_dcmple",
+        "__aeabi_dmul",
+        "__aeabi_i2d",
+        "filters_ukf_q31_update_work",
+        "lround",
+        "ukf_filter_q31_state.constprop.0"
+      ]
+    },
+    "m4-soft/pf.c": {
+      "upf_q_q31_residual": [
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmpun",
+        "__aeabi_dsub"
+      ],
+      "pf_q_q31_dot.constprop.0": [
+        "__aeabi_d2lz",
+        "__aeabi_dadd",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmple",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_ul2d"
+      ],
+      "pf_q_q31_gaussian": [
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmpun",
+        "__aeabi_ddiv",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "pf_q_q31_dot.constprop.0"
+      ],
+      "pf_q_q15_dot.constprop.0": [
+        "__aeabi_f2lz",
+        "__aeabi_fadd",
+        "__aeabi_fcmpge",
+        "__aeabi_fcmple",
+        "__aeabi_fmul",
+        "__aeabi_fsub",
+        "__aeabi_ul2f"
+      ],
+      "pf_q_q15_gaussian": [
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmpun",
+        "__aeabi_fdiv",
+        "__aeabi_fmul",
+        "__aeabi_fsub",
+        "pf_q_q15_dot.constprop.0"
+      ],
+      "pf_q_q31_reweight.isra.0": [
+        "__aeabi_d2uiz",
+        "__aeabi_d2ulz",
+        "__aeabi_dadd",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmplt",
+        "__aeabi_dcmpun",
+        "__aeabi_ddiv",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_ul2d",
+        "exp",
+        "ldexp"
+      ],
+      "pf_q_q15_reweight.isra.0": [
+        "__aeabi_f2uiz",
+        "__aeabi_f2ulz",
+        "__aeabi_fadd",
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmplt",
+        "__aeabi_fcmpun",
+        "__aeabi_fdiv",
+        "__aeabi_fmul",
+        "__aeabi_fsub",
+        "__aeabi_ul2f",
+        "expf",
+        "ldexpf"
+      ],
+      "pf_q_q15_init_validated.isra.0": [
+        "__aeabi_fadd",
+        "__aeabi_fcmpge",
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmple",
+        "__aeabi_fcmpun",
+        "__aeabi_fmul",
+        "__aeabi_i2f",
+        "linears_cholesky_f32",
+        "lroundf",
+        "memcpy",
+        "pf_q_q15_dot.constprop.0"
+      ],
+      "pf_q_q31_init_validated.isra.0": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmple",
+        "__aeabi_dcmpun",
+        "__aeabi_dmul",
+        "__aeabi_i2d",
+        "linears_cholesky_f64",
+        "lround",
+        "memcpy",
+        "pf_q_q31_dot.constprop.0"
+      ],
+      "pf_q_q31_resample_indices.isra.0": [
+        "__aeabi_d2ulz",
+        "__aeabi_dcmpeq",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmplt",
+        "__aeabi_dcmpun",
+        "frexp",
+        "ldexp",
+        "pf_q_uniform_product.constprop.0"
+      ],
+      "pf_q_q15_resample_indices.isra.0": [
+        "__aeabi_f2ulz",
+        "__aeabi_fcmpeq",
+        "__aeabi_fcmpge",
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmplt",
+        "__aeabi_fcmpun",
+        "frexpf",
+        "ldexpf",
+        "pf_q_uniform_product.constprop.0"
+      ],
+      "filters_pf_q15_effective_sample_size": [
+        "__aeabi_fadd",
+        "__aeabi_fdiv",
+        "__aeabi_fmul",
+        "__aeabi_ul2f"
+      ],
+      "filters_pf_q15_init": [
+        "pf_q_q15_init_validated.isra.0"
+      ],
+      "filters_pf_q15_predict": [
+        "__aeabi_fadd",
+        "__aeabi_fcmpge",
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmple",
+        "__aeabi_fcmpun",
+        "__aeabi_fmul",
+        "__aeabi_i2f",
+        "linears_cholesky_f32",
+        "lroundf",
+        "memcpy",
+        "pf_q_q15_dot.constprop.0",
+        "pf_q_q15_state.constprop.0"
+      ],
+      "filters_pf_q15_update": [
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmpun",
+        "__aeabi_fmul",
+        "__aeabi_fsub",
+        "__aeabi_i2f",
+        "linears_cholesky_f32",
+        "memcpy",
+        "pf_q_q15_gaussian",
+        "pf_q_q15_reweight.isra.0",
+        "pf_q_q15_state.constprop.0"
+      ],
+      "filters_pf_q15_resample": [
+        "memcpy",
+        "pf_q_q15_resample_indices.isra.0"
+      ],
+      "filters_pf_q15_estimate": [
+        "__aeabi_f2lz",
+        "__aeabi_fadd",
+        "__aeabi_fcmpge",
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmple",
+        "__aeabi_fcmpun",
+        "__aeabi_fdiv",
+        "__aeabi_fmul",
+        "__aeabi_fsub",
+        "__aeabi_i2f",
+        "__aeabi_ul2f",
+        "lroundf",
+        "memcpy",
+        "pf_q_q15_state.constprop.0"
+      ],
+      "filters_upf_q15_init": [
+        "filters_ukf_f32_weights",
+        "memcpy",
+        "pf_q_q15_init_validated.isra.0"
+      ],
+      "filters_upf_q15_step": [
+        "__aeabi_fadd",
+        "__aeabi_fcmpge",
+        "__aeabi_fcmpgt",
+        "__aeabi_fcmple",
+        "__aeabi_fcmpun",
+        "__aeabi_fmul",
+        "__aeabi_fsub",
+        "__aeabi_i2f",
+        "filters_ukf_q15_predict_work",
+        "filters_ukf_q15_update_work",
+        "linears_cholesky_f32",
+        "logf",
+        "lroundf",
+        "memcpy",
+        "pf_q_q15_dot.constprop.0",
+        "pf_q_q15_gaussian",
+        "pf_q_q15_reweight.isra.0"
+      ],
+      "filters_upf_q15_resample": [
+        "memcpy",
+        "pf_q_q15_resample_indices.isra.0"
+      ],
+      "filters_pf_q31_effective_sample_size": [
+        "__aeabi_dadd",
+        "__aeabi_ddiv",
+        "__aeabi_dmul",
+        "__aeabi_ul2d"
+      ],
+      "filters_pf_q31_init": [
+        "pf_q_q31_init_validated.isra.0"
+      ],
+      "filters_pf_q31_predict": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmple",
+        "__aeabi_dcmpun",
+        "__aeabi_dmul",
+        "__aeabi_i2d",
+        "linears_cholesky_f64",
+        "lround",
+        "memcpy",
+        "pf_q_q31_dot.constprop.0",
+        "pf_q_q31_state.constprop.0"
+      ],
+      "filters_pf_q31_update": [
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmpun",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_i2d",
+        "linears_cholesky_f64",
+        "memcpy",
+        "pf_q_q31_gaussian",
+        "pf_q_q31_reweight.isra.0",
+        "pf_q_q31_state.constprop.0"
+      ],
+      "filters_pf_q31_resample": [
+        "memcpy",
+        "pf_q_q31_resample_indices.isra.0"
+      ],
+      "filters_pf_q31_estimate": [
+        "__aeabi_d2lz",
+        "__aeabi_dadd",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmple",
+        "__aeabi_dcmpun",
+        "__aeabi_ddiv",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_i2d",
+        "__aeabi_ul2d",
+        "lround",
+        "memcpy",
+        "pf_q_q31_state.constprop.0"
+      ],
+      "filters_upf_q31_init": [
+        "filters_ukf_f64_weights",
+        "memcpy",
+        "pf_q_q31_init_validated.isra.0"
+      ],
+      "filters_upf_q31_step": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmple",
+        "__aeabi_dcmpun",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_i2d",
+        "filters_ukf_q31_predict_work",
+        "filters_ukf_q31_update_work",
+        "linears_cholesky_f64",
+        "log",
+        "lround",
+        "memcpy",
+        "pf_q_q31_dot.constprop.0",
+        "pf_q_q31_gaussian",
+        "pf_q_q31_reweight.isra.0",
+        "upf_q_q31_residual"
+      ],
+      "filters_upf_q31_resample": [
+        "memcpy",
+        "pf_q_q31_resample_indices.isra.0"
+      ]
+    },
+    "m4-hard/ukf.c": {
+      "ukf_q_q31_product_fits": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpeq",
+        "__aeabi_dcmple",
+        "__aeabi_dcmplt",
+        "__aeabi_dmul"
+      ],
+      "ukf_q_q15_deviations": [
+        "memcpy"
+      ],
+      "ukf_q_q31_deviations": [
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmpun",
+        "__aeabi_dsub",
+        "memcpy"
+      ],
+      "ukf_q_q31_mean": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpeq",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmple",
+        "__aeabi_dcmpun",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_i2d",
+        "__aeabi_l2d",
+        "lround",
+        "memset"
+      ],
+      "ukf_q_q15_mean": [
+        "__aeabi_l2f",
+        "lroundf",
+        "memset"
+      ],
+      "ukf_q_q31_propagate.isra.0": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmpun",
+        "__aeabi_dsub"
+      ],
+      "ukf_q_q15_covariance.isra.0": [
+        "__aeabi_l2f",
+        "ukf_q_q15_product_fits"
+      ],
+      "ukf_q_q31_covariance.isra.0": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmpun",
+        "__aeabi_dmul",
+        "__aeabi_ul2d",
+        "ukf_q_q31_product_fits"
+      ],
+      "ukf_q_q15_columns.isra.0": [
+        "lroundf"
+      ],
+      "ukf_q_q31_columns.isra.0": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpeq",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmplt",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_i2d",
+        "lround"
+      ],
+      "filters_ukf_q15_predict_work": [
+        "linears_cholesky_f32",
+        "ukf_q_q15_columns.isra.0",
+        "ukf_q_q15_covariance.isra.0",
+        "ukf_q_q15_deviations",
+        "ukf_q_q15_mean",
+        "ukf_q_q15_propagate.isra.0"
+      ],
+      "filters_ukf_q15_update_work": [
+        "__aeabi_l2f",
+        "linears_cholesky_f32",
+        "lroundf",
+        "ukf_q_q15_columns.isra.0",
+        "ukf_q_q15_covariance.isra.0",
+        "ukf_q_q15_deviations",
+        "ukf_q_q15_mean",
+        "ukf_q_q15_product_fits",
+        "ukf_q_q15_propagate.isra.0"
+      ],
+      "filters_ukf_q31_predict_work": [
+        "__aeabi_dcmpeq",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmplt",
+        "__aeabi_dcmpun",
+        "__aeabi_dmul",
+        "linears_cholesky_f64",
+        "ukf_q_q31_columns.isra.0",
+        "ukf_q_q31_covariance.isra.0",
+        "ukf_q_q31_deviations",
+        "ukf_q_q31_mean",
+        "ukf_q_q31_propagate.isra.0"
+      ],
+      "filters_ukf_q31_update_work": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpeq",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmplt",
+        "__aeabi_dcmpun",
+        "__aeabi_ddiv",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_i2d",
+        "__aeabi_ul2d",
+        "linears_cholesky_f64",
+        "lround",
+        "ukf_q_q31_columns.isra.0",
+        "ukf_q_q31_covariance.isra.0",
+        "ukf_q_q31_deviations",
+        "ukf_q_q31_mean",
+        "ukf_q_q31_product_fits",
+        "ukf_q_q31_propagate.isra.0"
+      ],
+      "filters_ukf_q15_init": [
+        "memcpy",
+        "ukf_filter_q15_state.constprop.0"
+      ],
+      "filters_ukf_q15_predict": [
+        "filters_ukf_q15_predict_work",
+        "lroundf",
+        "ukf_filter_q15_state.constprop.0"
+      ],
+      "filters_ukf_q15_update": [
+        "filters_ukf_q15_update_work",
+        "lroundf",
+        "ukf_filter_q15_state.constprop.0"
+      ],
+      "filters_ukf_q31_init": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmpun",
+        "__aeabi_ddiv",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_ui2d",
+        "memcpy",
+        "ukf_filter_q31_state.constprop.0"
+      ],
+      "filters_ukf_q31_predict": [
+        "__aeabi_dcmpge",
+        "__aeabi_dcmple",
+        "__aeabi_dmul",
+        "__aeabi_i2d",
+        "filters_ukf_q31_predict_work",
+        "lround",
+        "ukf_filter_q31_state.constprop.0"
+      ],
+      "filters_ukf_q31_update": [
+        "__aeabi_dcmpge",
+        "__aeabi_dcmple",
+        "__aeabi_dmul",
+        "__aeabi_i2d",
+        "filters_ukf_q31_update_work",
+        "lround",
+        "ukf_filter_q31_state.constprop.0"
+      ]
+    },
+    "m4-hard/pf.c": {
+      "upf_q_q31_residual": [
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmpun",
+        "__aeabi_dsub"
+      ],
+      "pf_q_q31_dot.constprop.0": [
+        "__aeabi_d2lz",
+        "__aeabi_dadd",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmple",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_ul2d"
+      ],
+      "pf_q_q31_gaussian": [
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmpun",
+        "__aeabi_ddiv",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "pf_q_q31_dot.constprop.0"
+      ],
+      "pf_q_q15_dot.constprop.0": [
+        "__aeabi_f2lz",
+        "__aeabi_ul2f"
+      ],
+      "pf_q_q15_gaussian": [
+        "pf_q_q15_dot.constprop.0"
+      ],
+      "pf_q_q31_reweight.isra.0": [
+        "__aeabi_d2uiz",
+        "__aeabi_d2ulz",
+        "__aeabi_dadd",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmplt",
+        "__aeabi_dcmpun",
+        "__aeabi_ddiv",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_ul2d",
+        "exp",
+        "ldexp"
+      ],
+      "pf_q_q15_reweight.isra.0": [
+        "__aeabi_f2ulz",
+        "__aeabi_ul2f",
+        "expf",
+        "ldexpf"
+      ],
+      "pf_q_q15_init_validated.isra.0": [
+        "linears_cholesky_f32",
+        "lroundf",
+        "memcpy",
+        "pf_q_q15_dot.constprop.0"
+      ],
+      "pf_q_q31_init_validated.isra.0": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmple",
+        "__aeabi_dcmpun",
+        "__aeabi_dmul",
+        "__aeabi_i2d",
+        "linears_cholesky_f64",
+        "lround",
+        "memcpy",
+        "pf_q_q31_dot.constprop.0"
+      ],
+      "pf_q_q31_resample_indices.isra.0": [
+        "__aeabi_d2ulz",
+        "__aeabi_dcmpeq",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmplt",
+        "__aeabi_dcmpun",
+        "frexp",
+        "ldexp",
+        "pf_q_uniform_product.constprop.0"
+      ],
+      "pf_q_q15_resample_indices.isra.0": [
+        "__aeabi_f2ulz",
+        "frexpf",
+        "ldexpf",
+        "pf_q_uniform_product.constprop.0"
+      ],
+      "filters_pf_q15_effective_sample_size": [
+        "__aeabi_ul2f"
+      ],
+      "filters_pf_q15_init": [
+        "pf_q_q15_init_validated.isra.0"
+      ],
+      "filters_pf_q15_predict": [
+        "linears_cholesky_f32",
+        "lroundf",
+        "memcpy",
+        "pf_q_q15_dot.constprop.0",
+        "pf_q_q15_state.constprop.0"
+      ],
+      "filters_pf_q15_update": [
+        "linears_cholesky_f32",
+        "memcpy",
+        "pf_q_q15_gaussian",
+        "pf_q_q15_reweight.isra.0",
+        "pf_q_q15_state.constprop.0"
+      ],
+      "filters_pf_q15_resample": [
+        "memcpy",
+        "pf_q_q15_resample_indices.isra.0"
+      ],
+      "filters_pf_q15_estimate": [
+        "__aeabi_f2lz",
+        "__aeabi_ul2f",
+        "lroundf",
+        "memcpy",
+        "pf_q_q15_state.constprop.0"
+      ],
+      "filters_upf_q15_init": [
+        "filters_ukf_f32_weights",
+        "memcpy",
+        "pf_q_q15_init_validated.isra.0"
+      ],
+      "filters_upf_q15_step": [
+        "filters_ukf_q15_predict_work",
+        "filters_ukf_q15_update_work",
+        "linears_cholesky_f32",
+        "logf",
+        "lroundf",
+        "memcpy",
+        "pf_q_q15_dot.constprop.0",
+        "pf_q_q15_gaussian",
+        "pf_q_q15_reweight.isra.0"
+      ],
+      "filters_upf_q15_resample": [
+        "memcpy",
+        "pf_q_q15_resample_indices.isra.0"
+      ],
+      "filters_pf_q31_effective_sample_size": [
+        "__aeabi_dadd",
+        "__aeabi_ddiv",
+        "__aeabi_dmul",
+        "__aeabi_ul2d"
+      ],
+      "filters_pf_q31_init": [
+        "pf_q_q31_init_validated.isra.0"
+      ],
+      "filters_pf_q31_predict": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmple",
+        "__aeabi_dcmpun",
+        "__aeabi_dmul",
+        "__aeabi_i2d",
+        "linears_cholesky_f64",
+        "lround",
+        "memcpy",
+        "pf_q_q31_dot.constprop.0",
+        "pf_q_q31_state.constprop.0"
+      ],
+      "filters_pf_q31_update": [
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmpun",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_i2d",
+        "linears_cholesky_f64",
+        "memcpy",
+        "pf_q_q31_gaussian",
+        "pf_q_q31_reweight.isra.0",
+        "pf_q_q31_state.constprop.0"
+      ],
+      "filters_pf_q31_resample": [
+        "memcpy",
+        "pf_q_q31_resample_indices.isra.0"
+      ],
+      "filters_pf_q31_estimate": [
+        "__aeabi_d2lz",
+        "__aeabi_dadd",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmple",
+        "__aeabi_dcmpun",
+        "__aeabi_ddiv",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_i2d",
+        "__aeabi_ul2d",
+        "lround",
+        "memcpy",
+        "pf_q_q31_state.constprop.0"
+      ],
+      "filters_upf_q31_init": [
+        "filters_ukf_f64_weights",
+        "memcpy",
+        "pf_q_q31_init_validated.isra.0"
+      ],
+      "filters_upf_q31_step": [
+        "__aeabi_dadd",
+        "__aeabi_dcmpge",
+        "__aeabi_dcmpgt",
+        "__aeabi_dcmple",
+        "__aeabi_dcmpun",
+        "__aeabi_dmul",
+        "__aeabi_dsub",
+        "__aeabi_i2d",
+        "filters_ukf_q31_predict_work",
+        "filters_ukf_q31_update_work",
+        "linears_cholesky_f64",
+        "log",
+        "lround",
+        "memcpy",
+        "pf_q_q31_dot.constprop.0",
+        "pf_q_q31_gaussian",
+        "pf_q_q31_reweight.isra.0",
+        "upf_q_q31_residual"
+      ],
+      "filters_upf_q31_resample": [
+        "memcpy",
+        "pf_q_q31_resample_indices.isra.0"
+      ]
+    }
+  },
+  "entry_stack_frames": {
+    "m4-soft/ukf.c": {
+      "filters_ukf_f32_predict_work": {
+        "bytes": 856,
+        "classification": "static"
+      },
+      "filters_ukf_f32_update_work": {
+        "bytes": 752,
+        "classification": "static"
+      },
+      "filters_ukf_f64_predict_work": {
+        "bytes": 888,
+        "classification": "static"
+      },
+      "filters_ukf_f64_update_work": {
+        "bytes": 800,
+        "classification": "static"
+      },
+      "filters_ukf_f32_predict": {
+        "bytes": 520,
+        "classification": "static"
+      },
+      "filters_ukf_f32_update": {
+        "bytes": 576,
+        "classification": "static"
+      },
+      "filters_ukf_f64_predict": {
+        "bytes": 520,
+        "classification": "static"
+      },
+      "filters_ukf_f64_update": {
+        "bytes": 576,
+        "classification": "static"
+      },
+      "filters_ukf_q15_predict_work": {
+        "bytes": 488,
+        "classification": "static"
+      },
+      "filters_ukf_q15_update_work": {
+        "bytes": 568,
+        "classification": "static"
+      },
+      "filters_ukf_q31_predict_work": {
+        "bytes": 536,
+        "classification": "static"
+      },
+      "filters_ukf_q31_update_work": {
+        "bytes": 696,
+        "classification": "static"
+      },
+      "filters_ukf_q15_predict": {
+        "bytes": 568,
+        "classification": "static"
+      },
+      "filters_ukf_q15_update": {
+        "bytes": 648,
+        "classification": "static"
+      },
+      "filters_ukf_q31_predict": {
+        "bytes": 576,
+        "classification": "static"
+      },
+      "filters_ukf_q31_update": {
+        "bytes": 648,
+        "classification": "static"
+      }
+    },
+    "m4-soft/pf.c": {
+      "filters_pf_f32_predict": {
+        "bytes": 520,
+        "classification": "static"
+      },
+      "filters_pf_f32_update": {
+        "bytes": 568,
+        "classification": "static"
+      },
+      "filters_pf_f32_estimate": {
+        "bytes": 544,
+        "classification": "static"
+      },
+      "filters_upf_f32_step": {
+        "bytes": 912,
+        "classification": "static"
+      },
+      "filters_pf_f64_predict": {
+        "bytes": 520,
+        "classification": "static"
+      },
+      "filters_pf_f64_update": {
+        "bytes": 584,
+        "classification": "static"
+      },
+      "filters_pf_f64_estimate": {
+        "bytes": 544,
+        "classification": "static"
+      },
+      "filters_upf_f64_step": {
+        "bytes": 952,
+        "classification": "static"
+      },
+      "filters_pf_q15_predict": {
+        "bytes": 472,
+        "classification": "static"
+      },
+      "filters_pf_q15_update": {
+        "bytes": 496,
+        "classification": "static"
+      },
+      "filters_pf_q15_estimate": {
+        "bytes": 512,
+        "classification": "static"
+      },
+      "filters_upf_q15_step": {
+        "bytes": 784,
+        "classification": "static"
+      },
+      "filters_pf_q31_predict": {
+        "bytes": 496,
+        "classification": "static"
+      },
+      "filters_pf_q31_update": {
+        "bytes": 528,
+        "classification": "static"
+      },
+      "filters_pf_q31_estimate": {
+        "bytes": 560,
+        "classification": "static"
+      },
+      "filters_upf_q31_step": {
+        "bytes": 824,
+        "classification": "static"
+      }
+    },
+    "m4-hard/ukf.c": {
+      "filters_ukf_f32_predict_work": {
+        "bytes": 840,
+        "classification": "static"
+      },
+      "filters_ukf_f32_update_work": {
+        "bytes": 752,
+        "classification": "static"
+      },
+      "filters_ukf_f64_predict_work": {
+        "bytes": 888,
+        "classification": "static"
+      },
+      "filters_ukf_f64_update_work": {
+        "bytes": 800,
+        "classification": "static"
+      },
+      "filters_ukf_f32_predict": {
+        "bytes": 520,
+        "classification": "static"
+      },
+      "filters_ukf_f32_update": {
+        "bytes": 576,
+        "classification": "static"
+      },
+      "filters_ukf_f64_predict": {
+        "bytes": 520,
+        "classification": "static"
+      },
+      "filters_ukf_f64_update": {
+        "bytes": 576,
+        "classification": "static"
+      },
+      "filters_ukf_q15_predict_work": {
+        "bytes": 488,
+        "classification": "static"
+      },
+      "filters_ukf_q15_update_work": {
+        "bytes": 600,
+        "classification": "static"
+      },
+      "filters_ukf_q31_predict_work": {
+        "bytes": 528,
+        "classification": "static"
+      },
+      "filters_ukf_q31_update_work": {
+        "bytes": 688,
+        "classification": "static"
+      },
+      "filters_ukf_q15_predict": {
+        "bytes": 568,
+        "classification": "static"
+      },
+      "filters_ukf_q15_update": {
+        "bytes": 656,
+        "classification": "static"
+      },
+      "filters_ukf_q31_predict": {
+        "bytes": 576,
+        "classification": "static"
+      },
+      "filters_ukf_q31_update": {
+        "bytes": 664,
+        "classification": "static"
+      }
+    },
+    "m4-hard/pf.c": {
+      "filters_pf_f32_predict": {
+        "bytes": 504,
+        "classification": "static"
+      },
+      "filters_pf_f32_update": {
+        "bytes": 560,
+        "classification": "static"
+      },
+      "filters_pf_f32_estimate": {
+        "bytes": 544,
+        "classification": "static"
+      },
+      "filters_upf_f32_step": {
+        "bytes": 928,
+        "classification": "static"
+      },
+      "filters_pf_f64_predict": {
+        "bytes": 528,
+        "classification": "static"
+      },
+      "filters_pf_f64_update": {
+        "bytes": 592,
+        "classification": "static"
+      },
+      "filters_pf_f64_estimate": {
+        "bytes": 544,
+        "classification": "static"
+      },
+      "filters_upf_f64_step": {
+        "bytes": 984,
+        "classification": "static"
+      },
+      "filters_pf_q15_predict": {
+        "bytes": 472,
+        "classification": "static"
+      },
+      "filters_pf_q15_update": {
+        "bytes": 488,
+        "classification": "static"
+      },
+      "filters_pf_q15_estimate": {
+        "bytes": 552,
+        "classification": "static"
+      },
+      "filters_upf_q15_step": {
+        "bytes": 816,
+        "classification": "static"
+      },
+      "filters_pf_q31_predict": {
+        "bytes": 504,
+        "classification": "static"
+      },
+      "filters_pf_q31_update": {
+        "bytes": 528,
+        "classification": "static"
+      },
+      "filters_pf_q31_estimate": {
+        "bytes": 560,
+        "classification": "static"
+      },
+      "filters_upf_q31_step": {
+        "bytes": 840,
+        "classification": "static"
+      }
+    }
+  },
+  "source_sha256": {
+    "libs/filters/include/filters.h": "ec9191af4c251d84107b0370b50513ca6d5bdbc35559ac2995f80e553117a648",
+    "libs/filters/include/filters_bpf.h": "7da2180e82062373b855d4691c957f99eb1ed70b318a51dd50b8517a67339f4d",
+    "libs/filters/include/filters_ema.h": "881ba475a2301d1b9b380a588cad224327ace745a421aeca273a27b1053eb56d",
+    "libs/filters/include/filters_fir.h": "8f74a2ca194d7cf4baad53a66fbbdfecb0d1aef0867fe36caeda72c69040d783",
+    "libs/filters/include/filters_hpf.h": "9f4611109996c7aaa2b1e7ffa229a8923498435b77558b52578280405d15fa19",
+    "libs/filters/include/filters_iir.h": "87c5989a63c50e03f5235639f6c94d004e44cdc4468f177c63144b342fcc6c1f",
+    "libs/filters/include/filters_kalman.h": "b0699d80a46c75022f2ee8c7d585f18739df35144897ec5a43ab8b96d2b70186",
+    "libs/filters/include/filters_lpf.h": "5e43f26765a9b9503dcf9a46c4858e4399d96f749eac55178c59d1a96dd3801a",
+    "libs/filters/include/filters_pf.h": "675bcb6d56f3e60c50335df78483ec4ab0129cdb4768eb97ba73b7e027a972a3",
+    "libs/filters/include/filters_ukf.h": "89631ba0e2e049c8ce35b6767b6cd652263f297bed9b78241543588d98cdf91e",
+    "libs/filters/include/filters_upf.h": "5c730c4b795aef6cb9d2906f4e69681be9a879f56bc0fe8bd1d03e5044481168",
+    "libs/filters/src/filters_design_impl.h": "9f63650e5952f40f7961b53775be50da18c1f1755d5238a42198c46ac2d288e5",
+    "libs/filters/src/filters_f32.c": "e91ef082c685ef92f72250b9d24a511f602526126fff9f081c797171a355ec45",
+    "libs/filters/src/filters_f64.c": "a6fe195cfd41e4816c5502f5bcd82ee1b4255d21ba0d8744645cfe9e073c4635",
+    "libs/filters/src/filters_impl.h": "d85aba47c7129c0ed40585646655c16078f9a18332c67ba381ebeae75b018efa",
+    "libs/filters/src/filters_internal.h": "5a74874537da5910c58accd4da829cdd5d0a29883abb2f42aa500d8b51999732",
+    "libs/filters/src/filters_q15.c": "db5b8cdfa343444eb9064981bf94514fe14efe31f8384e5a5763016aee63862f",
+    "libs/filters/src/filters_q31.c": "fed4c6e1912b929c155bcefdc8e3bdf6e559ee293d6777d309aeca61ac6cb5e7",
+    "libs/filters/src/filters_scalar_impl.h": "8f18fb725ad02370633ef123067ce93e5c2dd3ae219bf1fedd95c5f5861db9ad",
+    "libs/filters/src/filters_work.c": "fce2fe55311255a0961a9456af296c6ac24921e53f133e948de8cb6b6a6befe2",
+    "libs/filters/src/kalman_matrix.c": "30d3100e4686ac2797eece76236acb2e0524965b98ef31dd75f1480bfcd91b27",
+    "libs/filters/src/kalman_matrix_impl.h": "e816ff792bbdbf6d9241f9bd83e52b6d3004508c6f097cd88c92fa54d94ffbe1",
+    "libs/filters/src/kalman_scalar.c": "3560052f6f5b20a9d011a5c04a983d8909ca27c7ca5c3c24709519f64a258bb2",
+    "libs/filters/src/kalman_scalar_impl.h": "3bf7cdea8eb33bff3a780eeaacc0c4c33e2a4e9433cbb81448c49e8af1ea72ee",
+    "libs/filters/src/pf.c": "f10e07ab1f91ac34e1353f95a99c08441e630a221d1cc797b5101848cb2b291b",
+    "libs/filters/src/pf_filter_impl.h": "9e72f71c9acb87c198bae71506793a0df936dc2226f3e1f23979b3f89ef34e41",
+    "libs/filters/src/pf_q_filter_impl.h": "425c79c71cefb1497cb6d6252bb37a4dab138dc62b7725d0ee7f28cd9b4255e9",
+    "libs/filters/src/pf_q_internal.h": "81aaab967e25b6d34c671d565fd7f8e27063067b19fed8a8a0eff9ce88abca40",
+    "libs/filters/src/pf_work_impl.h": "cb5368b1917ab0614ba3724cb487f777e3ac25b5f8d7bc80e5858843f9defa20",
+    "libs/filters/src/q_workspace_impl.h": "9ee0d595d7f48a2b9b1231ca8bdf0e16385a3c941601f749b0fca7eeea3d48d8",
+    "libs/filters/src/ukf.c": "da080f2e332150ca2f799202a16c8d15def8d1d3e6afd010a42973688e71d0eb",
+    "libs/filters/src/ukf_filter_impl.h": "9228d0dbccc62da4687cd53941dac63e2ce2001200cfb21d433e960217a7ee70",
+    "libs/filters/src/ukf_internal.h": "26d8a79a00fc9d697323fca2b448a9e958d79965bad221ced7b82b9b202ab5bc",
+    "libs/filters/src/ukf_q_work_impl.h": "556c4aad42e8cc03788f2cc72f2bf79527bc25133ab352da1d052ee9bf3d577b",
+    "libs/filters/src/ukf_scratch_impl.h": "d004bee2d1eda02f0fbc9e8f0b25b85a01e514071fb63728fb2418a29ff25ee7",
+    "libs/filters/src/ukf_signal_impl.h": "24f8a99ee9fbca98a63d63ac16e324a220f58b58b54984758fde637bc25f9289",
+    "libs/filters/src/ukf_work_impl.h": "58b26da42feb4fe50dd0d7fbde5614b252d1d04fe29a91b2e4f46014cbe8f554",
+    "libs/filters/src/upf_filter_impl.h": "480a718868ed7b3d8aaf65f93acb01caac68bbd1f79f782f62cbee706cc6bafd",
+    "libs/filters/src/upf_q_filter_impl.h": "86101945c4dd234d252e31e9d3bbb4743fad64927f638a523b37c6b7dd1c4b4b",
+    "libs/linears/include/linears.h": "87b3c686bf8b7f8af374679a259e59c58638434972795ecaee2369628b3694a0",
+    "libs/linears/include/linears_decomp.h": "2264527d864bb134a2732075f9ee3a98f02c4906bec622872182059d99c139e5",
+    "libs/linears/include/linears_numeric.h": "ff96c9ffe2f69b1ae2e8f049e3ba6dca1fdf981bee2f68e324e68088f24dc2d1",
+    "libs/linears/include/linears_work.h": "aa11cb67f93c0416c0ad93514978303c20acc3c13576e79820dde791afb21e2b",
+    "libs/linears/src/basic.c": "741439a0dac642efae168731f8cf16d7a423c89581a7613b42d426c3359705a2",
+    "libs/linears/src/basic_float_impl.h": "25a0f50228fb859f31e7cd681e4937776d40b53a1b388e36ce9c10ff1a4c2ebb",
+    "libs/linears/src/basic_q_impl.h": "a923a9c3c3e7505ac90feded5813b12c934c762eba72fb90fe708e4b8ae1f91f",
+    "libs/linears/src/decomp_cholesky.c": "f64441160f172e922ebd0e89f979c9b87964166d751845e29d66caa029bd3df6",
+    "libs/linears/src/decomp_cholesky.inc": "5a2a1f7d75582a7d5b3dd4230a7653720fa76487c483d5d5858183e8c2c469ed",
+    "libs/linears/src/decomp_cleanup.h": "55658815f29fbc4e2e57f817eeaf96f5db543608dd6e14fa3d4291f96a2f557a",
+    "libs/linears/src/decomp_internal.h": "4159d94a761e7d69740d68d410d1248589280eff47af8792cce3d7c2bbf9f45d",
+    "libs/linears/src/decomp_ldlt.c": "0be51aaddc4376813a6e312c85a2cdb29d567fe6c87eaca3d5f3d2a128443308",
+    "libs/linears/src/decomp_ldlt.inc": "00f7a1debf747ce1cbcc1f2e11ca12c57429d1af4015cd6d4c3af4a33f6b8cec",
+    "libs/linears/src/decomp_lu.c": "a83346f154902aa57e008d6c159ef7d2782ed3e3ccdea85a3b9e34c96f4534ac",
+    "libs/linears/src/decomp_lu.inc": "7fab2878f271bd9439eb9064c3f5ab57fb2c50919fa58a6e655cca5f5b3941d3",
+    "libs/linears/src/decomp_qr.c": "6e40c75c4b9ae126ff2dcc74780cb821484589ca5d909c3f77f1e9a88b470c93",
+    "libs/linears/src/decomp_qr.inc": "e4e51f8d5c68bf6838deff13f5cbb94c053d65138007c6352684366208963672",
+    "libs/linears/src/decomp_svd.c": "70fca37caf9642257776b6d2cd024eb61c9f00e976a35a0e079d4baa2c873429",
+    "libs/linears/src/decomp_svd_template.inc": "b724817e2523bc54b1535453482377a44d5dc30af1e1fa76fc5dc729473c7060",
+    "libs/linears/src/decomp_template.h": "373a82e41dc29a19df124b4c0220451ee357dce2cc77d60aa5ba826638b3b74f",
+    "libs/linears/src/decomp_work.c": "70a6b5b4d89cf89cd71a86937dac766b87c3386d1a01030d7417bf58e3e36a1b",
+    "libs/linears/src/numeric.c": "71c7d41f08505ec605225fec3df253bb9719e334b7e90b14c4ac8b538beceb13",
+    "libs/linears/src/numeric_internal.h": "b843ecaf4f7299aeaa29abb58573f0ffffc8b698276ded4010f71d68e4982c40"
+  },
+  "measurement": "compile only; no hardware execution or cycle estimate",
+  "stack_limit": "Single-function compiler frame only, not a transitive call-chain peak or hardware measurement"
+}

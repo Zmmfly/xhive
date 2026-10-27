@@ -21,11 +21,15 @@ there is no separately versioned upstream package:
 | [fieldctrl](fieldctrl/README.md) | Motor-control numerical primitives, VVVF, FOC/SMO, and DTC | `CONFIG_LIBS_ADD_FIELDCTRL=y` (selects linears and filters) |
 
 Each library provides `f32`, `f64`, `q15`, and `q31` APIs. q15/q31 signals are raw
-signed Q1.15/Q1.31 integers without exponent fields; working values and wide
-coefficients use explicit `int64_t` fixed-F31 storage, and that Q computation is
-integer-only. The UKF, PF and UPF of `filters` are the exception: they store every
-array in the signal type and run q15 in float and q31 in double between a single
-widening on entry and a single range-checked narrowing on commit.
+signed Q1.15/Q1.31 integers without exponent fields. The integer `linears` core
+uses explicit `int64_t` fixed-F31 working values where wide coefficients or
+intermediates are required. The UKF, PF and UPF of `filters` retain every
+persistent array as `int16_t`/`int32_t` and use dedicated Q computation paths:
+integer statistics and particle-weight operations, with local float (q15) or
+double (q31) work for callbacks and operations requiring wider range or
+precision. They do not call the complete f32/f64 filter kernels for Q work.
+Their typed Q workspaces separate raw signal staging from floating scratch;
+see [UKF.md](filters/UKF.md) and [PF.md](filters/PF.md) for migration and sizing.
 Matrices contain only `data`, `rows`, and `cols`, replacing the former BFP ABI.
 State and dimension-sized workspace belong to the caller; see each public header
 for capacity, alignment, aliasing, endpoint and range-error contracts. These are

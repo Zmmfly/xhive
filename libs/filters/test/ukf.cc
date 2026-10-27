@@ -3,10 +3,12 @@
 namespace {
 using namespace ukf_test;
 
+template<class A> class UnscentedKernels : public ::testing::Test {};
+TYPED_TEST_SUITE(UnscentedKernels, KernelFormats);
 template<class A> class UnscentedKalman : public ::testing::Test {};
 TYPED_TEST_SUITE(UnscentedKalman, Formats);
 
-TYPED_TEST(UnscentedKalman, WeightsMatchClosedFormAndRejectInvalidParameters) {
+TYPED_TEST(UnscentedKernels, WeightsMatchClosedFormAndRejectInvalidParameters) {
     using A = TypeParam;
     const long double cases[][4] = {{1, 1, 2, 0}, {2, 1, 2, 1}, {3, 0.5L, 0, 0}, {2, 0.25L, 2, -1}, {4, 1, 2, -1}};
     for (const auto& c : cases) {
@@ -14,7 +16,7 @@ TYPED_TEST(UnscentedKalman, WeightsMatchClosedFormAndRejectInvalidParameters) {
         const long double alpha = c[1], beta = c[2], kappa = c[3];
         SCOPED_TRACE(::testing::Message() << "n=" << n << " alpha=" << static_cast<double>(alpha) << " kappa=" << static_cast<double>(kappa));
         typename Ukf<A>::Weights w{};
-        ASSERT_EQ(Ukf<A>::weights(n, work_encode<A>(alpha), work_encode<A>(beta), work_encode<A>(kappa), &w), LINEARS_OK);
+        ASSERT_EQ(UkfKernels<A>::weights(n, work_encode<A>(alpha), work_encode<A>(beta), work_encode<A>(kappa), &w), LINEARS_OK);
         const long double a = work_decode<A>(work_encode<A>(alpha)), b = work_decode<A>(work_encode<A>(beta));
         const long double k = work_decode<A>(work_encode<A>(kappa));
         const long double scale = a * a * (n + k), lambda = scale - n;
@@ -25,16 +27,16 @@ TYPED_TEST(UnscentedKalman, WeightsMatchClosedFormAndRejectInvalidParameters) {
         expect_near<A>(work_decode<A>(w.mean0) + 2 * n * work_decode<A>(w.other), 1);
     }
     typename Ukf<A>::Weights w{}, before = w;
-    EXPECT_EQ(Ukf<A>::weights(2, work_encode<A>(1), work_encode<A>(2), work_encode<A>(0), nullptr), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(Ukf<A>::weights(0, work_encode<A>(1), work_encode<A>(2), work_encode<A>(0), &w), LINEARS_ERROR_DIMENSION);
-    EXPECT_EQ(Ukf<A>::weights(2, work_encode<A>(0), work_encode<A>(2), work_encode<A>(0), &w), LINEARS_ERROR_DOMAIN);
-    EXPECT_EQ(Ukf<A>::weights(2, work_encode<A>(-1), work_encode<A>(2), work_encode<A>(0), &w), LINEARS_ERROR_DOMAIN);
-    EXPECT_EQ(Ukf<A>::weights(2, work_encode<A>(1), work_encode<A>(2), work_encode<A>(-2), &w), LINEARS_ERROR_DOMAIN);
-    EXPECT_EQ(Ukf<A>::weights(2, work_encode<A>(1), work_encode<A>(2), work_encode<A>(-3), &w), LINEARS_ERROR_DOMAIN);
+    EXPECT_EQ(UkfKernels<A>::weights(2, work_encode<A>(1), work_encode<A>(2), work_encode<A>(0), nullptr), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(UkfKernels<A>::weights(0, work_encode<A>(1), work_encode<A>(2), work_encode<A>(0), &w), LINEARS_ERROR_DIMENSION);
+    EXPECT_EQ(UkfKernels<A>::weights(2, work_encode<A>(0), work_encode<A>(2), work_encode<A>(0), &w), LINEARS_ERROR_DOMAIN);
+    EXPECT_EQ(UkfKernels<A>::weights(2, work_encode<A>(-1), work_encode<A>(2), work_encode<A>(0), &w), LINEARS_ERROR_DOMAIN);
+    EXPECT_EQ(UkfKernels<A>::weights(2, work_encode<A>(1), work_encode<A>(2), work_encode<A>(-2), &w), LINEARS_ERROR_DOMAIN);
+    EXPECT_EQ(UkfKernels<A>::weights(2, work_encode<A>(1), work_encode<A>(2), work_encode<A>(-3), &w), LINEARS_ERROR_DOMAIN);
     if constexpr (A::bits == 0) {
         const auto nan = std::numeric_limits<Work<A>>::quiet_NaN();
-        EXPECT_EQ(Ukf<A>::weights(2, nan, work_encode<A>(2), work_encode<A>(0), &w), LINEARS_ERROR_RANGE);
-        EXPECT_EQ(Ukf<A>::weights(2, work_encode<A>(1), nan, work_encode<A>(0), &w), LINEARS_ERROR_RANGE);
+        EXPECT_EQ(UkfKernels<A>::weights(2, nan, work_encode<A>(2), work_encode<A>(0), &w), LINEARS_ERROR_RANGE);
+        EXPECT_EQ(UkfKernels<A>::weights(2, work_encode<A>(1), nan, work_encode<A>(0), &w), LINEARS_ERROR_RANGE);
     }
     EXPECT_EQ(bytes(w), bytes(before));
 }
@@ -191,7 +193,7 @@ TYPED_TEST(UnscentedKalman, AngleResidualAveragesAcrossTheWrapBoundary) {
     wrapped.guards(); naive.guards(); predict_ws.guards(); update_ws.guards();
 }
 
-TYPED_TEST(UnscentedKalman, DecomposedStepsComposeIntoPredictAndAcceptArbitraryWeights) {
+TYPED_TEST(UnscentedKernels, DecomposedStepsComposeIntoPredictAndAcceptArbitraryWeights) {
     using A = TypeParam;
     const std::size_t n = 2, s = 2 * n + 1;
     Model transition{[](const Vec& x) { return Vec{x[0] + 0.1L * x[1], 0.9L * x[1] - 0.05L * x[0] * x[0]}; }};
@@ -217,7 +219,7 @@ TYPED_TEST(UnscentedKalman, DecomposedStepsComposeIntoPredictAndAcceptArbitraryW
     UkfWorkspace<A> mean_ws(FILTERS_UKF_MEAN_STORAGE(s, n), FILTERS_UKF_MEAN_BASIC_BYTES(s, n), 0);
     UkfWorkspace<A> dev_ws(0, FILTERS_UKF_DEVIATIONS_BASIC_BYTES(n), 0);
     UkfWorkspace<A> cov_ws(FILTERS_UKF_WEIGHTED_COVARIANCE_STORAGE(s, n, n), FILTERS_UKF_WEIGHTED_COVARIANCE_BASIC_BYTES(s, n, n), 0);
-    ASSERT_EQ(Ukf<A>::sigma_points(&mean_v, &cov_v, w.scale, &points_v, sigma_ws.view()), LINEARS_OK);
+    ASSERT_EQ(UkfKernels<A>::sigma_points(&mean_v, &cov_v, w.scale, &points_v, sigma_ws.view()), LINEARS_OK);
     {
         /* Rows 1..n and n+1..2n are symmetric about row 0, which is the mean. */
         const Dense pts = decode_work<A>(points_v), center = decode_work<A>(mean_v);
@@ -235,10 +237,10 @@ TYPED_TEST(UnscentedKalman, DecomposedStepsComposeIntoPredictAndAcceptArbitraryW
         for (std::size_t k = 0; k < n * n; ++k)
             expect_near<A>(spread.values[k], work_decode<A>(w.scale) * decode<A>(pv).values[k]);
     }
-    ASSERT_EQ(Ukf<A>::propagate(&points_v, map_callback<A>, &transition, &prop_v), LINEARS_OK);
-    ASSERT_EQ(Ukf<A>::mean(&prop_v, &wm_v, nullptr, nullptr, &out_mean, mean_ws.view()), LINEARS_OK);
-    ASSERT_EQ(Ukf<A>::deviations(&prop_v, &out_mean, nullptr, nullptr, &dev_v, dev_ws.view()), LINEARS_OK);
-    ASSERT_EQ(Ukf<A>::weighted_covariance(&dev_v, &dev_v, &wc_v, &out_cov, cov_ws.view()), LINEARS_OK);
+    ASSERT_EQ(UkfKernels<A>::propagate(&points_v, map_callback<A>, &transition, &prop_v), LINEARS_OK);
+    ASSERT_EQ(UkfKernels<A>::mean(&prop_v, &wm_v, nullptr, nullptr, &out_mean, mean_ws.view()), LINEARS_OK);
+    ASSERT_EQ(UkfKernels<A>::deviations(&prop_v, &out_mean, nullptr, nullptr, &dev_v, dev_ws.view()), LINEARS_OK);
+    ASSERT_EQ(UkfKernels<A>::weighted_covariance(&dev_v, &dev_v, &wc_v, &out_cov, cov_ws.view()), LINEARS_OK);
     Dense expected_p = decode_work<A>(out_cov) + decode<A>(qv);
     ASSERT_EQ(Ukf<A>::predict(&filter.state, map_callback<A>, &transition, nullptr, nullptr, predict_ws.view()), LINEARS_OK);
     expect_matrix<A>(filter.state.estimate, decode_work<A>(out_mean));
@@ -274,7 +276,7 @@ TYPED_TEST(UnscentedKalman, DecomposedStepsComposeIntoPredictAndAcceptArbitraryW
     plain.residual = [](const Vec& a, const Vec& b) { Vec d(a.size()); for (std::size_t i = 0; i < d.size(); ++i) d[i] = a[i] - b[i]; return d; };
     WorkMatrix<A> mean_again(n, 1);
     auto again_v = mean_again.view();
-    ASSERT_EQ(Ukf<A>::mean(&prop_v, &wm_v, residual_callback<A>, &plain, &again_v, mean_ws.view()), LINEARS_OK);
+    ASSERT_EQ(UkfKernels<A>::mean(&prop_v, &wm_v, residual_callback<A>, &plain, &again_v, mean_ws.view()), LINEARS_OK);
     EXPECT_EQ(plain.calls, static_cast<int>(s));
     for (std::size_t j = 0; j < n; ++j)
         expect_near<A>(decode_work<A>(again_v).values[j], decode_work<A>(out_mean).values[j]);
@@ -289,11 +291,11 @@ TYPED_TEST(UnscentedKalman, DecomposedStepsComposeIntoPredictAndAcceptArbitraryW
     UkfWorkspace<A> pf_mean_ws(FILTERS_UKF_MEAN_STORAGE(7, 3), FILTERS_UKF_MEAN_BASIC_BYTES(7, 3), 0);
     UkfWorkspace<A> pf_dev_ws(0, FILTERS_UKF_DEVIATIONS_BASIC_BYTES(3), 0);
     UkfWorkspace<A> pf_cov_ws(FILTERS_UKF_WEIGHTED_COVARIANCE_STORAGE(7, 3, 2), FILTERS_UKF_WEIGHTED_COVARIANCE_BASIC_BYTES(7, 3, 2), 0);
-    ASSERT_EQ(Ukf<A>::mean(&cloud_v, &uniform_v, nullptr, nullptr, &cloud_mean_v, pf_mean_ws.view()), LINEARS_OK);
-    ASSERT_EQ(Ukf<A>::mean(&other_v, &uniform_v, nullptr, nullptr, &other_mean_v, pf_mean_ws.view()), LINEARS_OK);
-    ASSERT_EQ(Ukf<A>::deviations(&cloud_v, &cloud_mean_v, nullptr, nullptr, &cloud_dev_v, pf_dev_ws.view()), LINEARS_OK);
-    ASSERT_EQ(Ukf<A>::deviations(&other_v, &other_mean_v, nullptr, nullptr, &other_dev_v, pf_dev_ws.view()), LINEARS_OK);
-    ASSERT_EQ(Ukf<A>::weighted_covariance(&cloud_dev_v, &other_dev_v, &uniform_v, &cross_v, pf_cov_ws.view()), LINEARS_OK);
+    ASSERT_EQ(UkfKernels<A>::mean(&cloud_v, &uniform_v, nullptr, nullptr, &cloud_mean_v, pf_mean_ws.view()), LINEARS_OK);
+    ASSERT_EQ(UkfKernels<A>::mean(&other_v, &uniform_v, nullptr, nullptr, &other_mean_v, pf_mean_ws.view()), LINEARS_OK);
+    ASSERT_EQ(UkfKernels<A>::deviations(&cloud_v, &cloud_mean_v, nullptr, nullptr, &cloud_dev_v, pf_dev_ws.view()), LINEARS_OK);
+    ASSERT_EQ(UkfKernels<A>::deviations(&other_v, &other_mean_v, nullptr, nullptr, &other_dev_v, pf_dev_ws.view()), LINEARS_OK);
+    ASSERT_EQ(UkfKernels<A>::weighted_covariance(&cloud_dev_v, &other_dev_v, &uniform_v, &cross_v, pf_cov_ws.view()), LINEARS_OK);
     const Dense cloud_d = decode_work<A>(cloud_v), other_d = decode_work<A>(other_v);
     Dense mean_a(3, 1), mean_b(2, 1), expected(3, 2);
     for (std::size_t i = 0; i < 7; ++i) {
@@ -397,6 +399,7 @@ TYPED_TEST(UnscentedKalman, WorkspaceBoundsAliasAndFailureAtomicity) {
     EXPECT_EQ(Ukf<A>::update(&fixture.state, nullptr, map_callback<A>, &observation, nullptr, nullptr, update_ws.view()), LINEARS_ERROR_ARGUMENT);
     for (int part = 0; part < 3; ++part) {
         auto w = predict_ws.view();
+        if (part == 1 && w.basic_bytes == 0) continue;
         if (part == 0) --w.capacity;
         if (part == 1) --w.basic_bytes;
         if (part == 2) --w.decomposition.capacity;
@@ -409,8 +412,10 @@ TYPED_TEST(UnscentedKalman, WorkspaceBoundsAliasAndFailureAtomicity) {
     }
     auto w = predict_ws.view(); w.data = nullptr;
     EXPECT_EQ(Ukf<A>::predict(&fixture.state, map_callback<A>, &transition, nullptr, nullptr, w), LINEARS_ERROR_WORKSPACE);
-    w = predict_ws.view(); w.basic = nullptr;
-    EXPECT_EQ(Ukf<A>::predict(&fixture.state, map_callback<A>, &transition, nullptr, nullptr, w), LINEARS_ERROR_WORKSPACE);
+    if (predict_ws.basic_bytes != 0) {
+        w = predict_ws.view(); w.basic = nullptr;
+        EXPECT_EQ(Ukf<A>::predict(&fixture.state, map_callback<A>, &transition, nullptr, nullptr, w), LINEARS_ERROR_WORKSPACE);
+    }
     w = predict_ws.view(); w.decomposition.data = nullptr;
     EXPECT_EQ(Ukf<A>::predict(&fixture.state, map_callback<A>, &transition, nullptr, nullptr, w), LINEARS_ERROR_WORKSPACE);
     w = predict_ws.view();
@@ -442,11 +447,9 @@ TYPED_TEST(UnscentedKalman, WorkspaceBoundsAliasAndFailureAtomicity) {
     failing_residual.fail_at = 2; failing_residual.failure = LINEARS_ERROR_DOMAIN;
     EXPECT_EQ(Ukf<A>::update(&fixture.state, &zv, map_callback<A>, &observation, residual_callback<A>, &failing_residual, update_ws.view()), LINEARS_ERROR_DOMAIN);
     EXPECT_EQ(observation.calls, 5);
-    if constexpr (A::bits == 0) {
-        transition.nonfinite = true;
-        EXPECT_EQ(Ukf<A>::predict(&fixture.state, map_callback<A>, &transition, nullptr, nullptr, predict_ws.view()), LINEARS_ERROR_RANGE);
-        transition.nonfinite = false;
-    }
+    transition.nonfinite = true;
+    EXPECT_EQ(Ukf<A>::predict(&fixture.state, map_callback<A>, &transition, nullptr, nullptr, predict_ws.view()), LINEARS_ERROR_RANGE);
+    transition.nonfinite = false;
     EXPECT_EQ(fixture.snapshot(), snapshot);
     /* A semidefinite P has no Cholesky factor; an indefinite R fails before callbacks. */
     Matrix<A> zero_p(Dense::identity(2, 0)), indefinite_r(Dense(1, 1, {0}));
@@ -476,23 +479,26 @@ TYPED_TEST(UnscentedKalman, WorkspaceBoundsAliasAndFailureAtomicity) {
     EXPECT_EQ(fixture.snapshot(), snapshot);
     ASSERT_EQ(Ukf<A>::predict(&fixture.state, map_callback<A>, &transition, nullptr, nullptr, predict_ws.view()), LINEARS_OK);
     ASSERT_EQ(Ukf<A>::update(&fixture.state, &zv, map_callback<A>, &observation, nullptr, nullptr, update_ws.view()), LINEARS_OK);
-    /* Kernel-level alias rules: outputs never overlap inputs or scratch. */
-    WorkMatrix<A> points(5, 2), mapped(5, 2);
-    auto points_v = points.view(), mapped_v = mapped.view();
-    EXPECT_EQ(Ukf<A>::propagate(&points_v, map_callback<A>, &transition, &points_v), LINEARS_ERROR_ALIAS);
-    EXPECT_EQ(Ukf<A>::propagate(&points_v, nullptr, &transition, &mapped_v), LINEARS_ERROR_ARGUMENT);
-    auto narrow = mapped_v; narrow.rows = 4;
-    EXPECT_EQ(Ukf<A>::propagate(&points_v, map_callback<A>, &transition, &narrow), LINEARS_ERROR_DIMENSION);
-    UkfWorkspace<A> mean_ws(FILTERS_UKF_MEAN_STORAGE(5, 2), FILTERS_UKF_MEAN_BASIC_BYTES(5, 2), 0);
-    WorkMatrix<A> weights_m(Dense(5, 1, Vec(5, 0.2L)));
-    auto weights_v = weights_m.view();
-    linears_matrix_t into_scratch{mean_ws.view().data, 2, 1};
-    EXPECT_EQ(Ukf<A>::mean(&points_v, &weights_v, nullptr, nullptr, &into_scratch, mean_ws.view()), LINEARS_ERROR_ALIAS);
-    auto short_ws = mean_ws.view(); --short_ws.capacity;
-    WorkMatrix<A> mean_out(2, 1);
-    auto mean_out_v = mean_out.view();
-    EXPECT_EQ(Ukf<A>::mean(&points_v, &weights_v, nullptr, nullptr, &mean_out_v, short_ws), LINEARS_ERROR_WORKSPACE);
-    fixture.guards(); semidefinite.guards(); bad_noise.guards(); predict_ws.guards(); update_ws.guards(); mean_ws.guards();
+    if constexpr (A::bits == 0) {
+        /* Public floating-kernel alias rules; Q work entry points are tested separately. */
+        WorkMatrix<A> points(5, 2), mapped(5, 2);
+        auto points_v = points.view(), mapped_v = mapped.view();
+        EXPECT_EQ(UkfKernels<A>::propagate(&points_v, map_callback<A>, &transition, &points_v), LINEARS_ERROR_ALIAS);
+        EXPECT_EQ(UkfKernels<A>::propagate(&points_v, nullptr, &transition, &mapped_v), LINEARS_ERROR_ARGUMENT);
+        auto narrow = mapped_v; narrow.rows = 4;
+        EXPECT_EQ(UkfKernels<A>::propagate(&points_v, map_callback<A>, &transition, &narrow), LINEARS_ERROR_DIMENSION);
+        UkfWorkspace<A> mean_ws(FILTERS_UKF_MEAN_STORAGE(5, 2), FILTERS_UKF_MEAN_BASIC_BYTES(5, 2), 0);
+        WorkMatrix<A> weights_m(Dense(5, 1, Vec(5, 0.2L)));
+        auto weights_v = weights_m.view();
+        linears_matrix_t into_scratch{mean_ws.view().data, 2, 1};
+        EXPECT_EQ(UkfKernels<A>::mean(&points_v, &weights_v, nullptr, nullptr, &into_scratch, mean_ws.view()), LINEARS_ERROR_ALIAS);
+        auto short_ws = mean_ws.view(); --short_ws.capacity;
+        WorkMatrix<A> mean_out(2, 1);
+        auto mean_out_v = mean_out.view();
+        EXPECT_EQ(UkfKernels<A>::mean(&points_v, &weights_v, nullptr, nullptr, &mean_out_v, short_ws), LINEARS_ERROR_WORKSPACE);
+        mean_ws.guards();
+    }
+    fixture.guards(); semidefinite.guards(); bad_noise.guards(); predict_ws.guards(); update_ws.guards();
 }
 
 TYPED_TEST(UnscentedKalman, FixedSigmaPointsMayLeaveTheSignalIntervalButResultsMayNot) {
@@ -524,10 +530,17 @@ TYPED_TEST(UnscentedKalman, FixedSigmaPointsMayLeaveTheSignalIntervalButResultsM
 TEST(UnscentedKalmanWorkspace, ConstantExpressionsAndOverflowSentinels) {
     static_assert(FILTERS_UKF_SIGMA_COUNT(2) == 5, "2n+1 sigma points");
     static_assert(FILTERS_UKF_PREDICT_STORAGE(2) == 8 * 4 + 8 * 2 + 2, "predict storage");
-    static_assert(FILTERS_UKF_Q_PREDICT_STORAGE(2) == 10 * 4 + 9 * 2 + 2, "Q predict storage");
+    static_assert(FILTERS_UKF_Q_PREDICT_STORAGE(2) == 7 * 4 + 8 * 2, "Q local predict storage");
+    static_assert(FILTERS_UKF_Q_PREDICT_WORK_STORAGE(2) == 4 * 4 + 6 * 2, "Q predict kernel work");
+    static_assert(FILTERS_UKF_Q_PREDICT_SIGNAL_STORAGE(2) == 5 * 2, "Q sigma cloud storage");
     static_assert(FILTERS_UKF_UPDATE_STORAGE(2, 1) == 7 * 4 + 2 + 10 * 2 + 7 * 2 + 5 + 2 + 5 * 2, "update storage");
     static_assert(FILTERS_UKF_UPDATE_STORAGE(1, 3) == 7 + 2 * 9 + 10 * 3 + 7 + 15 + 2 + 3 * 3, "wide update storage");
-    static_assert(FILTERS_UKF_Q_UPDATE_STORAGE(2, 1) == FILTERS_UKF_UPDATE_STORAGE(2, 1) + 4 + 1 + 2 + 1, "Q update storage");
+    static_assert(FILTERS_UKF_Q_UPDATE_STORAGE(2, 1) == 2 * 4 + 2 * 4 + 1 + 3 * 2 + 6 * 2 + 9, "Q local update storage");
+    static_assert(FILTERS_UKF_Q_UPDATE_WORK_STORAGE(2, 1) == 2 * 4 + 3 * 2 + 4 * 2 + 8, "Q update kernel work");
+    static_assert(FILTERS_UKF_Q_UPDATE_SIGNAL_STORAGE(2, 1) == 4 + 5, "Q update signal storage");
+    static_assert(FILTERS_UKF_Q_PREDICT_BASIC_BYTES(2) == 0, "Q statistics do not use floating basic scratch");
+    static_assert(FILTERS_UKF_Q_UPDATE_BASIC_BYTES(1, 3) == 0, "Q update has no basic scratch");
+    static_assert(FILTERS_UKF_Q_UPDATE_DECOMP_STORAGE(1, 3) == 9, "Q triangular solve scratch");
     static_assert(FILTERS_UKF_PREDICT_WORK_STORAGE(2) == 7 * 4 + 7 * 2 + 2, "predict kernel storage");
     static_assert(FILTERS_UKF_PREDICT_STORAGE(2) == FILTERS_UKF_PREDICT_WORK_STORAGE(2) + 2 + 4, "filter adds staging");
     static_assert(FILTERS_UKF_UPDATE_WORK_STORAGE(2, 1) == 6 * 4 + 2 + 10 * 2 + 6 * 2 + 5 + 2 + 5 * 2, "update kernel storage");
@@ -558,7 +571,9 @@ TEST(UnscentedKalmanWorkspace, ConstantExpressionsAndOverflowSentinels) {
     double q31_update[FILTERS_UKF_Q_UPDATE_STORAGE(2, 1)];
     linears_workspace_unit_t basic[LINEARS_WORKSPACE_UNITS(FILTERS_UKF_UPDATE_BASIC_BYTES(2, 1))];
     EXPECT_EQ(sizeof f32_predict / sizeof f32_predict[0], 50u);
-    EXPECT_EQ(sizeof q31_update / sizeof q31_update[0], FILTERS_UKF_UPDATE_STORAGE(2, 1) + 8u);
+    EXPECT_EQ(sizeof q31_update / sizeof q31_update[0], 44u);
+    EXPECT_EQ(FILTERS_UKF_Q_PREDICT_SIGNAL_STORAGE(huge), SIZE_MAX);
+    EXPECT_EQ(FILTERS_UKF_Q_UPDATE_SIGNAL_STORAGE(1, huge), SIZE_MAX);
     EXPECT_EQ(sizeof basic / sizeof basic[0], 10u);
 }
 

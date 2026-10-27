@@ -23,7 +23,7 @@ TYPED_TEST(ParticleKernels, ReweightMatchesLongDoubleOverTwentyTwoNats) {
         }
         WorkMatrix<A> w(weights), e(exponents);
         auto wv = w.view(), ev = e.view();
-        ASSERT_EQ(Pf<A>::reweight(&wv, &ev), LINEARS_OK);
+        ASSERT_EQ(PfKernels<A>::reweight(&wv, &ev), LINEARS_OK);
         const Vec expected = PfReference::reweighted(weights.values, exponents.values);
         long double sum = 0;
         for (std::size_t i = 0; i < 45; ++i) {
@@ -38,16 +38,16 @@ TYPED_TEST(ParticleKernels, ReweightMatchesLongDoubleOverTwentyTwoNats) {
     WorkMatrix<A> negative(Dense(2, 1, {0.5L, -0.25L})), zero(Dense(2, 1, {0, 0})), e(Dense(2, 1, {0, 1}));
     WorkMatrix<A> three(Dense(3, 1, {1, 1, 1}));
     auto nv = negative.view(), zv = zero.view(), ev = e.view(), tv = three.view();
-    EXPECT_EQ(Pf<A>::reweight(&nv, &ev), LINEARS_ERROR_DOMAIN);
-    EXPECT_EQ(Pf<A>::reweight(&zv, &ev), LINEARS_ERROR_DOMAIN);
-    EXPECT_EQ(Pf<A>::reweight(&tv, &ev), LINEARS_ERROR_DIMENSION);
-    EXPECT_EQ(Pf<A>::reweight(&ev, &ev), LINEARS_ERROR_ALIAS);
-    EXPECT_EQ(Pf<A>::reweight(nullptr, &ev), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(PfKernels<A>::reweight(&nv, &ev), LINEARS_ERROR_DOMAIN);
+    EXPECT_EQ(PfKernels<A>::reweight(&zv, &ev), LINEARS_ERROR_DOMAIN);
+    EXPECT_EQ(PfKernels<A>::reweight(&tv, &ev), LINEARS_ERROR_DIMENSION);
+    EXPECT_EQ(PfKernels<A>::reweight(&ev, &ev), LINEARS_ERROR_ALIAS);
+    EXPECT_EQ(PfKernels<A>::reweight(nullptr, &ev), LINEARS_ERROR_ARGUMENT);
     WorkMatrix<A> bad(Dense(2, 1, {1, 1}));
     bad.data[1] = std::numeric_limits<Work<A>>::infinity();
     auto bv = bad.view();
-    EXPECT_EQ(Pf<A>::reweight(&bv, &ev), LINEARS_ERROR_RANGE);
-    EXPECT_EQ(Pf<A>::reweight(&ev, &bv), LINEARS_ERROR_RANGE);
+    EXPECT_EQ(PfKernels<A>::reweight(&bv, &ev), LINEARS_ERROR_RANGE);
+    EXPECT_EQ(PfKernels<A>::reweight(&ev, &bv), LINEARS_ERROR_RANGE);
 }
 
 TYPED_TEST(ParticleKernels, EffectiveSampleSizeClosedForm) {
@@ -114,7 +114,7 @@ TYPED_TEST(ParticleKernels, SystematicResamplingMatchesReferenceAndCounts) {
         const long double uniform = work_decode<A>(work_encode<A>(std::uniform_real_distribution<double>(0, 1)(random)));
         std::vector<std::size_t> indices(count + 1, SIZE_MAX);
         auto wv = w.view();
-        ASSERT_EQ(Pf<A>::resample_indices(&wv, work_encode<A>(uniform), indices.data(), count), LINEARS_OK);
+        ASSERT_EQ(PfKernels<A>::resample_indices(&wv, work_encode<A>(uniform), indices.data(), count), LINEARS_OK);
         EXPECT_EQ(indices.back(), SIZE_MAX);
         indices.pop_back();
         EXPECT_EQ(indices, PfReference::systematic(seen, uniform));
@@ -136,21 +136,21 @@ TYPED_TEST(ParticleKernels, SystematicResamplingMatchesReferenceAndCounts) {
     auto wv = w.view(), zv = zero.view(), nv = negative.view();
     std::vector<std::size_t> indices(3, SIZE_MAX);
     const auto zero_draw = work_encode<A>(0), half = work_encode<A>(0.5L);
-    EXPECT_EQ(Pf<A>::resample_indices(&wv, work_encode<A>(1), indices.data(), 3), LINEARS_ERROR_DOMAIN);
-    EXPECT_EQ(Pf<A>::resample_indices(&wv, work_encode<A>(-0.5L), indices.data(), 3), LINEARS_ERROR_DOMAIN);
-    EXPECT_EQ(Pf<A>::resample_indices(&zv, half, indices.data(), 3), LINEARS_ERROR_DOMAIN);
-    EXPECT_EQ(Pf<A>::resample_indices(&nv, half, indices.data(), 3), LINEARS_ERROR_DOMAIN);
-    EXPECT_EQ(Pf<A>::resample_indices(&wv, half, indices.data(), 2), LINEARS_ERROR_WORKSPACE);
-    EXPECT_EQ(Pf<A>::resample_indices(&wv, half, nullptr, 3), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(Pf<A>::resample_indices(nullptr, half, indices.data(), 3), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(Pf<A>::resample_indices(&wv, std::numeric_limits<Work<A>>::quiet_NaN(), indices.data(), 3), LINEARS_ERROR_RANGE);
+    EXPECT_EQ(PfKernels<A>::resample_indices(&wv, work_encode<A>(1), indices.data(), 3), LINEARS_ERROR_DOMAIN);
+    EXPECT_EQ(PfKernels<A>::resample_indices(&wv, work_encode<A>(-0.5L), indices.data(), 3), LINEARS_ERROR_DOMAIN);
+    EXPECT_EQ(PfKernels<A>::resample_indices(&zv, half, indices.data(), 3), LINEARS_ERROR_DOMAIN);
+    EXPECT_EQ(PfKernels<A>::resample_indices(&nv, half, indices.data(), 3), LINEARS_ERROR_DOMAIN);
+    EXPECT_EQ(PfKernels<A>::resample_indices(&wv, half, indices.data(), 2), LINEARS_ERROR_WORKSPACE);
+    EXPECT_EQ(PfKernels<A>::resample_indices(&wv, half, nullptr, 3), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(PfKernels<A>::resample_indices(nullptr, half, indices.data(), 3), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(PfKernels<A>::resample_indices(&wv, std::numeric_limits<Work<A>>::quiet_NaN(), indices.data(), 3), LINEARS_ERROR_RANGE);
     for (auto index : indices) EXPECT_EQ(index, SIZE_MAX);
-    ASSERT_EQ(Pf<A>::resample_indices(&wv, zero_draw, indices.data(), 3), LINEARS_OK);
+    ASSERT_EQ(PfKernels<A>::resample_indices(&wv, zero_draw, indices.data(), 3), LINEARS_OK);
     EXPECT_EQ(indices, (std::vector<std::size_t>{0, 1, 2}));
     /* A one-hot weight vector copies that particle N times. */
     WorkMatrix<A> hot(Dense(3, 1, {0, 1, 0}));
     auto hv = hot.view();
-    ASSERT_EQ(Pf<A>::resample_indices(&hv, half, indices.data(), 3), LINEARS_OK);
+    ASSERT_EQ(PfKernels<A>::resample_indices(&hv, half, indices.data(), 3), LINEARS_OK);
     EXPECT_EQ(indices, (std::vector<std::size_t>{1, 1, 1}));
 }
 
@@ -161,19 +161,19 @@ TYPED_TEST(ParticleKernels, GatherCopiesRowsAndRejectsBadIndices) {
     WorkMatrix<A> source(points), out(4, 3);
     auto sv = source.view(), ov = out.view();
     const std::size_t indices[4] = {4, 4, 0, 2};
-    ASSERT_EQ(Pf<A>::gather(&sv, indices, 4, &ov), LINEARS_OK);
+    ASSERT_EQ(PfKernels<A>::gather(&sv, indices, 4, &ov), LINEARS_OK);
     const Dense seen = decode_work<A>(sv), result = decode_work<A>(ov);
     for (std::size_t i = 0; i < 4; ++i)
         for (std::size_t j = 0; j < 3; ++j) EXPECT_EQ(result(i, j), seen(indices[i], j));
     const auto before = out.data;
     const std::size_t bad[4] = {0, 5, 1, 1};
-    EXPECT_EQ(Pf<A>::gather(&sv, bad, 4, &ov), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(Pf<A>::gather(&sv, indices, 3, &ov), LINEARS_ERROR_DIMENSION);
-    EXPECT_EQ(Pf<A>::gather(&sv, indices, 0, &ov), LINEARS_ERROR_DIMENSION);
-    EXPECT_EQ(Pf<A>::gather(&sv, nullptr, 4, &ov), LINEARS_ERROR_ARGUMENT);
-    EXPECT_EQ(Pf<A>::gather(&sv, indices, 5, &sv), LINEARS_ERROR_ALIAS);
+    EXPECT_EQ(PfKernels<A>::gather(&sv, bad, 4, &ov), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(PfKernels<A>::gather(&sv, indices, 3, &ov), LINEARS_ERROR_DIMENSION);
+    EXPECT_EQ(PfKernels<A>::gather(&sv, indices, 0, &ov), LINEARS_ERROR_DIMENSION);
+    EXPECT_EQ(PfKernels<A>::gather(&sv, nullptr, 4, &ov), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(PfKernels<A>::gather(&sv, indices, 5, &sv), LINEARS_ERROR_ALIAS);
     auto narrow = ov; narrow.cols = 2;
-    EXPECT_EQ(Pf<A>::gather(&sv, indices, 4, &narrow), LINEARS_ERROR_DIMENSION);
+    EXPECT_EQ(PfKernels<A>::gather(&sv, indices, 4, &narrow), LINEARS_ERROR_DIMENSION);
     EXPECT_EQ(out.data, before);
 }
 
@@ -188,7 +188,7 @@ TYPED_TEST(ParticleKernels, PerturbAddsFactoredDrawsInPlaceOrToACopy) {
     WorkMatrix<A> source(points), factor_m(factor), out(4, 2);
     auto sv = source.view(), fv = factor_m.view(), ov = out.view();
     UkfWorkspace<A> ws(FILTERS_PF_PERTURB_STORAGE(2), FILTERS_PF_PERTURB_BASIC_BYTES(2), 0);
-    ASSERT_EQ(Pf<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &ov, ws.view()), LINEARS_OK);
+    ASSERT_EQ(PfKernels<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &ov, ws.view()), LINEARS_OK);
     EXPECT_EQ(sampler.calls, 4);
     const Dense seen = decode_work<A>(sv), seen_factor = decode_work<A>(fv);
     const std::vector<Vec> draws = sampler.take_log();
@@ -202,28 +202,28 @@ TYPED_TEST(ParticleKernels, PerturbAddsFactoredDrawsInPlaceOrToACopy) {
     expect_work<A>(ov, expected);
     /* In place yields the same rows from the same scripted draws. */
     sampler.scripted = 0;
-    ASSERT_EQ(Pf<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &sv, ws.view()), LINEARS_OK);
+    ASSERT_EQ(PfKernels<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &sv, ws.view()), LINEARS_OK);
     EXPECT_EQ(source.data, out.data);
     auto partial = sv;
     partial.data = static_cast<Work<A>*>(sv.data) + 1;
     partial.rows = 3;
     auto narrow = sv;
     narrow.rows = 3;
-    EXPECT_EQ(Pf<A>::perturb(&narrow, &fv, sample_callback<A>, &sampler, &partial, ws.view()), LINEARS_ERROR_ALIAS);
-    EXPECT_EQ(Pf<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &narrow, ws.view()), LINEARS_ERROR_DIMENSION);
-    EXPECT_EQ(Pf<A>::perturb(&sv, &fv, nullptr, &sampler, &ov, ws.view()), LINEARS_ERROR_ARGUMENT);
+    EXPECT_EQ(PfKernels<A>::perturb(&narrow, &fv, sample_callback<A>, &sampler, &partial, ws.view()), LINEARS_ERROR_ALIAS);
+    EXPECT_EQ(PfKernels<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &narrow, ws.view()), LINEARS_ERROR_DIMENSION);
+    EXPECT_EQ(PfKernels<A>::perturb(&sv, &fv, nullptr, &sampler, &ov, ws.view()), LINEARS_ERROR_ARGUMENT);
     auto wrong = fv; wrong.cols = 1;
-    EXPECT_EQ(Pf<A>::perturb(&sv, &wrong, sample_callback<A>, &sampler, &ov, ws.view()), LINEARS_ERROR_DIMENSION);
+    EXPECT_EQ(PfKernels<A>::perturb(&sv, &wrong, sample_callback<A>, &sampler, &ov, ws.view()), LINEARS_ERROR_DIMENSION);
     auto short_ws = ws.view(); --short_ws.capacity;
-    EXPECT_EQ(Pf<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &ov, short_ws), LINEARS_ERROR_WORKSPACE);
+    EXPECT_EQ(PfKernels<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &ov, short_ws), LINEARS_ERROR_WORKSPACE);
     short_ws = ws.view(); --short_ws.basic_bytes;
-    EXPECT_EQ(Pf<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &ov, short_ws), LINEARS_ERROR_WORKSPACE);
+    EXPECT_EQ(PfKernels<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &ov, short_ws), LINEARS_ERROR_WORKSPACE);
     sampler.calls = 0; sampler.fail_at = 2; sampler.failure = LINEARS_ERROR_SINGULAR;
-    EXPECT_EQ(Pf<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &ov, ws.view()), LINEARS_ERROR_SINGULAR);
+    EXPECT_EQ(PfKernels<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &ov, ws.view()), LINEARS_ERROR_SINGULAR);
     EXPECT_EQ(sampler.calls, 3);
     sampler.fail_at = -1;
     sampler.nonfinite = true;
-    EXPECT_EQ(Pf<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &ov, ws.view()), LINEARS_ERROR_RANGE);
+    EXPECT_EQ(PfKernels<A>::perturb(&sv, &fv, sample_callback<A>, &sampler, &ov, ws.view()), LINEARS_ERROR_RANGE);
     sampler.nonfinite = false;
     ws.guards();
 }
@@ -238,7 +238,7 @@ TYPED_TEST(ParticleKernels, GaussianExponentMatchesEigen) {
     auto dv = d.view(), lv = l.view(), ov = out.view();
     UkfWorkspace<A> ws(FILTERS_PF_GAUSSIAN_EXPONENT_STORAGE(3), FILTERS_PF_GAUSSIAN_EXPONENT_BASIC_BYTES,
                        FILTERS_PF_GAUSSIAN_EXPONENT_DECOMP_STORAGE(3));
-    ASSERT_EQ(Pf<A>::gaussian_exponent(&dv, &lv, &ov, ws.view()), LINEARS_OK);
+    ASSERT_EQ(PfKernels<A>::gaussian_exponent(&dv, &lv, &ov, ws.view()), LINEARS_OK);
     /* The reference uses L*L^T of the quantized factor, exactly what the kernel saw. */
     const Dense seen_l = decode_work<A>(lv), seen_d = decode_work<A>(dv);
     std::vector<Vec> rows(6, Vec(3));
@@ -254,13 +254,13 @@ TYPED_TEST(ParticleKernels, GaussianExponentMatchesEigen) {
     singular(0, 0) = 0; /* A zero row guarantees an exact zero pivot under any pivoting. */
     WorkMatrix<A> s(singular);
     auto sv = s.view();
-    EXPECT_EQ(Pf<A>::gaussian_exponent(&dv, &sv, &ov, ws.view()), LINEARS_ERROR_SINGULAR);
+    EXPECT_EQ(PfKernels<A>::gaussian_exponent(&dv, &sv, &ov, ws.view()), LINEARS_ERROR_SINGULAR);
     auto wrong = ov; wrong.rows = 5;
-    EXPECT_EQ(Pf<A>::gaussian_exponent(&dv, &lv, &wrong, ws.view()), LINEARS_ERROR_DIMENSION);
+    EXPECT_EQ(PfKernels<A>::gaussian_exponent(&dv, &lv, &wrong, ws.view()), LINEARS_ERROR_DIMENSION);
     linears_matrix_t into_input{dv.data, 6, 1};
-    EXPECT_EQ(Pf<A>::gaussian_exponent(&dv, &lv, &into_input, ws.view()), LINEARS_ERROR_ALIAS);
+    EXPECT_EQ(PfKernels<A>::gaussian_exponent(&dv, &lv, &into_input, ws.view()), LINEARS_ERROR_ALIAS);
     auto short_ws = ws.view(); --short_ws.decomposition.capacity;
-    EXPECT_EQ(Pf<A>::gaussian_exponent(&dv, &lv, &ov, short_ws), LINEARS_ERROR_WORKSPACE);
+    EXPECT_EQ(PfKernels<A>::gaussian_exponent(&dv, &lv, &ov, short_ws), LINEARS_ERROR_WORKSPACE);
     ws.guards();
 }
 
@@ -497,7 +497,7 @@ TYPED_TEST(ParticleFilter, FixedParticlesMustStayInsideTheSignalInterval) {
         ASSERT_GT(x_start + 1.5L * sigma, 1);
         const auto untouched = fixture.snapshot();
         EXPECT_EQ(Pf<A>::init(&fixture.state, &xv, &pv, &qv, &rv, sample_callback<A>, &sampler, init_ws.view()), LINEARS_ERROR_RANGE);
-        EXPECT_EQ(sampler.calls, 2);
+        EXPECT_EQ(sampler.calls, 1); // Q fails at the first out-of-range particle.
         EXPECT_EQ(fixture.snapshot(), untouched);
         sampler.script = {{0.4L}, {0}};
         sampler.scripted = 0;
@@ -508,7 +508,7 @@ TYPED_TEST(ParticleFilter, FixedParticlesMustStayInsideTheSignalInterval) {
         sampler.script = {{0}};
         const auto snapshot = fixture.snapshot();
         EXPECT_EQ(Pf<A>::predict(&fixture.state, map_callback<A>, &shift, sample_callback<A>, &sampler, predict_ws.view()), LINEARS_ERROR_RANGE);
-        EXPECT_EQ(shift.calls, 2);
+        EXPECT_EQ(shift.calls, 1);
         EXPECT_EQ(fixture.snapshot(), snapshot);
         ASSERT_EQ(Pf<A>::predict(&fixture.state, map_callback<A>, &keep, sample_callback<A>, &sampler, predict_ws.view()), LINEARS_OK);
         ASSERT_EQ(Pf<A>::estimate(&fixture.state, nullptr, nullptr, &mv, &cv, estimate_ws.view()), LINEARS_OK);
@@ -560,6 +560,7 @@ TYPED_TEST(ParticleFilter, InitValidationCapacitiesAndAliasRules) {
     EXPECT_EQ(Pf<A>::init(&oversized, &xv, &pv, &qv, &rv, sample, &sampler, ws.view()), LINEARS_ERROR_SIZE);
     for (int part = 0; part < 3; ++part) {
         auto w = ws.view();
+        if (part == 1 && w.basic_bytes == 0) continue;
         if (part == 0) --w.capacity;
         if (part == 1) --w.basic_bytes;
         if (part == 2) --w.decomposition.capacity;
@@ -647,15 +648,26 @@ TYPED_TEST(ParticleFilter, WorkspaceBoundsAliasAndFailureAtomicity) {
         auto u = update_ws.view();
         auto e = estimate_ws.view();
         if (part == 0) { --w.capacity; --u.capacity; --e.capacity; }
-        if (part == 1) { --w.basic_bytes; --u.basic_bytes; --e.basic_bytes; }
+        if (part == 1) {
+            if (w.basic_bytes != 0) --w.basic_bytes;
+            if (u.basic_bytes != 0) --u.basic_bytes;
+            if (e.basic_bytes != 0) --e.basic_bytes;
+        }
         if (part == 2) { --w.decomposition.capacity; --u.decomposition.capacity; }
-        EXPECT_EQ(Pf<A>::predict(&fixture.state, map_callback<A>, &transition, sample, &sampler, w), LINEARS_ERROR_WORKSPACE);
-        EXPECT_EQ(Pf<A>::update(&fixture.state, &zv, map_callback<A>, &observation, nullptr, nullptr, u), LINEARS_ERROR_WORKSPACE);
-        if (part < 2) EXPECT_EQ(Pf<A>::estimate(&fixture.state, nullptr, nullptr, &mv, &cv, e), LINEARS_ERROR_WORKSPACE);
+        if (part != 1 || predict_ws.basic_bytes != 0)
+            EXPECT_EQ(Pf<A>::predict(&fixture.state, map_callback<A>, &transition, sample, &sampler, w), LINEARS_ERROR_WORKSPACE);
+        if (part != 1 || update_ws.basic_bytes != 0)
+            EXPECT_EQ(Pf<A>::update(&fixture.state, &zv, map_callback<A>, &observation, nullptr, nullptr, u), LINEARS_ERROR_WORKSPACE);
+        if (part == 0 || (part == 1 && estimate_ws.basic_bytes != 0))
+            EXPECT_EQ(Pf<A>::estimate(&fixture.state, nullptr, nullptr, &mv, &cv, e), LINEARS_ERROR_WORKSPACE);
     }
     if constexpr (A::bits != 0) {
-        auto short_resample = resample_ws.view(); --short_resample.capacity;
-        EXPECT_EQ(Pf<A>::resample(&fixture.state, work_encode<A>(0.5L), indices.data(), count, short_resample), LINEARS_ERROR_WORKSPACE);
+        auto short_resample = resample_ws.view();
+        if (short_resample.capacity != 0 || short_resample.signal_capacity != 0) {
+            if (short_resample.capacity != 0) --short_resample.capacity;
+            else --short_resample.signal_capacity;
+            EXPECT_EQ(Pf<A>::resample(&fixture.state, work_encode<A>(0.5L), indices.data(), count, short_resample), LINEARS_ERROR_WORKSPACE);
+        }
     }
     EXPECT_EQ(Pf<A>::resample(&fixture.state, work_encode<A>(0.5L), indices.data(), count - 1, resample_ws.view()), LINEARS_ERROR_WORKSPACE);
     auto w = predict_ws.view(); w.data = nullptr;
@@ -686,11 +698,11 @@ TYPED_TEST(ParticleFilter, WorkspaceBoundsAliasAndFailureAtomicity) {
     /* Callback, sampler and residual failures are reported without commits. */
     transition.fail_at = 3;
     EXPECT_EQ(Pf<A>::predict(&fixture.state, map_callback<A>, &transition, sample, &sampler, predict_ws.view()), LINEARS_ERROR_NO_CONVERGENCE);
-    EXPECT_EQ(transition.calls, 4); EXPECT_EQ(sampler.calls, 0);
-    transition.fail_at = -1; transition.calls = 0;
+    EXPECT_EQ(transition.calls, 4); EXPECT_EQ(sampler.calls, A::bits ? 3 : 0);
+    transition.fail_at = -1; transition.calls = 0; sampler.calls = 0;
     sampler.fail_at = 2; sampler.failure = LINEARS_ERROR_SINGULAR;
     EXPECT_EQ(Pf<A>::predict(&fixture.state, map_callback<A>, &transition, sample, &sampler, predict_ws.view()), LINEARS_ERROR_SINGULAR);
-    EXPECT_EQ(transition.calls, static_cast<int>(count)); EXPECT_EQ(sampler.calls, 3);
+    EXPECT_EQ(transition.calls, A::bits ? 3 : static_cast<int>(count)); EXPECT_EQ(sampler.calls, 3);
     sampler.fail_at = -1; sampler.calls = 0; transition.calls = 0;
     observation.fail_at = 0; observation.failure = LINEARS_ERROR_SINGULAR;
     EXPECT_EQ(Pf<A>::update(&fixture.state, &zv, map_callback<A>, &observation, nullptr, nullptr, update_ws.view()), LINEARS_ERROR_SINGULAR);
@@ -699,17 +711,15 @@ TYPED_TEST(ParticleFilter, WorkspaceBoundsAliasAndFailureAtomicity) {
     failing_residual.residual = [](const Vec& a, const Vec&) { return a; };
     failing_residual.fail_at = 2; failing_residual.failure = LINEARS_ERROR_DOMAIN;
     EXPECT_EQ(Pf<A>::update(&fixture.state, &zv, map_callback<A>, &observation, residual_callback<A>, &failing_residual, update_ws.view()), LINEARS_ERROR_DOMAIN);
-    EXPECT_EQ(observation.calls, static_cast<int>(count)); EXPECT_EQ(failing_residual.calls, 3);
+    EXPECT_EQ(observation.calls, A::bits ? 3 : static_cast<int>(count)); EXPECT_EQ(failing_residual.calls, 3);
     observation.calls = 0; failing_residual.calls = 0; failing_residual.fail_at = 1;
     EXPECT_EQ(Pf<A>::estimate(&fixture.state, residual_callback<A>, &failing_residual, &mv, &cv, estimate_ws.view()), LINEARS_ERROR_DOMAIN);
-    if constexpr (A::bits == 0) {
-        transition.nonfinite = true;
-        EXPECT_EQ(Pf<A>::predict(&fixture.state, map_callback<A>, &transition, sample, &sampler, predict_ws.view()), LINEARS_ERROR_RANGE);
-        transition.nonfinite = false; transition.calls = 0;
-        sampler.nonfinite = true;
-        EXPECT_EQ(Pf<A>::predict(&fixture.state, map_callback<A>, &transition, sample, &sampler, predict_ws.view()), LINEARS_ERROR_RANGE);
-        sampler.nonfinite = false; transition.calls = 0; sampler.calls = 0;
-    }
+    transition.nonfinite = true;
+    EXPECT_EQ(Pf<A>::predict(&fixture.state, map_callback<A>, &transition, sample, &sampler, predict_ws.view()), LINEARS_ERROR_RANGE);
+    transition.nonfinite = false; transition.calls = 0;
+    sampler.nonfinite = true;
+    EXPECT_EQ(Pf<A>::predict(&fixture.state, map_callback<A>, &transition, sample, &sampler, predict_ws.view()), LINEARS_ERROR_RANGE);
+    sampler.nonfinite = false; transition.calls = 0; sampler.calls = 0;
     EXPECT_EQ(fixture.snapshot(), snapshot);
     EXPECT_EQ(std::make_pair(mean_out.data, covariance_out.data), outputs);
     /* Noise is re-validated on every call and factored before any callback. */
@@ -748,27 +758,37 @@ TEST(ParticleFilterWorkspace, ConstantExpressionsAndOverflowSentinels) {
     static_assert(FILTERS_PF_GAUSSIAN_EXPONENT_BASIC_BYTES == sizeof(linears_workspace_unit_t), "exponent basic");
     static_assert(FILTERS_PF_GAUSSIAN_EXPONENT_DECOMP_STORAGE(3) == 12, "exponent solve scratch");
     static_assert(FILTERS_PF_PREDICT_STORAGE(10, 2) == 20 + 4 + 4, "predict storage");
-    static_assert(FILTERS_PF_Q_INIT_STORAGE(10, 2) == 28 + 4 + 2, "Q init storage");
-    static_assert(FILTERS_PF_Q_PREDICT_STORAGE(10, 2) == 28 + 4 + 2, "Q predict storage");
+    static_assert(FILTERS_PF_Q_INIT_STORAGE(10, 2) == 2 * 4 + 3 * 2, "Q local init storage");
+    static_assert(FILTERS_PF_Q_PREDICT_STORAGE(10, 2) == 2 * 4 + 3 * 2, "Q local predict storage");
+    static_assert(FILTERS_PF_Q_INIT_SIGNAL_STORAGE(10, 2) == 20, "Q init raw particle stage");
+    static_assert(FILTERS_PF_Q_PREDICT_SIGNAL_STORAGE(10, 2) == 20, "Q predict raw particle stage");
     static_assert(FILTERS_PF_PREDICT_BASIC_BYTES(2) == 2 * sizeof(linears_workspace_unit_t), "predict basic");
     static_assert(FILTERS_PF_PREDICT_DECOMP_STORAGE(2) == 4, "predict Cholesky");
     static_assert(FILTERS_PF_UPDATE_STORAGE(10, 3) == 60 + 20 + 9 + 3, "update storage");
-    static_assert(FILTERS_PF_Q_UPDATE_STORAGE(10, 2, 3) == 92 + 2 + 9 + 3, "Q update storage");
+    static_assert(FILTERS_PF_Q_UPDATE_STORAGE(10, 2, 3) == 10 + 2 * 9 + 2 + 3 * 3, "Q local update storage");
+    static_assert(FILTERS_PF_Q_UPDATE_SIGNAL_STORAGE(10, 2, 3) == 10, "Q raw weight stage");
     static_assert(FILTERS_PF_UPDATE_BASIC_BYTES(3) == 3 * sizeof(linears_workspace_unit_t), "update basic");
     static_assert(FILTERS_PF_UPDATE_DECOMP_STORAGE(3) == 12, "update solve scratch");
-    static_assert(FILTERS_PF_Q_RESAMPLE_STORAGE(10) == 10, "Q resample storage");
+    static_assert(FILTERS_PF_Q_RESAMPLE_STORAGE(10) == 0, "Q resample needs no floating scratch");
+    static_assert(FILTERS_PF_Q_RESAMPLE_SIGNAL_STORAGE(10) == 0, "Q resample gathers in place");
     static_assert(FILTERS_PF_ESTIMATE_STORAGE(10, 2) == 60 + 8 + 2, "estimate storage");
     static_assert(FILTERS_PF_ESTIMATE_BASIC_BYTES(10, 2) == 20 * sizeof(linears_workspace_unit_t), "estimate basic");
     static_assert(FILTERS_PF_ESTIMATE_BASIC_BYTES(1, 3) == 9 * sizeof(linears_workspace_unit_t), "estimate basic, n dominates");
-    static_assert(FILTERS_PF_Q_ESTIMATE_STORAGE(10, 2) == 70 + 20 + 10, "Q estimate storage");
+    static_assert(FILTERS_PF_Q_ESTIMATE_STORAGE(10, 2) == 4 + 3 * 2, "Q local estimate storage");
+    static_assert(FILTERS_PF_Q_ESTIMATE_SIGNAL_STORAGE(10, 2) == 4 + 2 * 2, "Q raw estimate stage");
+    static_assert(FILTERS_PF_Q_PREDICT_BASIC_BYTES(2) == 0, "Q predict has no basic scratch");
+    static_assert(FILTERS_PF_Q_UPDATE_BASIC_BYTES(3) == 0, "Q update has no basic scratch");
+    static_assert(FILTERS_PF_Q_ESTIMATE_BASIC_BYTES(10, 2) == 2 * 4 * sizeof(linears_workspace_unit_t), "Q exact moment accumulators");
+    static_assert(FILTERS_PF_Q_UPDATE_DECOMP_STORAGE(3) == 9, "Q triangular solve storage");
     const std::size_t huge = SIZE_MAX / 2 + 1;
     EXPECT_EQ(FILTERS_PF_PERTURB_STORAGE(huge), SIZE_MAX);
     EXPECT_EQ(FILTERS_PF_PREDICT_STORAGE(huge, 2), SIZE_MAX);
     EXPECT_EQ(FILTERS_PF_PREDICT_STORAGE(2, huge), SIZE_MAX);
-    EXPECT_EQ(FILTERS_PF_Q_INIT_STORAGE(huge, 2), SIZE_MAX);
+    EXPECT_EQ(FILTERS_PF_Q_INIT_STORAGE(huge, 2), 14u);
+    EXPECT_EQ(FILTERS_PF_Q_INIT_SIGNAL_STORAGE(huge, 2), SIZE_MAX);
     EXPECT_EQ(FILTERS_PF_UPDATE_STORAGE(huge, 1), SIZE_MAX);
     EXPECT_EQ(FILTERS_PF_Q_UPDATE_STORAGE(1, 1, huge), SIZE_MAX);
-    EXPECT_EQ(FILTERS_PF_Q_RESAMPLE_STORAGE(huge), huge);
+    EXPECT_EQ(FILTERS_PF_Q_RESAMPLE_STORAGE(huge), 0u);
     EXPECT_EQ(FILTERS_PF_ESTIMATE_STORAGE(huge, 1), SIZE_MAX);
     EXPECT_EQ(FILTERS_PF_ESTIMATE_BASIC_BYTES(huge, 1), SIZE_MAX);
     EXPECT_EQ(FILTERS_PF_Q_ESTIMATE_STORAGE(1, huge), SIZE_MAX);
@@ -777,7 +797,7 @@ TEST(ParticleFilterWorkspace, ConstantExpressionsAndOverflowSentinels) {
     double q31_update[FILTERS_PF_Q_UPDATE_STORAGE(10, 2, 3)];
     linears_workspace_unit_t basic[LINEARS_WORKSPACE_UNITS(FILTERS_PF_ESTIMATE_BASIC_BYTES(1, 3))];
     EXPECT_EQ(sizeof predict / sizeof predict[0], 28u);
-    EXPECT_EQ(sizeof q31_update / sizeof q31_update[0], 106u);
+    EXPECT_EQ(sizeof q31_update / sizeof q31_update[0], 39u);
     EXPECT_EQ(sizeof basic / sizeof basic[0], 9u);
 }
 

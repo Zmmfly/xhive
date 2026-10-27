@@ -9,20 +9,27 @@
 namespace pf_test {
 using namespace ukf_test;
 
-/* The kernels exist for f32/f64 only; q15 filters run on the f32 kernels and
- * q31 on f64, with their own raw effective sample size. */
+/* Floating public kernels are distinct from the raw-signal filter paths. */
+template<class A> struct PfKernels;
+#define PF_KERNEL_TEST_API(tag) \
+template<> struct PfKernels<tag> { \
+    static constexpr auto perturb = filters_pf_##tag##_perturb; \
+    static constexpr auto gaussian_exponent = filters_pf_##tag##_gaussian_exponent; \
+    static constexpr auto reweight = filters_pf_##tag##_reweight; \
+    static constexpr auto resample_indices = filters_pf_##tag##_resample_indices; \
+    static constexpr auto gather = filters_pf_##tag##_gather; \
+};
+PF_KERNEL_TEST_API(f32)
+PF_KERNEL_TEST_API(f64)
+#undef PF_KERNEL_TEST_API
+
 template<class A> struct Pf;
-#define PF_TEST_API(tag, kernel) \
+#define PF_TEST_API(tag, callback) \
 template<> struct Pf<tag> { \
     using State = filters_pf_##tag##_t; \
-    using Workspace = filters_ukf_##kernel##_workspace_t; \
-    using Sample = filters_pf_##kernel##_sample_fn; \
-    static constexpr auto perturb = filters_pf_##kernel##_perturb; \
-    static constexpr auto gaussian_exponent = filters_pf_##kernel##_gaussian_exponent; \
-    static constexpr auto reweight = filters_pf_##kernel##_reweight; \
+    using Workspace = filters_ukf_##tag##_workspace_t; \
+    using Sample = filters_pf_##callback##_sample_fn; \
     static constexpr auto effective_sample_size = filters_pf_##tag##_effective_sample_size; \
-    static constexpr auto resample_indices = filters_pf_##kernel##_resample_indices; \
-    static constexpr auto gather = filters_pf_##kernel##_gather; \
     static constexpr auto init = filters_pf_##tag##_init; \
     static constexpr auto predict = filters_pf_##tag##_predict; \
     static constexpr auto update = filters_pf_##tag##_update; \
@@ -34,8 +41,6 @@ PF_TEST_API(f64, f64)
 PF_TEST_API(q15, f32)
 PF_TEST_API(q31, f64)
 #undef PF_TEST_API
-
-using KernelFormats = ::testing::Types<f32, f64>;
 
 /* Standard-normal draws from a seeded generator or a fixed script; every draw
  * is logged as the kernel saw it (after working-format quantization) so a
@@ -72,9 +77,7 @@ template<class A> linears_status_t sample_callback(linears_matrix_t *out, void *
     encode_vector<A>(draw, out);
     for (auto& value : draw) value = work_decode<A>(work_encode<A>(value));
     sampler->log.push_back(draw);
-    if constexpr (A::bits == 0) {
-        if (sampler->nonfinite) static_cast<Work<A>*>(out->data)[0] = std::numeric_limits<Work<A>>::quiet_NaN();
-    }
+    if (sampler->nonfinite) static_cast<Work<A>*>(out->data)[0] = std::numeric_limits<Work<A>>::quiet_NaN();
     return LINEARS_OK;
 }
 
@@ -123,22 +126,30 @@ template<class A> struct PfState {
 
 template<class A> UkfWorkspace<A> pf_init_workspace(std::size_t count, std::size_t n) {
     return UkfWorkspace<A>(A::bits ? FILTERS_PF_Q_INIT_STORAGE(count, n) : FILTERS_PF_PREDICT_STORAGE(count, n),
-                           FILTERS_PF_PREDICT_BASIC_BYTES(n), FILTERS_PF_PREDICT_DECOMP_STORAGE(n));
+                           A::bits ? FILTERS_PF_Q_PREDICT_BASIC_BYTES(n) : FILTERS_PF_PREDICT_BASIC_BYTES(n),
+                           FILTERS_PF_PREDICT_DECOMP_STORAGE(n),
+                           A::bits ? FILTERS_PF_Q_INIT_SIGNAL_STORAGE(count, n) : 0);
 }
 template<class A> UkfWorkspace<A> pf_predict_workspace(std::size_t count, std::size_t n) {
     return UkfWorkspace<A>(A::bits ? FILTERS_PF_Q_PREDICT_STORAGE(count, n) : FILTERS_PF_PREDICT_STORAGE(count, n),
-                           FILTERS_PF_PREDICT_BASIC_BYTES(n), FILTERS_PF_PREDICT_DECOMP_STORAGE(n));
+                           A::bits ? FILTERS_PF_Q_PREDICT_BASIC_BYTES(n) : FILTERS_PF_PREDICT_BASIC_BYTES(n),
+                           FILTERS_PF_PREDICT_DECOMP_STORAGE(n),
+                           A::bits ? FILTERS_PF_Q_PREDICT_SIGNAL_STORAGE(count, n) : 0);
 }
 template<class A> UkfWorkspace<A> pf_update_workspace(std::size_t count, std::size_t n, std::size_t m) {
     return UkfWorkspace<A>(A::bits ? FILTERS_PF_Q_UPDATE_STORAGE(count, n, m) : FILTERS_PF_UPDATE_STORAGE(count, m),
-                           FILTERS_PF_UPDATE_BASIC_BYTES(m), FILTERS_PF_UPDATE_DECOMP_STORAGE(m));
+                           A::bits ? FILTERS_PF_Q_UPDATE_BASIC_BYTES(m) : FILTERS_PF_UPDATE_BASIC_BYTES(m),
+                           A::bits ? FILTERS_PF_Q_UPDATE_DECOMP_STORAGE(m) : FILTERS_PF_UPDATE_DECOMP_STORAGE(m),
+                           A::bits ? FILTERS_PF_Q_UPDATE_SIGNAL_STORAGE(count, n, m) : 0);
 }
 template<class A> UkfWorkspace<A> pf_resample_workspace(std::size_t count) {
-    return UkfWorkspace<A>(A::bits ? FILTERS_PF_Q_RESAMPLE_STORAGE(count) : 0, 0, 0);
+    return UkfWorkspace<A>(A::bits ? FILTERS_PF_Q_RESAMPLE_STORAGE(count) : 0, 0, 0,
+                           A::bits ? FILTERS_PF_Q_RESAMPLE_SIGNAL_STORAGE(count) : 0);
 }
 template<class A> UkfWorkspace<A> pf_estimate_workspace(std::size_t count, std::size_t n) {
     return UkfWorkspace<A>(A::bits ? FILTERS_PF_Q_ESTIMATE_STORAGE(count, n) : FILTERS_PF_ESTIMATE_STORAGE(count, n),
-                           FILTERS_PF_ESTIMATE_BASIC_BYTES(count, n), 0);
+                           A::bits ? FILTERS_PF_Q_ESTIMATE_BASIC_BYTES(count, n) : FILTERS_PF_ESTIMATE_BASIC_BYTES(count, n), 0,
+                           A::bits ? FILTERS_PF_Q_ESTIMATE_SIGNAL_STORAGE(count, n) : 0);
 }
 
 /* Independent long-double bootstrap particle filter driven by logged draws. */

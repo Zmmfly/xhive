@@ -1,0 +1,388 @@
+{
+  "revision": "470206ba1c553e533bed28ea5a547dfd71b11357",
+  "source_mode": "git-archive",
+  "compiler": "arm-none-eabi-gcc (15:14.2.rel1-1) 14.2.1 20241119\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+  "commands": [
+    [
+      "arm-none-eabi-gcc",
+      "-std=c99",
+      "-mcpu=cortex-m4",
+      "-mthumb",
+      "-mfloat-abi=soft",
+      "-O3",
+      "-DNDEBUG",
+      "-fno-fast-math",
+      "-ffunction-sections",
+      "-fdata-sections",
+      "-fstack-usage",
+      "-I${SOURCE}/libs/filters/include",
+      "-I${SOURCE}/libs/linears/include",
+      "-c",
+      "${SOURCE}/libs/filters/src/ukf.c",
+      "-o",
+      "${BUILD}/m4-soft/ukf.o"
+    ],
+    [
+      "arm-none-eabi-gcc",
+      "-std=c99",
+      "-mcpu=cortex-m4",
+      "-mthumb",
+      "-mfloat-abi=soft",
+      "-O3",
+      "-DNDEBUG",
+      "-fno-fast-math",
+      "-ffunction-sections",
+      "-fdata-sections",
+      "-fstack-usage",
+      "-I${SOURCE}/libs/filters/include",
+      "-I${SOURCE}/libs/linears/include",
+      "-c",
+      "${SOURCE}/libs/filters/src/pf.c",
+      "-o",
+      "${BUILD}/m4-soft/pf.o"
+    ],
+    [
+      "arm-none-eabi-gcc",
+      "-std=c99",
+      "-mcpu=cortex-m4",
+      "-mthumb",
+      "-mfloat-abi=hard",
+      "-mfpu=fpv4-sp-d16",
+      "-O3",
+      "-DNDEBUG",
+      "-fno-fast-math",
+      "-ffunction-sections",
+      "-fdata-sections",
+      "-fstack-usage",
+      "-I${SOURCE}/libs/filters/include",
+      "-I${SOURCE}/libs/linears/include",
+      "-c",
+      "${SOURCE}/libs/filters/src/ukf.c",
+      "-o",
+      "${BUILD}/m4-hard/ukf.o"
+    ],
+    [
+      "arm-none-eabi-gcc",
+      "-std=c99",
+      "-mcpu=cortex-m4",
+      "-mthumb",
+      "-mfloat-abi=hard",
+      "-mfpu=fpv4-sp-d16",
+      "-O3",
+      "-DNDEBUG",
+      "-fno-fast-math",
+      "-ffunction-sections",
+      "-fdata-sections",
+      "-fstack-usage",
+      "-I${SOURCE}/libs/filters/include",
+      "-I${SOURCE}/libs/linears/include",
+      "-c",
+      "${SOURCE}/libs/filters/src/pf.c",
+      "-o",
+      "${BUILD}/m4-hard/pf.o"
+    ]
+  ],
+  "measurement": "compile only; no hardware execution or cycle estimate",
+  "q_to_floating_kernel_edges": {
+    "m4-soft": [
+      [
+        "filters_ukf_q15_predict",
+        "filters_ukf_f32_predict_work"
+      ],
+      [
+        "filters_ukf_q15_update",
+        "filters_ukf_f32_update_work"
+      ],
+      [
+        "filters_ukf_q31_predict",
+        "filters_ukf_f64_predict_work"
+      ],
+      [
+        "filters_ukf_q31_update",
+        "filters_ukf_f64_update_work"
+      ],
+      [
+        "filters_upf_q15_step",
+        "filters_ukf_f32_predict_work"
+      ],
+      [
+        "filters_upf_q15_step",
+        "filters_ukf_f32_update_work"
+      ],
+      [
+        "filters_upf_q31_step",
+        "filters_ukf_f64_predict_work"
+      ],
+      [
+        "filters_upf_q31_step",
+        "filters_ukf_f64_update_work"
+      ]
+    ],
+    "m4-hard": [
+      [
+        "filters_ukf_q15_predict",
+        "filters_ukf_f32_predict_work"
+      ],
+      [
+        "filters_ukf_q15_update",
+        "filters_ukf_f32_update_work"
+      ],
+      [
+        "filters_ukf_q31_predict",
+        "filters_ukf_f64_predict_work"
+      ],
+      [
+        "filters_ukf_q31_update",
+        "filters_ukf_f64_update_work"
+      ],
+      [
+        "filters_upf_q15_step",
+        "filters_ukf_f32_predict_work"
+      ],
+      [
+        "filters_upf_q15_step",
+        "filters_ukf_f32_update_work"
+      ],
+      [
+        "filters_upf_q31_step",
+        "filters_ukf_f64_predict_work"
+      ],
+      [
+        "filters_upf_q31_step",
+        "filters_ukf_f64_update_work"
+      ]
+    ]
+  },
+  "entry_stack_frames": {
+    "m4-soft": {
+      "filters_ukf_f32_predict_work": {
+        "bytes": 856,
+        "classification": "static"
+      },
+      "filters_ukf_f32_update_work": {
+        "bytes": 1048,
+        "classification": "static"
+      },
+      "filters_ukf_f64_predict_work": {
+        "bytes": 888,
+        "classification": "static"
+      },
+      "filters_ukf_f64_update_work": {
+        "bytes": 1120,
+        "classification": "static"
+      },
+      "filters_ukf_f32_predict": {
+        "bytes": 520,
+        "classification": "static"
+      },
+      "filters_ukf_f32_update": {
+        "bytes": 576,
+        "classification": "static"
+      },
+      "filters_ukf_f64_predict": {
+        "bytes": 520,
+        "classification": "static"
+      },
+      "filters_ukf_f64_update": {
+        "bytes": 576,
+        "classification": "static"
+      },
+      "filters_ukf_q15_predict": {
+        "bytes": 536,
+        "classification": "static"
+      },
+      "filters_ukf_q15_update": {
+        "bytes": 608,
+        "classification": "static"
+      },
+      "filters_ukf_q31_predict": {
+        "bytes": 544,
+        "classification": "static"
+      },
+      "filters_ukf_q31_update": {
+        "bytes": 608,
+        "classification": "static"
+      },
+      "filters_pf_f32_predict": {
+        "bytes": 520,
+        "classification": "static"
+      },
+      "filters_pf_f32_update": {
+        "bytes": 568,
+        "classification": "static"
+      },
+      "filters_pf_f32_estimate": {
+        "bytes": 544,
+        "classification": "static"
+      },
+      "filters_upf_f32_step": {
+        "bytes": 912,
+        "classification": "static"
+      },
+      "filters_pf_f64_predict": {
+        "bytes": 520,
+        "classification": "static"
+      },
+      "filters_pf_f64_update": {
+        "bytes": 584,
+        "classification": "static"
+      },
+      "filters_pf_f64_estimate": {
+        "bytes": 544,
+        "classification": "static"
+      },
+      "filters_upf_f64_step": {
+        "bytes": 952,
+        "classification": "static"
+      },
+      "filters_pf_q15_predict": {
+        "bytes": 528,
+        "classification": "static"
+      },
+      "filters_pf_q15_update": {
+        "bytes": 576,
+        "classification": "static"
+      },
+      "filters_pf_q15_estimate": {
+        "bytes": 560,
+        "classification": "static"
+      },
+      "filters_upf_q15_step": {
+        "bytes": 920,
+        "classification": "static"
+      },
+      "filters_pf_q31_predict": {
+        "bytes": 536,
+        "classification": "static"
+      },
+      "filters_pf_q31_update": {
+        "bytes": 576,
+        "classification": "static"
+      },
+      "filters_pf_q31_estimate": {
+        "bytes": 568,
+        "classification": "static"
+      },
+      "filters_upf_q31_step": {
+        "bytes": 952,
+        "classification": "static"
+      }
+    },
+    "m4-hard": {
+      "filters_ukf_f32_predict_work": {
+        "bytes": 840,
+        "classification": "static"
+      },
+      "filters_ukf_f32_update_work": {
+        "bytes": 1064,
+        "classification": "static"
+      },
+      "filters_ukf_f64_predict_work": {
+        "bytes": 888,
+        "classification": "static"
+      },
+      "filters_ukf_f64_update_work": {
+        "bytes": 1104,
+        "classification": "static"
+      },
+      "filters_ukf_f32_predict": {
+        "bytes": 520,
+        "classification": "static"
+      },
+      "filters_ukf_f32_update": {
+        "bytes": 576,
+        "classification": "static"
+      },
+      "filters_ukf_f64_predict": {
+        "bytes": 520,
+        "classification": "static"
+      },
+      "filters_ukf_f64_update": {
+        "bytes": 576,
+        "classification": "static"
+      },
+      "filters_ukf_q15_predict": {
+        "bytes": 544,
+        "classification": "static"
+      },
+      "filters_ukf_q15_update": {
+        "bytes": 616,
+        "classification": "static"
+      },
+      "filters_ukf_q31_predict": {
+        "bytes": 560,
+        "classification": "static"
+      },
+      "filters_ukf_q31_update": {
+        "bytes": 632,
+        "classification": "static"
+      },
+      "filters_pf_f32_predict": {
+        "bytes": 504,
+        "classification": "static"
+      },
+      "filters_pf_f32_update": {
+        "bytes": 560,
+        "classification": "static"
+      },
+      "filters_pf_f32_estimate": {
+        "bytes": 544,
+        "classification": "static"
+      },
+      "filters_upf_f32_step": {
+        "bytes": 928,
+        "classification": "static"
+      },
+      "filters_pf_f64_predict": {
+        "bytes": 528,
+        "classification": "static"
+      },
+      "filters_pf_f64_update": {
+        "bytes": 592,
+        "classification": "static"
+      },
+      "filters_pf_f64_estimate": {
+        "bytes": 544,
+        "classification": "static"
+      },
+      "filters_upf_f64_step": {
+        "bytes": 984,
+        "classification": "static"
+      },
+      "filters_pf_q15_predict": {
+        "bytes": 536,
+        "classification": "static"
+      },
+      "filters_pf_q15_update": {
+        "bytes": 576,
+        "classification": "static"
+      },
+      "filters_pf_q15_estimate": {
+        "bytes": 568,
+        "classification": "static"
+      },
+      "filters_upf_q15_step": {
+        "bytes": 944,
+        "classification": "static"
+      },
+      "filters_pf_q31_predict": {
+        "bytes": 544,
+        "classification": "static"
+      },
+      "filters_pf_q31_update": {
+        "bytes": 576,
+        "classification": "static"
+      },
+      "filters_pf_q31_estimate": {
+        "bytes": 576,
+        "classification": "static"
+      },
+      "filters_upf_q31_step": {
+        "bytes": 984,
+        "classification": "static"
+      }
+    }
+  },
+  "stack_limit": "Compiler-reported single-function frame only; not call-chain maximum or hardware stack measurement.",
+  "host_counter_access": "perf stat -e cycles,instructions -- true failed: perf_event_paranoid=4. No privileges or system settings changed."
+}

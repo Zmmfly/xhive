@@ -1,4 +1,4 @@
-/* Signal-format particle filters; included by pf.c once per filter tag. */
+/* Floating particle filters; the Q filters have dedicated integer kernels. */
 #define U_JOIN_INNER(a, b) a##b
 #define U_JOIN(a, b) U_JOIN_INNER(a, b)
 #define U_API(name) U_JOIN(U_JOIN(filters_pf_, U_TAG), U_JOIN(_, name))
@@ -15,21 +15,12 @@
 #define U_TAKE(rows, cols) U_WORK_LOCAL(take)(&cursor, (rows), (cols))
 #define U_BASIC workspace.basic, workspace.basic_bytes
 #include "ukf_signal_impl.h"
-#if U_FIXED
-#define U_INIT_STORAGE FILTERS_PF_Q_INIT_STORAGE
-#define U_PREDICT_STORAGE FILTERS_PF_Q_PREDICT_STORAGE
-#define U_UPDATE_STORAGE(N, n, m) FILTERS_PF_Q_UPDATE_STORAGE((N), (n), (m))
-#define U_RESAMPLE_STORAGE FILTERS_PF_Q_RESAMPLE_STORAGE
-#define U_ESTIMATE_STORAGE FILTERS_PF_Q_ESTIMATE_STORAGE
-#define U_NORMALIZE(weights) U_TRY(U_LOCAL(normalize)(weights))
-#else
 #define U_INIT_STORAGE FILTERS_PF_PREDICT_STORAGE
 #define U_PREDICT_STORAGE FILTERS_PF_PREDICT_STORAGE
 #define U_UPDATE_STORAGE(N, n, m) FILTERS_PF_UPDATE_STORAGE((N), (m))
 #define U_RESAMPLE_STORAGE(N) ((size_t)0)
 #define U_ESTIMATE_STORAGE FILTERS_PF_ESTIMATE_STORAGE
 #define U_NORMALIZE(weights) ((void)0)
-#endif
 
 /* The four arrays of an already registered state object. */
 static linears_status_t U_LOCAL(arrays)(ukf_spans_t *spans, const U_STATE *state,
@@ -59,120 +50,39 @@ static linears_status_t U_LOCAL(state)(ukf_spans_t *spans, const U_STATE *state,
     return U_LOCAL(arrays)(spans, state, particles, states, measurements);
 }
 
-/* Equal weights: 1/N for floating weights, the raw maximum for Q weights. */
+/* Floating weights sum to one; the native Q implementation is separate. */
 static void U_LOCAL(reset_weights)(linears_matrix_t *weights)
 {
     size_t i;
     U_SIGNAL *w = (U_SIGNAL *)weights->data;
-#if U_FIXED
-    const U_SIGNAL value = U_SIGNAL_MAX;
-#else
     const U_SIGNAL value = (U_SIGNAL)1 / (U_SIGNAL)weights->rows;
-#endif
     for (i = 0; i < weights->rows; ++i) w[i] = value;
 }
 
-/* The weights as the kernels read them: raw values widened into scratch at
- * the cursor, or the floating vector itself. */
 static linears_matrix_t U_LOCAL(load_weights)(const linears_matrix_t *weights, U_WORK **cursor)
 {
-#if U_FIXED
-    return U_JOIN(ukf_import_, U_TAG)(weights, cursor);
-#else
     (void)cursor;
     return *weights;
-#endif
 }
 
-/* A writable working copy of the weights carved from the cursor. */
 static linears_matrix_t U_LOCAL(stage_weights)(const linears_matrix_t *weights, U_WORK **cursor)
 {
-#if U_FIXED
-    return U_JOIN(ukf_import_, U_TAG)(weights, cursor);
-#else
     linears_matrix_t staged = U_WORK_LOCAL(take)(cursor, weights->rows, 1);
     memcpy(staged.data, weights->data, weights->rows * sizeof(U_WORK));
     return staged;
-#endif
 }
 
-/* Commit normalized working weights. Q weights are rescaled so the largest
- * becomes the raw maximum: a sum-normalized vector would waste the fixed
- * range for large N, and every consumer divides the common scale out. */
 static void U_LOCAL(store_weights)(linears_matrix_t *staged, linears_matrix_t *weights)
 {
-#if U_FIXED
-    U_WORK *w = (U_WORK *)staged->data, largest = w[0];
-    size_t i;
-    for (i = 1; i < staged->rows; ++i)
-        if (w[i] > largest) largest = w[i];
-    for (i = 0; i < staged->rows; ++i) w[i] /= largest;
-#endif
     U_STORE(staged, weights);
 }
 
-#if U_FIXED
-/* Widened raw weights carry an arbitrary common scale; moments need a distribution. */
-static linears_status_t U_LOCAL(normalize)(linears_matrix_t *weights)
-{
-    U_WORK *w = (U_WORK *)weights->data, sum = (U_WORK)0;
-    size_t i;
-    for (i = 0; i < weights->rows; ++i) sum += w[i];
-    if (sum == 0) return LINEARS_ERROR_DOMAIN;
-    for (i = 0; i < weights->rows; ++i) w[i] /= sum;
-    return LINEARS_OK;
-}
-#endif
-
-/* Map every particle through fn into the rows of out. Q particles are
- * widened one at a time into a row carved from the cursor. */
 static linears_status_t U_LOCAL(propagate)(const linears_matrix_t *particles, U_FN fn, void *context,
                                            linears_matrix_t *out, U_WORK **cursor)
 {
-#if U_FIXED
-    linears_status_t status;
-    linears_matrix_t row = U_WORK_LOCAL(take)(cursor, particles->cols, 1), result;
-    size_t i;
-    for (i = 0; i < particles->rows; ++i) {
-        U_JOIN(ukf_widen_, U_TAG)((const U_SIGNAL *)particles->data + i * particles->cols, particles->cols,
-                                  (U_WORK *)row.data);
-        result = U_WORK_LOCAL(row)(out, i);
-        U_TRY(fn(&row, &result, context));
-        U_TRY(U_JOIN(ukf_finite_, U_KERNEL)(&result));
-    }
-    return LINEARS_OK;
-#else
     (void)cursor;
     return U_UKF_API(propagate)(particles, fn, context, out);
-#endif
 }
-
-#if U_FIXED
-linears_status_t U_API(effective_sample_size)(const linears_matrix_t *weights, U_WORK *out)
-{
-    linears_status_t status;
-    ukf_spans_t spans;
-    const U_SIGNAL *w;
-    U_WORK sum = (U_WORK)0, squares = (U_WORK)0, value;
-    size_t count, i;
-    if (out == NULL) return LINEARS_ERROR_ARGUMENT;
-    spans.count = 0;
-    U_TRY(ukf_matrix(&spans, weights, 0, 1, sizeof(U_SIGNAL), U_ALIGNOF(U_SIGNAL), UKF_INPUT));
-    w = (const U_SIGNAL *)weights->data;
-    count = weights->rows;
-    for (i = 0; i < count; ++i)
-        if (w[i] < 0) return LINEARS_ERROR_DOMAIN;
-    /* The ratio is scale-free, so the raw integers serve unscaled. */
-    for (i = 0; i < count; ++i) {
-        value = (U_WORK)w[i];
-        sum += value;
-        squares += value * value;
-    }
-    if (sum == 0) return LINEARS_ERROR_DOMAIN;
-    *out = sum * sum / squares;
-    return LINEARS_OK;
-}
-#endif
 
 linears_status_t U_API(init)(U_STATE *state, const linears_matrix_t *mean, const linears_matrix_t *covariance,
                              const linears_matrix_t *process_noise, const linears_matrix_t *measurement_noise,

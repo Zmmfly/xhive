@@ -26,23 +26,35 @@ inline Dense dense_matrix(const EigenMatrix& value) {
                  Vec(value.data(), value.data() + value.size()));
 }
 
-/* UKF entry points per signal format; q15 runs on the f32 kernels, q31 on f64. */
+using KernelFormats = ::testing::Types<f32, f64>;
+using FixedFormats = ::testing::Types<q15, q31>;
+
+/* Public floating kernels are tested only as floating kernels. Q filters have
+ * their own predict_work/update_work entry points and typed workspace. */
+template<class A> struct UkfKernels;
+#define UKF_KERNEL_TEST_API(tag) \
+template<> struct UkfKernels<tag> { \
+    static constexpr auto weights = filters_ukf_##tag##_weights; \
+    static constexpr auto sigma_points = filters_ukf_##tag##_sigma_points; \
+    static constexpr auto propagate = filters_ukf_##tag##_propagate; \
+    static constexpr auto mean = filters_ukf_##tag##_mean; \
+    static constexpr auto deviations = filters_ukf_##tag##_deviations; \
+    static constexpr auto weighted_covariance = filters_ukf_##tag##_weighted_covariance; \
+};
+UKF_KERNEL_TEST_API(f32)
+UKF_KERNEL_TEST_API(f64)
+#undef UKF_KERNEL_TEST_API
+
 template<class A> struct Ukf;
-#define UKF_TEST_API(tag, kernel) \
+#define UKF_TEST_API(tag, callback) \
 template<> struct Ukf<tag> { \
     using State = filters_ukf_##tag##_t; \
-    using Weights = filters_ukf_##kernel##_weights_t; \
-    using Workspace = filters_ukf_##kernel##_workspace_t; \
-    using Fn = filters_ukf_##kernel##_fn; \
-    using Residual = filters_ukf_##kernel##_residual_fn; \
-    static constexpr auto weights = filters_ukf_##kernel##_weights; \
-    static constexpr auto sigma_points = filters_ukf_##kernel##_sigma_points; \
-    static constexpr auto propagate = filters_ukf_##kernel##_propagate; \
-    static constexpr auto mean = filters_ukf_##kernel##_mean; \
-    static constexpr auto deviations = filters_ukf_##kernel##_deviations; \
-    static constexpr auto weighted_covariance = filters_ukf_##kernel##_weighted_covariance; \
-    static constexpr auto predict_work = filters_ukf_##kernel##_predict_work; \
-    static constexpr auto update_work = filters_ukf_##kernel##_update_work; \
+    using Weights = filters_ukf_##callback##_weights_t; \
+    using Workspace = filters_ukf_##tag##_workspace_t; \
+    using Fn = filters_ukf_##callback##_fn; \
+    using Residual = filters_ukf_##callback##_residual_fn; \
+    static constexpr auto predict_work = filters_ukf_##tag##_predict_work; \
+    static constexpr auto update_work = filters_ukf_##tag##_update_work; \
     static constexpr auto init = filters_ukf_##tag##_init; \
     static constexpr auto predict = filters_ukf_##tag##_predict; \
     static constexpr auto update = filters_ukf_##tag##_update; \
@@ -85,7 +97,8 @@ template<class A> struct WorkMatrix {
     linears_matrix_t view() { return {data.data(), rows, cols}; }
 };
 
-/* Test callbacks compute in long double; production never converts. */
+/* Independent test models compute in long double, then convert only at the
+ * public callback boundary (float for f32/q15, double for f64/q31). */
 struct Model {
     explicit Model(std::function<Vec(const Vec&)> m = {}) : map(std::move(m)) {}
     std::function<Vec(const Vec&)> map;
@@ -111,9 +124,7 @@ template<class A> linears_status_t map_callback(const linears_matrix_t *in, line
     auto *model = static_cast<Model*>(context);
     if (model->calls++ == model->fail_at) return model->failure;
     encode_vector<A>(model->map(decode_vector<A>(in)), out);
-    if constexpr (A::bits == 0) {
-        if (model->nonfinite) static_cast<Work<A>*>(out->data)[0] = std::numeric_limits<Work<A>>::quiet_NaN();
-    }
+    if (model->nonfinite) static_cast<Work<A>*>(out->data)[0] = std::numeric_limits<Work<A>>::quiet_NaN();
     return LINEARS_OK;
 }
 template<class A> linears_status_t residual_callback(const linears_matrix_t *a, const linears_matrix_t *b,
@@ -121,6 +132,7 @@ template<class A> linears_status_t residual_callback(const linears_matrix_t *a, 
     auto *model = static_cast<Model*>(context);
     if (model->calls++ == model->fail_at) return model->failure;
     encode_vector<A>(model->residual(decode_vector<A>(a), decode_vector<A>(b)), out);
+    if (model->nonfinite) static_cast<Work<A>*>(out->data)[0] = std::numeric_limits<Work<A>>::quiet_NaN();
     return LINEARS_OK;
 }
 
@@ -153,33 +165,52 @@ template<class A> struct UkfState {
 
 template<class A> struct UkfWorkspace {
     using W = Work<A>;
-    std::size_t data_count, basic_bytes, decomp_count;
+    using Raw = typename A::Raw;
+    std::size_t data_count, basic_bytes, decomp_count, signal_count;
     std::vector<W> data;
     std::vector<linears_workspace_unit_t> basic;
     std::vector<W> decomp;
-    UkfWorkspace(std::size_t count, std::size_t bytes_, std::size_t decomposition)
-        : data_count(count), basic_bytes(bytes_), decomp_count(decomposition),
+    std::vector<Raw> signal;
+    UkfWorkspace(std::size_t count, std::size_t bytes_, std::size_t decomposition,
+                 std::size_t signals = 0)
+        : data_count(count), basic_bytes(bytes_), decomp_count(decomposition), signal_count(signals),
           data(count + 2, static_cast<W>(-23456)), basic(LINEARS_WORKSPACE_UNITS(bytes_) + 2),
-          decomp(decomposition + 2, static_cast<W>(-34567)) {
+          decomp(decomposition + 2, static_cast<W>(-34567)), signal(signals + 2, static_cast<Raw>(-12345)) {
         std::memset(basic.data(), 0x35, basic.size() * sizeof(basic[0]));
     }
     static UkfWorkspace predict(std::size_t n) {
         return UkfWorkspace(A::bits ? FILTERS_UKF_Q_PREDICT_STORAGE(n) : FILTERS_UKF_PREDICT_STORAGE(n),
-                            FILTERS_UKF_PREDICT_BASIC_BYTES(n), FILTERS_UKF_PREDICT_DECOMP_STORAGE(n));
+                            A::bits ? FILTERS_UKF_Q_PREDICT_BASIC_BYTES(n) : FILTERS_UKF_PREDICT_BASIC_BYTES(n),
+                            A::bits ? FILTERS_UKF_Q_PREDICT_DECOMP_STORAGE(n) : FILTERS_UKF_PREDICT_DECOMP_STORAGE(n),
+                            A::bits ? FILTERS_UKF_Q_PREDICT_SIGNAL_STORAGE(n) : 0);
     }
     static UkfWorkspace update(std::size_t n, std::size_t m) {
         return UkfWorkspace(A::bits ? FILTERS_UKF_Q_UPDATE_STORAGE(n, m) : FILTERS_UKF_UPDATE_STORAGE(n, m),
-                            FILTERS_UKF_UPDATE_BASIC_BYTES(n, m), FILTERS_UKF_UPDATE_DECOMP_STORAGE(n, m));
+                            A::bits ? FILTERS_UKF_Q_UPDATE_BASIC_BYTES(n, m) : FILTERS_UKF_UPDATE_BASIC_BYTES(n, m),
+                            A::bits ? FILTERS_UKF_Q_UPDATE_DECOMP_STORAGE(n, m) : FILTERS_UKF_UPDATE_DECOMP_STORAGE(n, m),
+                            A::bits ? FILTERS_UKF_Q_UPDATE_SIGNAL_STORAGE(n, m) : 0);
     }
     typename Ukf<A>::Workspace view() {
-        return {data.data() + 1, data_count, basic.data() + 1, basic_bytes,
-                {decomp_count ? decomp.data() + 1 : nullptr, decomp_count}};
+        if constexpr (A::bits != 0) {
+            return {data_count ? data.data() + 1 : nullptr, data_count,
+                    basic_bytes ? basic.data() + 1 : nullptr, basic_bytes,
+                    {decomp_count ? decomp.data() + 1 : nullptr, decomp_count},
+                    signal_count ? signal.data() + 1 : nullptr, signal_count};
+        } else {
+            return {data_count ? data.data() + 1 : nullptr, data_count,
+                    basic_bytes ? basic.data() + 1 : nullptr, basic_bytes,
+                    {decomp_count ? decomp.data() + 1 : nullptr, decomp_count}};
+        }
     }
     void guards() const {
         EXPECT_EQ(data.front(), static_cast<W>(-23456)); EXPECT_EQ(data.back(), static_cast<W>(-23456));
         EXPECT_EQ(decomp.front(), static_cast<W>(-34567)); EXPECT_EQ(decomp.back(), static_cast<W>(-34567));
+        EXPECT_EQ(signal.front(), static_cast<Raw>(-12345)); EXPECT_EQ(signal.back(), static_cast<Raw>(-12345));
         for (auto c : bytes(basic.front())) EXPECT_EQ(c, 0x35);
-        for (auto c : bytes(basic.back())) EXPECT_EQ(c, 0x35);
+        /* Check every byte beyond the advertised size, including unit padding. */
+        const auto *raw = reinterpret_cast<const unsigned char*>(basic.data() + 1);
+        const std::size_t available = (basic.size() - 1) * sizeof(basic[0]);
+        for (std::size_t i = basic_bytes; i < available; ++i) EXPECT_EQ(raw[i], 0x35) << i;
     }
 };
 

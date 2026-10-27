@@ -6,9 +6,11 @@ The model is the one of [UKF.md](UKF.md): `x_next = f(x) + w`, `z = h(x) + v`
 with `cov(w) = Q` (n-by-n), `cov(v) = R` (m-by-m), caller callbacks `f`, `h`
 and optional residual callbacks for angle-like components. Instead of one
 Gaussian, a filter keeps N particles `x_i` (one n-vector per row) with
-normalized weights `w_i`; the posterior is the weighted cloud. The library has
-no random generator: callers own one and hand over standard-normal draws
-through a sampler callback and a uniform draw to `resample`.
+normalized weights `w_i`; the posterior is the weighted cloud. The equations
+below use normalized masses; raw Q weights represent the same distribution
+up to a common scale. The library has no random generator: callers own one
+and hand over standard-normal draws through a sampler callback and a uniform
+draw to `resample`.
 
 ### Bootstrap particle filter (`filters_pf.h`)
 
@@ -22,9 +24,10 @@ resample  systematic: targets (u+i)/N*sum w, u ~ U[0,1); x_i = x_{idx[i]}; w_i =
 estimate  xhat = mean(X, w, residual)  P = sum_i w_i*(x_i (-) xhat)*(x_i (-) xhat)^T
 ```
 
-`(-)` is the residual: plain subtraction or the caller's callback. `estimate`
-reuses the UKF kernels `mean`, `deviations` and `weighted_covariance`, so the
-residual-aware mean is the same center-relative pass as the UKF's
+`(-)` is the residual: plain subtraction or the caller's callback. Floating
+`estimate` reuses the UKF kernels `mean`, `deviations` and
+`weighted_covariance`; Q uses dedicated integer moment accumulation. Both
+use the same center-relative residual-aware mean as the UKF
 (`xhat = x_0 + sum_i w_i*(x_i (-) x_0)`). Resampling is left to the caller so
 the threshold is explicit: call `effective_sample_size` after `update` and
 `resample` when it falls below the chosen fraction of N. `resample` also
@@ -53,12 +56,14 @@ Derivation: `q(xhat) = N(xhat; M, C) = exp(-xi^T xi / 2) / ((2 pi)^(n/2) prod_j 
 because `xhat - M = L*xi` and `(L*xi)^T C^-1 (L*xi) = xi^T xi`. The Gaussian
 normalizers of `R` and `Q` are constant across particles and drop out of the
 normalized weights; `sqrt(det C_i) = prod_j L_i[j][j]` does not and is kept.
-Inside the implementation the determinant factor is applied as the ratio
-`prod_j L_i[j][j] / L_0[j][j]` to particle 0 so that the weight products stay
-near one instead of being scaled by tiny absolute determinants before
-normalization; the normalized result is the same. `resample` gathers
-particles and covariances together; `estimate` and `effective_sample_size`
-are the PF functions applied to the embedded `base`.
+The floating implementation applies the determinant factor as the ratio
+`prod_j (L_i[j][j] / L_0[j][j])` to particle 0, avoiding tiny absolute
+products before normalization. The Q implementation instead subtracts
+`sum_j log(L_i[j][j])` from each particle's combined exponent and passes it
+to the Q reweighting path. Both retain the proposal-determinant correction;
+it must not be dropped as though every proposal had the same covariance.
+`resample` gathers particles and covariances together; `estimate` and
+`effective_sample_size` are the PF functions applied to the embedded `base`.
 
 ### Source and reasoning
 
@@ -74,18 +79,20 @@ are the PF functions applied to the embedded `base`.
   Particle Filter*, NIPS 13, 2000: a UKF per particle as the proposal, the
   weight `likelihood * prior / proposal`, and per-particle covariances that
   are resampled with their particles.
-- The shift by `min e` before `exp` is the usual log-sum-exp stabilization;
-  the best particle always receives `exp(0) = 1` before normalization, so no
-  weight set underflows to zero in floating point unless every weight was
-  zero already.
+- The shift by `min e` before `exp` stabilizes relative likelihoods without
+  changing the normalized distribution. The Q path selects that minimum
+  among particles with nonzero incoming weight, so a zero-mass particle
+  cannot determine the shift or cause an unnecessary exponential overflow.
 
 ## Ownership and contracts
 
 All storage is caller-owned: the state object, its arrays (particles N-by-n,
 weights N-by-1, Q, R, and for the UPF the N-by-(n*n) covariances) with
-explicit element capacities, and three scratch arrays. `init` fills the
-arrays but never changes shapes, addresses or capacities; Q and R sources may
-exactly alias their destination or be the state's own descriptor. There is no
+explicit element capacities, and typed scratch arrays. Q workspaces have
+raw `signal` staging in addition to `data`, `basic` and `decomposition`.
+`init` fills the arrays but never changes shapes, addresses or capacities;
+Q and R sources may exactly alias their destination or be the state's own
+descriptor. There is no
 allocation, I/O, recursion, variable-length array, mutable global state or
 random generator. Serialize calls sharing a state or scratch; independent
 instances are reentrant.
@@ -108,24 +115,24 @@ therefore rejected, unlike in the UKF where only `R` is factored. New
 particles, weights and covariances are staged in scratch and committed by a
 copy after the last fallible operation, so a failing callback, sampler,
 residual or Cholesky leaves the state byte-identical; a nonfinite floating
-callback or sampler output fails with `RANGE`. The exceptions are the
-weight-vector kernels themselves: `reweight` may leave a partially modified
-vector on failure, which the filters avoid by reweighting a staged copy.
+callback or sampler output fails with `RANGE`. The public floating
+`reweight` kernel may leave its weight vector partially modified on failure;
+filter transactions keep weight work in private scratch until commit.
 
 `resample` writes `indices[0..N)` and the state only on success; the kernel
 `resample_indices` likewise writes nothing on failure. Indices are
 nondecreasing and every particle is copied `floor(N*w_i)` or `ceil(N*w_i)`
 times. Because the indices are nondecreasing, the rows are gathered in
 place (a forward pass for sources above the destination, a backward pass for
-sources below), so `resample` needs no staging scratch in f32/f64. A zero
+sources below), so `resample` needs no staging scratch in any format. A zero
 weight sum, a negative weight, or a uniform draw outside `[0,1)` fails with
 `DOMAIN`.
 
 ## Kernels
 
-The steps are public working-format kernels (tags `f32` and `f64`; the q15
-filters run on `f32`, q31 on `f64`), one point per row, so other particle
-schemes can be composed from them together with the UKF kernels:
+The public floating working-format kernels (tags `f32` and `f64`) operate
+on one point per row, so other particle schemes can be composed from them
+together with the floating UKF kernels:
 
 | Kernel | Computes |
 | --- | --- |
@@ -136,28 +143,35 @@ schemes can be composed from them together with the UKF kernels:
 | `resample_indices(w, u, idx, cap)` | systematic resampling indices from one uniform draw |
 | `gather(points, idx, count, out)` | `out_i = points[idx[i]]` |
 
-`filters_ukf_*_propagate`, `mean`, `deviations` and `weighted_covariance`
-supply the remaining steps; `filters_ukf_*_predict_work` and `update_work`
-are the per-particle UKF of the UPF.
+`filters_ukf_f32/f64_*` propagation and statistics supply the remaining
+floating steps. Q PF/UPF use dedicated integer weight, resampling, ESS and
+moment paths rather than widening the complete cloud into those kernels.
+The Q UPF calls `filters_ukf_q15/q31_predict_work` and `update_work`: their
+small float/double matrices preserve a temporary prior that may exceed
+`[-1,+1]`, while the statistics inside are Q integer operations. A prior
+outside the persistent signal range is not itself a commit failure; the
+new particle and posterior covariance must fit when the step commits.
 
 ## Fixed-fraction Q contract
 
 - q15/q31 states hold raw `int16_t/2^15` or `int32_t/2^31` particles,
   weights, (UPF) covariances, Q and R; the init mean/covariance,
-  measurements and estimate outputs are raw too. Nothing is stored wider
-  than the signal type.
-- Intermediates need range beyond the signal interval, so the q15 filters
-  compute in float and the q31 filters in double (the significand covers
-  the signal). Sampler and model callbacks see float/double vectors;
-  `alpha`, `beta`, `kappa` and uniform draws are float/double. The kernels,
-  workspace and model types are the `f32`/`f64` ones.
-- Signals widen once on entry. Q and R, the init mean/covariance and the
-  measurement are widened whole; particles are widened one row at a time
-  into an `n`-element scratch slot as they are handed to the transition or
-  observation, so the per-call scratch grows with `n`, not `N·n` (UPF: one
-  particle and one `n·n` covariance slot). `estimate` widens the whole set.
-- Results narrow once on commit after a `[-1,+1]` range check on the
-  computed working values, with the positive-endpoint policy of
+  measurements and estimate outputs are raw too. No persistent array is
+  widened to hold intermediates.
+- Dedicated Q paths perform integer weight processing, systematic
+  resampling, ESS and weighted moments. Necessary local range expansion
+  uses float for q15 and double for q31 (24/53 significand bits cover the
+  15/31-bit signals); this is not a call to the complete floating filter.
+  Sampler, model and residual callbacks still see float/double vectors;
+  `alpha`, `beta`, `kappa` and uniform draws retain float/double types.
+  A standard-normal draw, residual or temporary UKF prior may exceed the
+  signal interval without being clipped into raw Q.
+- A typed Q workspace separates local floating `data` from raw `signal`
+  staging. Persistent particle clouds and per-particle covariances are not
+  duplicated as whole floating working arrays just to reuse an f32/f64
+  filter. See the per-call capacity macros below.
+- Committed outputs pass a `[-1,+1]` range check on the computed candidate
+  values, with the positive-endpoint policy of
   `linears_numeric.h` (exact +1 and the rounding cell reaching it map to
   MAX, ties away from zero). `init` and `predict` check every new particle,
   the UPF `step` every new particle and covariance, `estimate` both outputs,
@@ -168,45 +182,167 @@ are the per-particle UKF of the UPF.
   `INT32_MAX` instead of summing to one: a sum-normalized vector would leave
   most of the fixed range unused once `1/N` is a few LSBs. The weights define
   the distribution up to that common factor, which `update`, `resample`,
-  `estimate` and the raw `filters_pf_q15/q31_effective_sample_size` divide
-  out (`estimate` normalizes the widened weights to sum one and fails with
-  `DOMAIN` when they sum to zero). `init` and `resample` reset every weight
-  to the raw maximum. A weight below `2^-16` (q15) or `2^-32` (q31) of the
-  largest rounds to zero, so a particle more than about 11 or 22 nats behind
-  the best one is lost at the commit; floating weights keep `exp(-87)`
-  (f32) or `exp(-708)` (f64).
-- `exp(-x)` is `expf`/`exp`; there is no fixed-point exponential.
+  `estimate` and `filters_pf_q15/q31_effective_sample_size` account for
+  directly; no sum-normalized floating weight array is required. A zero
+  weight sum fails with `DOMAIN`. `init` and `resample` reset every weight
+  to the raw maximum. Final integer rounding discards sufficiently small
+  relative mass: approximately below half a raw LSB, or `2^-16` (q15) and
+  `2^-32` (q31) relative to the largest weight. Likelihood quantization also
+  contributes error; Q weights do not have f32/f64 exponential dynamic range.
+
+### Integer and floating boundaries
+
+The dedicated implementation is in
+[`pf_q_filter_impl.h`](src/pf_q_filter_impl.h), with integer helpers in
+[`pf_q_internal.h`](src/pf_q_internal.h). It is not an instantiation of the
+complete floating PF kernel:
+
+- Weight products, maximum selection and normalized raw output use integer
+  arithmetic. `expf`/`exp` and one shared normalization reciprocal remain
+  floating; transient unsigned likelihoods use 31 fractional bits for q15
+  and 63 for q31. Those scalars are not persistent particle/weight storage.
+- ESS accumulates the raw weight sum and sum of squares in integers, then
+  forms the float/double result. Systematic resampling uses integer
+  cumulative masses and an exact representation of the supplied binary
+  uniform draw; it does not allocate a floating weight vector.
+- Mean/covariance loops accumulate raw weighted moments. The `basic` array
+  holds their two-word integer accumulators, not a widened particle cloud.
+  A caller residual outside the signal interval contributes through a local
+  float/double term rather than being clipped.
+- Gaussian operations keep Cholesky and scalar divisions in float/double.
+  Their mixed dot products use Q integer MACs for bounded operands and
+  local floating products for operands needing more range, including
+  standard-normal draws. Direct triangular solves reuse the factor instead
+  of running a pivoted LU for each particle.
+
+[`upf_q_filter_impl.h`](src/upf_q_filter_impl.h) combines those helpers with
+the dedicated Q UKF work entries. It retains only one particle's extended
+prior/posterior in floating scratch and stages the complete new particle
+and covariance sets raw.
+
+### Computation changes
+
+The floating [`gaussian_exponent`](src/pf_work_impl.h) used by the previous
+Q wrappers calls the general pivoted-LU `solve` on the same Cholesky factor
+for every particle: its repeated factorization costs `O(N·m³)` for
+m-dimensional likelihood residuals. The dedicated Q update factors `R`
+once, then evaluates each residual by direct triangular forward
+substitution: `O(m³ + N·m²)` for that density calculation. This removes
+repeated decomposition work, not merely floating arithmetic. The UPF also
+uses direct triangular density solves and the
+[dedicated UKF reductions](UKF.md#computation-changes); each distinct proposal
+covariance still needs its own factor.
+
+Streaming one particle at a time removes N-by-n/N-by-m floating staging;
+integer weight, ESS and moment accumulation removes corresponding floating
+array passes. These source-backed changes explain reduced work and
+workspace, but do not imply that integer instructions always beat an FPU.
+Actual host timing and counted RAM must come from the same-revision
+[benchmark](README.md#measurements).
+
+## Migrating Q callers
+
+Use `filters_ukf_q15_workspace_t` for q15 PF/UPF calls and
+`filters_ukf_q31_workspace_t` for q31, not the old floating workspace type.
+`data`/`capacity` describe float/double local work; `signal`/`signal_capacity`
+describe separate raw `int16_t`/`int32_t` staging. `basic`/`basic_bytes` and
+the floating `decomposition` workspace keep their explicit units. Reallocate
+from the current per-call macros: `*_Q_*_STORAGE` counts floating elements,
+and `*_Q_*_SIGNAL_STORAGE` counts raw signal elements. Do not cast a floating
+workspace or reinterpret one array as both types. The callback/sampler types,
+model records and persistent-array types remain unchanged; f32/f64 callers
+keep their existing workspace type. The Q allocation pattern is the same as
+the [typed UKF example](UKF.md#q15-typed-workspace-example), using the PF/UPF
+per-call macros instead.
+
+### Q callback order changes
+
+The Q PF processes one particle completely before moving to the next,
+rather than retaining an N-by-n or N-by-m floating cloud:
+
+- `predict`: for particle `i`, call `transition`, then `sample`, form the
+  candidate, check its final signal range and stage it raw; only then start
+  particle `i+1`.
+- `update`: for particle `i`, call `observation`, then the residual callback
+  when supplied, compute its Gaussian exponent and store that one exponent;
+  only then start particle `i+1`.
+
+An error stops immediately. For example, if sampling particle `i` fails,
+transitions for particles after `i` have not run. A successful predict still
+calls transition and sampler N times each; a successful update calls
+observation N times and a supplied residual N times. Callback input/output
+views are disjoint, and intermediate callback results or draws are not
+restricted to `[-1,+1]` merely to fit staging. Persistent filter arrays are
+committed only after the entire transaction succeeds. Caller-owned callback
+or RNG state is **not** rolled back after a failure.
+
+This is an intentional Q API behavior change as well as a workspace-type
+migration. Code that consumes a shared RNG or records callback order must
+account for the interleaving and early exit. f32/f64 callback order is
+unchanged. No compatibility switch retains the old whole-cloud floating
+staging.
 
 ## Workspace and RAM cost
 
-Each call borrows the three arrays of `filters_ukf_*_workspace_t` sized by
-the macros below (constant expressions; `SIZE_MAX` means overflow and is
-rejected). Only required prefixes are accessed. `W` is the UKF kernel amount
-`FILTERS_UKF_UPDATE_WORK_STORAGE(n,m)`.
+The macros in [`filters_pf.h`](include/filters_pf.h) and
+[`filters_upf.h`](include/filters_upf.h) are constant expressions;
+`SIZE_MAX` signals overflow and is not an allocation request. Only required
+prefixes are accessed. Let `s = 2n+1`, `k = max(n,m)`,
+`W = FILTERS_UKF_UPDATE_WORK_STORAGE(n,m)` and
+`Wq = max(FILTERS_UKF_Q_PREDICT_WORK_STORAGE(n),
+FILTERS_UKF_Q_UPDATE_WORK_STORAGE(n,m))`.
 
-| Call | `data` elements (float / Q adds) | `basic` bytes | `decomposition` elements |
+For f32/f64, `data` and `decomposition` contain float/double:
+
+| Call | `data` elements | `basic` bytes | `decomposition` elements |
 | --- | --- | --- | --- |
-| PF `init` | `FILTERS_PF_PREDICT_STORAGE(N,n)` = `N·n + n² + 2n` / `FILTERS_PF_Q_INIT_STORAGE` `+ n² + n` | `FILTERS_PF_PREDICT_BASIC_BYTES(n)` = `n` units | `FILTERS_PF_PREDICT_DECOMP_STORAGE(n)` = `n²` |
-| PF `predict` | `FILTERS_PF_PREDICT_STORAGE(N,n)` / `FILTERS_PF_Q_PREDICT_STORAGE` `+ n² + n` | `n` units | `n²` |
-| PF `update` | `FILTERS_PF_UPDATE_STORAGE(N,m)` = `2N·m + 2N + m² + m` / `FILTERS_PF_Q_UPDATE_STORAGE(N,n,m)` `+ n + m² + m` | `FILTERS_PF_UPDATE_BASIC_BYTES(m)` = `m` units | `FILTERS_PF_UPDATE_DECOMP_STORAGE(m)` = `m² + m` |
-| PF `resample` | 0 / `FILTERS_PF_Q_RESAMPLE_STORAGE(N)` = `N` | 0 | 0 |
-| PF `estimate` | `FILTERS_PF_ESTIMATE_STORAGE(N,n)` = `3N·n + 2n² + n` / `FILTERS_PF_Q_ESTIMATE_STORAGE` `+ N·n + N` | `FILTERS_PF_ESTIMATE_BASIC_BYTES(N,n)` = `n·max(N,n)` units | 0 |
+| PF `init` / `predict` | `FILTERS_PF_PREDICT_STORAGE(N,n)` = `N·n+n²+2n` | `FILTERS_PF_PREDICT_BASIC_BYTES(n)` (`n` units) | `FILTERS_PF_PREDICT_DECOMP_STORAGE(n)` = `n²` |
+| PF `update` | `FILTERS_PF_UPDATE_STORAGE(N,m)` = `2N·m+2N+m²+m` | `FILTERS_PF_UPDATE_BASIC_BYTES(m)` (`m` units) | `FILTERS_PF_UPDATE_DECOMP_STORAGE(m)` = `m²+m` |
+| PF `resample` | `0` | `0` | `0` |
+| PF `estimate` | `FILTERS_PF_ESTIMATE_STORAGE(N,n)` = `3N·n+2n²+n` | `FILTERS_PF_ESTIMATE_BASIC_BYTES(N,n)` (`n·max(N,n)` units) | `0` |
 | UPF `init` | as PF `init` | as PF `init` | as PF `init` |
-| UPF `step` | `FILTERS_UPF_STEP_STORAGE(N,n,m)` = `N·(n² + n + 2) + 3n² + 6n + m² + 2m + 1 + W` / `FILTERS_UPF_Q_STEP_STORAGE` `+ n + 2n² + m² + m` | `FILTERS_UPF_STEP_BASIC_BYTES(n,m)` = `max(n,m)·(2n+1)` units | `FILTERS_UPF_STEP_DECOMP_STORAGE(n,m)` = `max(n² + n, m² + mn)` |
-| UPF `resample` | as PF `resample` | 0 | 0 |
+| UPF `step` | `FILTERS_UPF_STEP_STORAGE(N,n,m)` = `N·(n²+n+2)+3n²+6n+m²+2m+1+W` | `FILTERS_UPF_STEP_BASIC_BYTES(n,m)` (`k·s` units) | `FILTERS_UPF_STEP_DECOMP_STORAGE(n,m)` = `max(n²+n,m²+mn)` |
+| UPF `resample` | `0` | `0` | `0` |
 
-The kernels have their own macros (`FILTERS_PF_PERTURB_*`,
-`FILTERS_PF_GAUSSIAN_EXPONENT_*`). Q `data` is float for q15 and double for
-q31. The UPF step evaluates the likelihood and prior exponents per particle,
-so its scratch grows with `N·n²` (the staged covariances) rather than with
-`N·m`; the state itself adds `N·n²` signal elements for the covariances. For
-`N = 64, n = 2, m = 1` an f32 PF needs at most 394 working floats
-(estimate), 128 basic units and 4 decomposition floats across all calls; a
-UPF step needs 615 working floats, 10 basic units and 6 decomposition floats.
-The state arrays are `N·n + N + n² + m²` signal elements (PF) plus `N·n²`
-(UPF): for the same dimensions the UPF state is 453 elements, 906 bytes in
-q15 and 1812 bytes in q31 or f32; the q15 PF's 64 particles and weights take
-384 bytes.
+For q15/q31, `data` and `decomposition` contain float/double and `signal`
+contains raw `int16_t`/`int32_t`. Floating requirements are **not** the Q
+requirements plus a widening buffer:
+
+| Call | `data` elements | `signal` elements | `basic` bytes | `decomposition` elements |
+| --- | --- | --- | --- | --- |
+| PF `init` | `FILTERS_PF_Q_INIT_STORAGE(N,n)` = `2n²+3n` | `FILTERS_PF_Q_INIT_SIGNAL_STORAGE(N,n)` = `N·n` | `FILTERS_PF_Q_PREDICT_BASIC_BYTES(n)` = `0` | `FILTERS_PF_PREDICT_DECOMP_STORAGE(n)` = `n²` |
+| PF `predict` | `FILTERS_PF_Q_PREDICT_STORAGE(N,n)` = `2n²+3n` | `FILTERS_PF_Q_PREDICT_SIGNAL_STORAGE(N,n)` = `N·n` | `FILTERS_PF_Q_PREDICT_BASIC_BYTES(n)` = `0` | `FILTERS_PF_PREDICT_DECOMP_STORAGE(n)` = `n²` |
+| PF `update` | `FILTERS_PF_Q_UPDATE_STORAGE(N,n,m)` = `N+2m²+n+3m` | `FILTERS_PF_Q_UPDATE_SIGNAL_STORAGE(N,n,m)` = `N` | `FILTERS_PF_Q_UPDATE_BASIC_BYTES(m)` = `0` | `FILTERS_PF_Q_UPDATE_DECOMP_STORAGE(m)` = `m²` |
+| PF `resample` | `FILTERS_PF_Q_RESAMPLE_STORAGE(N)` = `0` | `FILTERS_PF_Q_RESAMPLE_SIGNAL_STORAGE(N)` = `0` | `0` | `0` |
+| PF `estimate` | `FILTERS_PF_Q_ESTIMATE_STORAGE(N,n)` = `n²+3n` | `FILTERS_PF_Q_ESTIMATE_SIGNAL_STORAGE(N,n)` = `n²+2n` | `FILTERS_PF_Q_ESTIMATE_BASIC_BYTES(N,n)` (`2n²` units) | `0` |
+| UPF `init` | as PF `init` | as PF `init` | as PF `init` | as PF `init` |
+| UPF `step` | `FILTERS_UPF_Q_STEP_STORAGE(N,n,m)` = `N+4n²+2m²+4n+3m+Wq` | `FILTERS_UPF_Q_STEP_SIGNAL_STORAGE(N,n,m)` = `N·(n²+n+1)+max(s·n,n²+s·m)` | `FILTERS_UPF_Q_STEP_BASIC_BYTES(n,m)` = `0` | `FILTERS_UPF_Q_STEP_DECOMP_STORAGE(n,m)` = `max(n²,m²)` |
+| UPF `resample` | as PF `resample` | as PF `resample` | `0` | `0` |
+
+A basic unit is `linears_workspace_unit_t`; allocate
+`LINEARS_WORKSPACE_UNITS(required_bytes)` units, not that many bytes or raw
+signals. Q estimate scratch is independent of N; Q update keeps N scalar
+exponents, not N measurement vectors. Raw staging still grows with the
+particle count to preserve atomic commit. PF init/predict intentionally
+share the non-Q-named decomposition macro; Q update and UPF step require
+their Q-specific decomposition macros. All resample calls need a separate
+caller-owned `size_t indices[N]`, despite needing no workspace arrays.
+
+For `N=64, n=2, m=1`, the Q PF maximum requirements across all calls are
+71 floating `data` elements, 128 raw `signal` elements, 8 basic units and
+4 floating decomposition elements. The Q UPF step requires 123 floating
+`data` elements, 458 raw `signal` elements, no basic scratch and 4 floating
+decomposition elements. These are array capacities, not total-RAM or
+speed measurements. Native f32 PF needs at most 394 `data` elements,
+128 basic units and 4 decomposition elements; its UPF step needs 615,
+10 and 6 respectively.
+
+Persistent arrays are `N·n+N+n²+m²` signal elements (PF) plus `N·n²`
+(UPF): for these dimensions the UPF has 453 elements, 906 bytes in q15 and
+1812 bytes in q31 or f32. State/workspace objects, indices, estimate outputs,
+stack and callback/RNG state are additional allocations.
+
+### f32 example
 
 A C99 f32 particle filter for the pendulum of `UKF.md` with a caller-owned
 generator and an angle residual; one estimate-sized workspace serves every
@@ -271,10 +407,14 @@ static linears_status_t wrap_angle(const linears_matrix_t *a, const linears_matr
                                    linears_matrix_t *out, void *context)
 {
     float d = ((const float *)a->data)[0] - ((const float *)b->data)[0];
+    size_t i;
     (void)context;
     while (d >= 3.14159265f) d -= 6.2831853f;
     while (d < -3.14159265f) d += 6.2831853f;
     ((float *)out->data)[0] = d;
+    /* estimate also applies this residual to the two-component state. */
+    for (i = 1; i < out->rows; ++i)
+        ((float *)out->data)[i] = ((const float *)a->data)[i] - ((const float *)b->data)[i];
     return LINEARS_OK;
 }
 
@@ -329,20 +469,21 @@ and update (solve with R) requirements.
   auxiliary variable, or adaptive particle count, so sample impoverishment
   after repeated resampling is the caller's concern.
 - The UPF transition must be deterministic (noise enters only through `Q`),
-  because the prior exponent evaluates `f(x_i)` once more per particle. Each
-  particle runs a full UKF predict and update: `2n+2` transition and `2n+2`
-  observation evaluations plus three Cholesky factorizations and one solve
-  per particle per step, and the state grows with `N·n²`. Proposals are the
-  per-particle UKF posteriors, whose spread includes the carried `P_i`, so
-  weights are not near-uniform even for linear Gaussian models.
+  because the prior exponent evaluates `f(x_i)` again for each particle.
+  Each particle runs a UKF predict/update plus proposal sampling and density
+  evaluation, and the state grows with `N·n²`. Proposals are per-particle
+  UKF posteriors whose spread includes the carried `P_i`; their weights are
+  not near-uniform even for linear Gaussian models. Q proposals retain
+  local floating decompositions and triangular solves; Q storage alone
+  does not make the entire UPF integer-only.
 - `init` draws the particles from `N(mean, P0)` with a Cholesky factor, so
   `P0` must be positive definite; the UKF accepts a semidefinite `P0` at init,
   the PF does not.
-- Floating formats reject nonfinite inputs, draws and callback outputs;
-  weights of very unequal particles underflow to zero below `exp(-87)` (f32,
-  also q15 working arithmetic) or `exp(-708)` (f64, q31), and the raw Q
-  weights additionally drop particles below `2^-16` (q15) or `2^-32` (q31) of
-  the best one when committed.
+- All formats reject nonfinite floating callback outputs and draws. Native
+  floating weights and raw Q relative weights have different precision
+  limits; a particle assigned zero weight contributes no mass until an
+  operation such as resampling replaces that weight. See the Q weight
+  contract above rather than applying f32/f64 underflow bounds to Q.
 - Q particles, covariances and estimates must lie in `[-1,+1]`; a transaction
   that would leave the interval fails with `RANGE` and commits nothing.
 - Estimates are Monte Carlo: the statistical error scales with
@@ -350,75 +491,42 @@ and update (solve with R) requirements.
 
 ## Validation
 
-Host tests live in `test/pf.cc` and `test/upf.cc`, sharing `test/pf_support.h`
-and `test/ukf_support.h` with the UKF suite. The kernel cases run for the
-`f32` and `f64` kernels, the filter cases for all four formats:
+Host tests live in [`test/pf.cc`](test/pf.cc) and
+[`test/upf.cc`](test/upf.cc), sharing `test/pf_support.h` and
+`test/ukf_support.h`; [`test/q_estimators.cc`](test/q_estimators.cc) adds
+dedicated Q regressions. From the configured SDK root:
 
-- `xmake test -g xhive -v 'filters_test_pf/pf'`: 45 GoogleTest cases, 41 pass
-  and the 4 floating instances of the two Q-only cases are skipped by design.
-- `xmake test -g xhive -v 'filters_test_upf/upf'`: 17 cases, all pass.
+```sh
+xmake test -g xhive -v 'filters_test_pf/pf' 'filters_test_upf/upf' 'filters_test_q_estimators/q_estimators'
+```
 
-Oracles are independent of the production code:
+The suites cover:
 
-- `reweight` against `expl` over exponents 0..22 in half-nat steps (both
-  uniform and random weights, shifted and unshifted) and
-  `DOMAIN`/`ALIAS`/`DIMENSION`/`RANGE` rejection.
-- `effective_sample_size` against the closed form for uniform, one-hot and
-  random weights, and the raw q15/q31 version on maximum-scaled raw weights
-  with its `DOMAIN`/`ARGUMENT`/`DIMENSION` rejection; `resample_indices`
-  against an independent systematic
-  implementation on the quantized weights for 12 random weight vectors
-  (including zero entries and unnormalized totals), with nondecreasing
-  indices and `floor`/`ceil` copy counts; `gather` and `perturb` against
-  element-wise reconstruction with scripted draws, in place and to a copy;
-  `gaussian_exponent` against Eigen `(1/2) d^T (L L^T)^-1 d`, plus `SINGULAR`
-  for a zero pivot.
-- A 48-particle, 25-step pendulum PF (`f` nonlinear, `h = [sin(theta),
-  omega]`) against a long-double bootstrap filter replaying the logged
-  (quantized) draws, reseeded from the committed state before every
-  transaction: particles after `predict`, weights after `update`, the ESS,
-  indices and gathered particles after `resample`, and mean/covariance after
-  `estimate` all match within the per-format envelopes without multipliers;
-  Q weights are compared as the distribution they define, and the committed
-  raw vector is checked to carry the raw maximum.
-- A 24-particle, 20-step pendulum UPF against a long-double UPF built from
-  the Eigen UKF reference of the UKF suite plus the weight formula above,
-  alternating NULL and explicit subtraction residuals; particles and
-  covariances match within the envelopes, weights within four times the
-  envelope (the `|d|/Q` amplification of working rounding described above;
-  q31 misses the plain envelope by up to about 15%).
-- Linear Gaussian models against `filters_kalman_matrix_*` posteriors: PF
-  with 4000 particles and UPF with 600, means within `0.2 sigma` and
-  covariances within 30% of the geometric mean of the diagonals (Monte Carlo
-  agreement, not exactness).
-- 60-step pendulum tracking with resampling below `N/2` (PF 400, UPF 60
-  particles): the final estimate lies within four posterior sigma of the
-  simulated truth.
-- A three-particle angle cloud around the cut: the residual-aware estimate
-  and covariance match the reference and stay on the short side, the naive
-  estimate lands across the cut, and a measurement beyond the cut weights the
-  particles by short-way distances.
-- A Q init whose scripted draw lands a particle at 1.2 fails atomically with
-  `RANGE`, as does a predict that shifts a particle past +1; in-range draws
-  and an identity transition commit and estimate normally.
-- Init validation, capacities, exact/own-descriptor alias acceptance, partial
-  and cross alias rejection, workspace bounds and misalignment, NULL
-  callbacks, pre-callback Q/R checks (`DOMAIN`, `NOT_POSITIVE_DEFINITE` with
-  zero callback counts), callback/sampler/residual failures in the middle of
-  the particle loop, nonfinite callback and sampler outputs, zeroed weights,
-  zeroed UPF sigma weights, a singular per-particle covariance, and
-  resampling that moves covariances with their particles. Every failure path
-  checks that the state object and all arrays are byte-identical afterwards
-  and that `indices` were not written.
-- Size macros as constant expressions with `SIZE_MAX` overflow sentinels.
+- Reweighting against long-double exponentials; ESS against its closed
+  form; systematic resampling against an independent index generator.
+- Scripted perturbations and gathers, Gaussian exponents against Eigen,
+  and raw Q weights interpreted as a scale-free distribution.
+- Nonlinear pendulum PF/UPF transactions against independent long-double
+  references, plus linear-Gaussian and tracking checks with Monte Carlo
+  tolerances rather than claims of exact Kalman equivalence.
+- Wrapped-angle residuals, Q particle-range rejection, and per-particle
+  covariance gathering during UPF resampling.
+- Exact capacities, aliasing, misalignment, callback/sampler failures,
+  nonfinite values, invalid Q/R and singular proposal covariances, with
+  persistent-state and output preservation on rejected transactions.
+- Q callback interleaving and early exit, large raw-weight pipelines,
+  expanded likelihood residuals and temporary UPF priors, and exact-minimum
+  workspaces for both state-dominant and measurement-dominant dimensions.
+- Constant-expression storage macros and overflow sentinels.
 
-Comparisons use the per-format envelopes of `KALMAN.md` (`tolerance * (1 +
-|reference|)`, f32 `2e-5`, f64 `2e-12`, q15 `4e-3`, q31 `2e-7`), with the one
-multiplier noted above; the q31 envelope holds with double working
-arithmetic. Additional runs: GCC `-O2` release build of the production
-objects and both tests, and a Clang `-fsanitize=address,undefined` build with
-`-fno-sanitize-recover=undefined`, both with no sanitizer diagnostics; `pf.c`
-passes GCC and Clang `-std=c99 -pedantic-errors -Wall -Wextra -Werror -Wvla
--fsyntax-only`. The example above compiles and returns zero with both
-compilers. Host simulation is not MCU, hardware or interrupt-timing
-validation.
+The complete f32 C example above was independently compiled and linked
+with GCC and Clang using `-std=c99 -O2 -pedantic-errors -Wall -Wextra
+-Werror -Wvla`, and returned zero with each compiler. That is an example
+check, not a pass report for the estimator suites.
+
+Current integration results are recorded under [Host tests](README.md#host-tests).
+The earlier floating-wrapper test totals and sanitizer results are not
+carried forward as validation of these Q kernels. Match the source revision
+when reproducing a result. See [measurement tools and scope](README.md#measurements)
+for timing, allocation and ARM object-code comparisons. Host simulation is
+not MCU, hardware or interrupt-timing validation.

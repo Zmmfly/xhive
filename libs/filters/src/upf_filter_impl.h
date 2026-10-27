@@ -1,4 +1,4 @@
-/* Signal-format unscented particle filters; included by pf.c once per filter
+/* Floating unscented particle filters; included by pf.c once per filter
  * tag after pf_filter_impl.h so the PF state helpers of the same tag exist. */
 #define U_JOIN_INNER(a, b) a##b
 #define U_JOIN(a, b) U_JOIN_INNER(a, b)
@@ -18,15 +18,9 @@
 #define U_TAKE(rows, cols) U_WORK_LOCAL(take)(&cursor, (rows), (cols))
 #define U_BASIC workspace.basic, workspace.basic_bytes
 #include "ukf_signal_impl.h"
-#if U_FIXED
-#define U_INIT_STORAGE FILTERS_PF_Q_INIT_STORAGE
-#define U_STEP_STORAGE FILTERS_UPF_Q_STEP_STORAGE
-#define U_RESAMPLE_STORAGE FILTERS_PF_Q_RESAMPLE_STORAGE
-#else
 #define U_INIT_STORAGE FILTERS_PF_PREDICT_STORAGE
 #define U_STEP_STORAGE FILTERS_UPF_STEP_STORAGE
 #define U_RESAMPLE_STORAGE(N) ((size_t)0)
-#endif
 
 static linears_status_t U_LOCAL(divide)(U_WORK a, U_WORK b, U_WORK *out)
 {
@@ -48,15 +42,10 @@ static linears_status_t U_LOCAL(state)(ukf_spans_t *spans, const U_STATE *state,
                      sizeof(U_SIGNAL), U_ALIGNOF(U_SIGNAL));
 }
 
-/* Shape the views through which the kernels read one particle and its
- * covariance; Q reserves scratch at the cursor to widen into. */
+/* Shape the views through which the kernels read one particle and its covariance. */
 static void U_LOCAL(particle_slots)(size_t n, U_WORK **cursor, linears_matrix_t *particle,
                                     linears_matrix_t *covariance)
 {
-#if U_FIXED
-    *particle = U_WORK_LOCAL(take)(cursor, n, 1);
-    *covariance = U_WORK_LOCAL(take)(cursor, n, n);
-#else
     (void)cursor;
     particle->data = NULL;
     particle->rows = n;
@@ -64,22 +53,15 @@ static void U_LOCAL(particle_slots)(size_t n, U_WORK **cursor, linears_matrix_t 
     covariance->data = NULL;
     covariance->rows = n;
     covariance->cols = n;
-#endif
 }
 
-/* Point the slots at particle i: widen its raw rows, or view the state arrays. */
+/* Point the slots at particle i in the state arrays. */
 static void U_LOCAL(load_particle)(const U_STATE *state, size_t i, linears_matrix_t *particle,
                                    linears_matrix_t *covariance)
 {
     size_t n = state->base.particles.cols;
-#if U_FIXED
-    U_JOIN(ukf_widen_, U_TAG)((const U_SIGNAL *)state->base.particles.data + i * n, n, (U_WORK *)particle->data);
-    U_JOIN(ukf_widen_, U_TAG)((const U_SIGNAL *)state->covariances.data + i * n * n, n * n,
-                              (U_WORK *)covariance->data);
-#else
     particle->data = (U_WORK *)state->base.particles.data + i * n;
     covariance->data = (U_WORK *)state->covariances.data + i * n * n;
-#endif
 }
 
 linears_status_t U_API(init)(U_STATE *state, U_WORK alpha, U_WORK beta, U_WORK kappa,

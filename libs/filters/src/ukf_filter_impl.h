@@ -2,9 +2,17 @@
 #define U_JOIN_INNER(a, b) a##b
 #define U_JOIN(a, b) U_JOIN_INNER(a, b)
 #define U_API(name) U_JOIN(U_JOIN(filters_ukf_, U_TAG), U_JOIN(_, name))
-#define U_KERNEL_API(name) U_JOIN(U_JOIN(filters_ukf_, U_KERNEL), U_JOIN(_, name))
+#define U_WEIGHTS_API U_JOIN(U_JOIN(filters_ukf_, U_KERNEL), _weights)
 #define U_LOCAL(name) U_JOIN(U_JOIN(ukf_filter_, U_TAG), U_JOIN(_, name))
+#if U_FIXED
+#define U_KERNEL_API(name) U_API(name)
+#define U_WORK_LOCAL(name) U_JOIN(U_JOIN(ukf_work_, U_TAG), U_JOIN(_, name))
+#define U_REMAINING(workspace, cursor) U_WORK_LOCAL(remaining)((workspace), (cursor), (workspace).signal)
+#else
+#define U_KERNEL_API(name) U_JOIN(U_JOIN(filters_ukf_, U_KERNEL), U_JOIN(_, name))
 #define U_WORK_LOCAL(name) U_JOIN(U_JOIN(ukf_work_, U_KERNEL), U_JOIN(_, name))
+#define U_REMAINING(workspace, cursor) U_WORK_LOCAL(remaining)((workspace), (cursor))
+#endif
 #define U_SYMMETRIC U_JOIN(ukf_symmetric_, U_TAG)
 #define U_TRY(expression) do { \
     status = (expression); \
@@ -58,7 +66,7 @@ linears_status_t U_API(init)(U_STATE *state, U_WORK alpha, U_WORK beta, U_WORK k
     for (i = 0; i < 4; ++i)
         U_TRY(ukf_source(&spans, sources[i], targets[i], sizeof(U_SIGNAL), U_ALIGNOF(U_SIGNAL)));
     U_TRY(ukf_disjoint(&spans));
-    U_TRY(U_KERNEL_API(weights)(n, alpha, beta, kappa, &weights));
+    U_TRY(U_WEIGHTS_API(n, alpha, beta, kappa, &weights));
     for (i = 0; i < 4; ++i) U_CHECK_FINITE(sources[i]);
     U_TRY(U_SYMMETRIC(covariance, 1));
     U_TRY(U_SYMMETRIC(process_noise, 1));
@@ -83,9 +91,16 @@ linears_status_t U_API(predict)(U_STATE *state, U_FN transition, void *transitio
     size_t n, m;
     spans.count = 0;
     U_TRY(U_LOCAL(state)(&spans, state, &n, &m));
+#if U_FIXED
+    U_TRY(U_WORK_LOCAL(workspace)(&spans, workspace, U_PREDICT_STORAGE(n),
+                                  FILTERS_UKF_Q_PREDICT_BASIC_BYTES(n),
+                                  FILTERS_UKF_Q_PREDICT_DECOMP_STORAGE(n),
+                                  FILTERS_UKF_Q_PREDICT_SIGNAL_STORAGE(n)));
+#else
     U_TRY(U_WORK_LOCAL(workspace)(&spans, workspace, U_PREDICT_STORAGE(n),
                                   FILTERS_UKF_PREDICT_BASIC_BYTES(n),
                                   FILTERS_UKF_PREDICT_DECOMP_STORAGE(n)));
+#endif
     cursor = workspace.data;
     xbar = U_TAKE(n, 1);
     pbar = U_TAKE(n, n);
@@ -94,7 +109,7 @@ linears_status_t U_API(predict)(U_STATE *state, U_FN transition, void *transitio
     q_in = U_IMPORT_VIEW(&state->process_noise);
     U_TRY(U_KERNEL_API(predict_work)(&x_in, &p_in, &q_in, &state->weights, transition,
                                      transition_context, residual, residual_context, &xbar, &pbar,
-                                     U_WORK_LOCAL(remaining)(workspace, cursor)));
+                                     U_REMAINING(workspace, cursor)));
     U_FITS(&xbar);
     U_FITS(&pbar);
     U_STORE(&xbar, &state->estimate);
@@ -115,9 +130,16 @@ linears_status_t U_API(update)(U_STATE *state, const linears_matrix_t *measureme
     spans.count = 0;
     U_TRY(U_LOCAL(state)(&spans, state, &n, &m));
     U_TRY(ukf_matrix(&spans, measurement, m, 1, sizeof(U_SIGNAL), U_ALIGNOF(U_SIGNAL), UKF_INPUT));
+#if U_FIXED
+    U_TRY(U_WORK_LOCAL(workspace)(&spans, workspace, U_UPDATE_STORAGE(n, m),
+                                  FILTERS_UKF_Q_UPDATE_BASIC_BYTES(n, m),
+                                  FILTERS_UKF_Q_UPDATE_DECOMP_STORAGE(n, m),
+                                  FILTERS_UKF_Q_UPDATE_SIGNAL_STORAGE(n, m)));
+#else
     U_TRY(U_WORK_LOCAL(workspace)(&spans, workspace, U_UPDATE_STORAGE(n, m),
                                   FILTERS_UKF_UPDATE_BASIC_BYTES(n, m),
                                   FILTERS_UKF_UPDATE_DECOMP_STORAGE(n, m)));
+#endif
     cursor = workspace.data;
     xbar = U_TAKE(n, 1);
     pbar = U_TAKE(n, n);
@@ -127,7 +149,7 @@ linears_status_t U_API(update)(U_STATE *state, const linears_matrix_t *measureme
     z_in = U_IMPORT_VIEW(measurement);
     U_TRY(U_KERNEL_API(update_work)(&x_in, &p_in, &r_in, &z_in, &state->weights, observation,
                                     observation_context, residual, residual_context, &xbar, &pbar,
-                                    U_WORK_LOCAL(remaining)(workspace, cursor)));
+                                    U_REMAINING(workspace, cursor)));
     U_FITS(&xbar);
     U_FITS(&pbar);
     U_STORE(&xbar, &state->estimate);
@@ -142,8 +164,10 @@ linears_status_t U_API(update)(U_STATE *state, const linears_matrix_t *measureme
 #undef U_TAKE
 #undef U_TRY
 #undef U_SYMMETRIC
+#undef U_REMAINING
 #undef U_WORK_LOCAL
 #undef U_LOCAL
+#undef U_WEIGHTS_API
 #undef U_KERNEL_API
 #undef U_API
 #undef U_JOIN

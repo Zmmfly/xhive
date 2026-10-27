@@ -50,7 +50,9 @@ template<class A> struct UpfState {
 
 template<class A> UkfWorkspace<A> upf_step_workspace(std::size_t count, std::size_t n, std::size_t m) {
     return UkfWorkspace<A>(A::bits ? FILTERS_UPF_Q_STEP_STORAGE(count, n, m) : FILTERS_UPF_STEP_STORAGE(count, n, m),
-                           FILTERS_UPF_STEP_BASIC_BYTES(n, m), FILTERS_UPF_STEP_DECOMP_STORAGE(n, m));
+                           A::bits ? FILTERS_UPF_Q_STEP_BASIC_BYTES(n, m) : FILTERS_UPF_STEP_BASIC_BYTES(n, m),
+                           A::bits ? FILTERS_UPF_Q_STEP_DECOMP_STORAGE(n, m) : FILTERS_UPF_STEP_DECOMP_STORAGE(n, m),
+                           A::bits ? FILTERS_UPF_Q_STEP_SIGNAL_STORAGE(count, n, m) : 0);
 }
 
 /* Independent long-double UPF: one Eigen-based UKF per particle, the
@@ -385,6 +387,7 @@ TYPED_TEST(UnscentedParticleFilter, ValidationAliasRulesAndFailureAtomicity) {
     EXPECT_EQ(Upf<A>::step(&fixture.state, &wrong, &model, sample, &sampler, step_ws.view()), LINEARS_ERROR_DIMENSION);
     for (int part = 0; part < 3; ++part) {
         auto w = step_ws.view();
+        if (part == 1 && w.basic_bytes == 0) continue;
         if (part == 0) --w.capacity;
         if (part == 1) --w.basic_bytes;
         if (part == 2) --w.decomposition.capacity;
@@ -434,12 +437,10 @@ TYPED_TEST(UnscentedParticleFilter, ValidationAliasRulesAndFailureAtomicity) {
     EXPECT_EQ(Upf<A>::step(&fixture.state, &zv, &with_residual, sample, &sampler, step_ws.view()), LINEARS_ERROR_NO_CONVERGENCE);
     EXPECT_EQ(failing_residual.calls, 10);
     transition.calls = 0; observation.calls = 0; sampler.calls = 0;
-    if constexpr (A::bits == 0) {
-        sampler.nonfinite = true;
-        EXPECT_EQ(Upf<A>::step(&fixture.state, &zv, &model, sample, &sampler, step_ws.view()), LINEARS_ERROR_RANGE);
-        sampler.nonfinite = false;
-        transition.calls = 0; observation.calls = 0; sampler.calls = 0;
-    }
+    sampler.nonfinite = true;
+    EXPECT_EQ(Upf<A>::step(&fixture.state, &zv, &model, sample, &sampler, step_ws.view()), LINEARS_ERROR_RANGE);
+    sampler.nonfinite = false;
+    transition.calls = 0; observation.calls = 0; sampler.calls = 0;
     /* A singular per-particle covariance fails the proposal Cholesky. */
     std::fill(fixture.covariances.begin() + 1 + 2 * 4, fixture.covariances.begin() + 1 + 3 * 4, A::encode(0));
     const auto singular = fixture.snapshot();
@@ -452,8 +453,12 @@ TYPED_TEST(UnscentedParticleFilter, ValidationAliasRulesAndFailureAtomicity) {
     EXPECT_EQ(Upf<A>::resample(&fixture.state, work_encode<A>(0.5L), nullptr, count, resample_ws.view()), LINEARS_ERROR_ARGUMENT);
     EXPECT_EQ(Upf<A>::resample(&fixture.state, work_encode<A>(0.5L), indices.data(), count - 1, resample_ws.view()), LINEARS_ERROR_WORKSPACE);
     if constexpr (A::bits != 0) {
-        auto short_ws = resample_ws.view(); --short_ws.capacity;
-        EXPECT_EQ(Upf<A>::resample(&fixture.state, work_encode<A>(0.5L), indices.data(), count, short_ws), LINEARS_ERROR_WORKSPACE);
+        auto short_ws = resample_ws.view();
+        if (short_ws.capacity != 0 || short_ws.signal_capacity != 0) {
+            if (short_ws.capacity != 0) --short_ws.capacity;
+            else --short_ws.signal_capacity;
+            EXPECT_EQ(Upf<A>::resample(&fixture.state, work_encode<A>(0.5L), indices.data(), count, short_ws), LINEARS_ERROR_WORKSPACE);
+        }
     }
     for (auto index : indices) EXPECT_EQ(index, SIZE_MAX);
     EXPECT_EQ(fixture.snapshot(), snapshot);
@@ -476,10 +481,167 @@ TYPED_TEST(UnscentedParticleFilter, ValidationAliasRulesAndFailureAtomicity) {
     fixture.guards(); init_ws.guards(); step_ws.guards(); resample_ws.guards();
 }
 
+template<class A> class FixedUnscentedParticleFilter : public ::testing::Test {};
+TYPED_TEST_SUITE(FixedUnscentedParticleFilter, FixedFormats);
+
+TYPED_TEST(FixedUnscentedParticleFilter, ExpandedPriorCanProduceALegalPosterior) {
+    using A = TypeParam;
+    constexpr std::size_t count = 3;
+    Matrix<A> x(Dense(1, 1, {0.75L})), p(Dense(1, 1, {0.25L}));
+    Matrix<A> q(Dense(1, 1, {0.125L})), r(Dense(1, 1, {0.125L})), z(Dense(1, 1, {0.25L}));
+    auto xv = x.view(), pv = p.view(), qv = q.view(), rv = r.view(), zv = z.view();
+    UpfState<A> fixture(count, 1, 1);
+    auto init_ws = pf_init_workspace<A>(count, 1);
+    auto step_ws = upf_step_workspace<A>(count, 1, 1);
+    Sampler sampler(0x51505249u);
+    sampler.script = {{0}};
+    Model transition{[](const Vec& value) { return Vec{2 * value[0]}; }};
+    Model observation{[](const Vec& value) { return value; }};
+    typename Upf<A>::Model model{};
+    model.transition = map_callback<A>;
+    model.transition_context = &transition;
+    model.observation = map_callback<A>;
+    model.observation_context = &observation;
+    ASSERT_EQ(Upf<A>::init(&fixture.state, work_encode<A>(1), work_encode<A>(2), work_encode<A>(0),
+                           &xv, &pv, &qv, &rv, sample_callback<A>, &sampler, init_ws.view()), LINEARS_OK);
+    /* Prior x=1.5 and P=1.125 are local values, not signals to be committed.
+     * K=.9 brings the final x to .375 and P to .1125 without clipping. */
+    ASSERT_EQ(Upf<A>::step(&fixture.state, &zv, &model, sample_callback<A>, &sampler, step_ws.view()), LINEARS_OK);
+    for (std::size_t i = 0; i < count; ++i) {
+        expect_near<A>(A::decode_raw(fixture.particles[i + 1]), 0.375L);
+        expect_near<A>(A::decode_raw(fixture.covariances[i + 1]), 0.1125L);
+        EXPECT_EQ(fixture.weights[i + 1], std::numeric_limits<typename A::Raw>::max());
+    }
+    /* A weak observation gives x about .0458 but leaves P above one.
+     * A covariance failure must not commit the changed particles or weights. */
+    x.data[0] = 0; r.data[0] = A::encode(0.75L);
+    observation.map = [](const Vec& value) { return Vec{0.125L * value[0]}; };
+    ASSERT_EQ(Upf<A>::init(&fixture.state, work_encode<A>(1), work_encode<A>(2), work_encode<A>(0),
+                           &xv, &pv, &qv, &rv, sample_callback<A>, &sampler, init_ws.view()), LINEARS_OK);
+    const auto before = fixture.snapshot();
+    EXPECT_EQ(Upf<A>::step(&fixture.state, &zv, &model, sample_callback<A>, &sampler, step_ws.view()), LINEARS_ERROR_RANGE);
+    EXPECT_EQ(fixture.snapshot(), before);
+    fixture.guards(); init_ws.guards(); step_ws.guards();
+}
+
+TYPED_TEST(FixedUnscentedParticleFilter, LastParticleRangeAndNonfiniteDrawFailuresAreAtomic) {
+    using A = TypeParam;
+    constexpr std::size_t count = 3;
+    Matrix<A> x(Dense(1, 1, {0})), p(Dense(1, 1, {0.0625L}));
+    Matrix<A> q(Dense(1, 1, {0.125L})), r(Dense(1, 1, {0.125L})), z(Dense(1, 1, {0}));
+    auto xv = x.view(), pv = p.view(), qv = q.view(), rv = r.view(), zv = z.view();
+    UpfState<A> fixture(count, 1, 1);
+    auto init_ws = pf_init_workspace<A>(count, 1);
+    auto step_ws = upf_step_workspace<A>(count, 1, 1);
+    Sampler sampler(0x514c4153u);
+    sampler.script = {{0}};
+    Model identity{[](const Vec& value) { return value; }};
+    typename Upf<A>::Model model{};
+    model.transition = map_callback<A>; model.transition_context = &identity;
+    model.observation = map_callback<A>; model.observation_context = &identity;
+    ASSERT_EQ(Upf<A>::init(&fixture.state, work_encode<A>(1), work_encode<A>(2), work_encode<A>(0),
+                           &xv, &pv, &qv, &rv, sample_callback<A>, &sampler, init_ws.view()), LINEARS_OK);
+    const auto before = fixture.snapshot();
+    for (long double bad : {10.0L, std::numeric_limits<long double>::quiet_NaN(),
+                            std::numeric_limits<long double>::infinity(),
+                            -std::numeric_limits<long double>::infinity()}) {
+        sampler.script.assign(count, Vec{0});
+        sampler.script.back()[0] = bad;
+        sampler.scripted = 0;
+        sampler.calls = 0;
+        EXPECT_EQ(Upf<A>::step(&fixture.state, &zv, &model, sample_callback<A>, &sampler, step_ws.view()), LINEARS_ERROR_RANGE);
+        EXPECT_EQ(sampler.calls, count);
+        EXPECT_EQ(fixture.snapshot(), before);
+        fixture.guards(); step_ws.guards();
+    }
+    init_ws.guards();
+}
+
+TYPED_TEST(FixedUnscentedParticleFilter, LargeResampleKeepsRawCovariancesWithTheirParticles) {
+    using A = TypeParam;
+    using Raw = typename A::Raw;
+    constexpr std::size_t count = 65537;
+    Matrix<A> x(Dense(1, 1, {0})), p(Dense(1, 1, {0.0625L}));
+    Matrix<A> q(Dense(1, 1, {0.015625L})), r(Dense(1, 1, {0.125L}));
+    auto xv = x.view(), pv = p.view(), qv = q.view(), rv = r.view();
+    UpfState<A> fixture(count, 1, 1);
+    auto init_ws = pf_init_workspace<A>(count, 1);
+    auto resample_ws = pf_resample_workspace<A>(count);
+    Sampler sampler(0x51474154u);
+    sampler.script = {{0}};
+    ASSERT_EQ(Upf<A>::init(&fixture.state, work_encode<A>(1), work_encode<A>(2), work_encode<A>(0),
+                           &xv, &pv, &qv, &rv, sample_callback<A>, &sampler, init_ws.view()), LINEARS_OK);
+    Vec weights(count);
+    std::vector<Raw> particles(count), covariances(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        particles[i] = static_cast<Raw>(static_cast<int>(i % 31) - 15);
+        covariances[i] = static_cast<Raw>(1 + i % 127);
+        fixture.particles[i + 1] = particles[i];
+        fixture.covariances[i + 1] = covariances[i];
+        fixture.weights[i + 1] = (i == count / 4 || i == 3 * count / 4)
+                                    ? std::numeric_limits<Raw>::max() : Raw{1};
+        weights[i] = fixture.weights[i + 1];
+    }
+    const auto expected = PfReference::systematic(weights, 0.25L);
+    std::vector<std::size_t> indices(count + 1, SIZE_MAX);
+    ASSERT_EQ(Upf<A>::resample(&fixture.state, work_encode<A>(0.25L), indices.data(), count, resample_ws.view()), LINEARS_OK);
+    for (std::size_t i = 0; i < count; ++i) {
+        EXPECT_EQ(indices[i], expected[i]);
+        EXPECT_EQ(fixture.particles[i + 1], particles[expected[i]]);
+        EXPECT_EQ(fixture.covariances[i + 1], covariances[expected[i]]);
+        EXPECT_EQ(fixture.weights[i + 1], std::numeric_limits<Raw>::max());
+    }
+    EXPECT_EQ(indices.back(), SIZE_MAX);
+    fixture.guards(); init_ws.guards(); resample_ws.guards();
+}
+
+TYPED_TEST(FixedUnscentedParticleFilter, ExactMinimumStepWorkspaceCoversWideMeasurements) {
+    using A = TypeParam;
+    const std::size_t shapes[][3] = {{1, 1, 1}, {3, 1, 3}, {5, 3, 1}};
+    for (const auto& shape : shapes) {
+        const std::size_t count = shape[0], n = shape[1], m = shape[2];
+        SCOPED_TRACE(::testing::Message() << "N=" << count << " n=" << n << " m=" << m);
+        Matrix<A> x(Dense(n, 1, Vec(n, 0.0625L))), p(Dense::identity(n, 0.0625L));
+        Matrix<A> q(Dense::identity(n, 0.015625L)), r(Dense::identity(m, 0.125L)), z(Dense(m, 1));
+        auto xv = x.view(), pv = p.view(), qv = q.view(), rv = r.view(), zv = z.view();
+        UpfState<A> fixture(count, n, m);
+        auto init_ws = pf_init_workspace<A>(count, n);
+        auto step_ws = upf_step_workspace<A>(count, n, m);
+        Sampler sampler(0x51574f52u);
+        sampler.script = {Vec(n, 0)};
+        Model transition{[](const Vec& value) { return value; }};
+        Model observation{[=](const Vec& value) { return Vec(m, 0.5L * value[0]); }};
+        typename Upf<A>::Model model{};
+        model.transition = map_callback<A>; model.transition_context = &transition;
+        model.observation = map_callback<A>; model.observation_context = &observation;
+        ASSERT_EQ(Upf<A>::init(&fixture.state, work_encode<A>(1), work_encode<A>(2), work_encode<A>(0),
+                               &xv, &pv, &qv, &rv, sample_callback<A>, &sampler, init_ws.view()), LINEARS_OK);
+        const auto before = fixture.snapshot();
+        sampler.calls = 0;
+        for (int part = 0; part < 4; ++part) {
+            auto workspace = step_ws.view();
+            std::size_t *capacity = part == 0 ? &workspace.capacity
+                                  : part == 1 ? &workspace.basic_bytes
+                                  : part == 2 ? &workspace.decomposition.capacity
+                                              : &workspace.signal_capacity;
+            if (*capacity == 0) continue;
+            --*capacity;
+            EXPECT_EQ(Upf<A>::step(&fixture.state, &zv, &model, sample_callback<A>, &sampler, workspace), LINEARS_ERROR_WORKSPACE);
+        }
+        EXPECT_EQ(fixture.snapshot(), before);
+        EXPECT_EQ(transition.calls, 0); EXPECT_EQ(observation.calls, 0); EXPECT_EQ(sampler.calls, 0);
+        ASSERT_EQ(Upf<A>::step(&fixture.state, &zv, &model, sample_callback<A>, &sampler, step_ws.view()), LINEARS_OK);
+        fixture.guards(); init_ws.guards(); step_ws.guards();
+    }
+}
+
 TEST(UnscentedParticleFilterWorkspace, ConstantExpressionsAndOverflowSentinels) {
     static_assert(FILTERS_UKF_UPDATE_WORK_STORAGE(2, 1) == 75, "kernel scratch inside the step");
     static_assert(FILTERS_UPF_STEP_STORAGE(10, 2, 1) == 10 * 8 + 12 + 12 + 1 + 2 + 1 + 75, "step storage");
-    static_assert(FILTERS_UPF_Q_STEP_STORAGE(10, 2, 1) == FILTERS_UPF_STEP_STORAGE(10, 2, 1) + 2 + 4 + 4 + 1 + 1, "Q step storage");
+    static_assert(FILTERS_UPF_Q_STEP_STORAGE(10, 2, 1) == 10 + 4 * 4 + 2 + 4 * 2 + 3 + 30, "Q local step storage");
+    static_assert(FILTERS_UPF_Q_STEP_SIGNAL_STORAGE(10, 2, 1) == 10 * (4 + 2 + 1) + 10, "Q raw staged arrays and shared UKF cloud");
+    static_assert(FILTERS_UPF_Q_STEP_BASIC_BYTES(2, 1) == 0, "Q step has no basic scratch");
+    static_assert(FILTERS_UPF_Q_STEP_DECOMP_STORAGE(1, 3) == 9, "Q wide step factor scratch");
     static_assert(FILTERS_UPF_STEP_BASIC_BYTES(2, 1) == 10 * sizeof(linears_workspace_unit_t), "step basic");
     static_assert(FILTERS_UPF_STEP_DECOMP_STORAGE(2, 1) == 6, "prior exponent solve dominates");
     static_assert(FILTERS_UPF_STEP_DECOMP_STORAGE(1, 3) == 12, "gain solve dominates");
@@ -487,14 +649,16 @@ TEST(UnscentedParticleFilterWorkspace, ConstantExpressionsAndOverflowSentinels) 
     EXPECT_EQ(FILTERS_UPF_STEP_STORAGE(huge, 2, 1), SIZE_MAX);
     EXPECT_EQ(FILTERS_UPF_STEP_STORAGE(1, huge, 1), SIZE_MAX);
     EXPECT_EQ(FILTERS_UPF_STEP_STORAGE(1, 1, huge), SIZE_MAX);
-    EXPECT_EQ(FILTERS_UPF_Q_STEP_STORAGE(huge, 1, 1), SIZE_MAX);
+    EXPECT_EQ(FILTERS_UPF_Q_STEP_STORAGE(huge, 1, 1), huge + 30);
+    EXPECT_EQ(LINEARS_SIZE_MUL(FILTERS_UPF_Q_STEP_STORAGE(huge, 1, 1), sizeof(float)), SIZE_MAX);
     EXPECT_EQ(FILTERS_UPF_STEP_BASIC_BYTES(huge, 1), SIZE_MAX);
     EXPECT_EQ(FILTERS_UPF_STEP_DECOMP_STORAGE(huge, 1), SIZE_MAX);
     float step[FILTERS_UPF_STEP_STORAGE(10, 2, 1)];
     double q31_step[FILTERS_UPF_Q_STEP_STORAGE(10, 2, 1)];
     linears_workspace_unit_t basic[LINEARS_WORKSPACE_UNITS(FILTERS_UPF_STEP_BASIC_BYTES(2, 1))];
     EXPECT_EQ(sizeof step / sizeof step[0], 183u);
-    EXPECT_EQ(sizeof q31_step / sizeof q31_step[0], 195u);
+    EXPECT_EQ(sizeof q31_step / sizeof q31_step[0], 69u);
+    EXPECT_EQ(FILTERS_UPF_Q_STEP_SIGNAL_STORAGE(huge, 1, 1), SIZE_MAX);
     EXPECT_EQ(sizeof basic / sizeof basic[0], 10u);
 }
 
