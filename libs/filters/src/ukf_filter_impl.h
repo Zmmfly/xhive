@@ -5,6 +5,8 @@
 #define U_KERNEL_API(name) U_JOIN(U_JOIN(filters_ukf_, U_KERNEL), U_JOIN(_, name))
 #define U_LOCAL(name) U_JOIN(U_JOIN(ukf_filter_, U_TAG), U_JOIN(_, name))
 #define U_WORK_LOCAL(name) U_JOIN(U_JOIN(ukf_work_, U_KERNEL), U_JOIN(_, name))
+#define U_SYMMETRIC U_JOIN(ukf_symmetric_, U_TAG)
+#define U_EXPORT U_JOIN(ukf_export_, U_TAG)
 #define U_TRY(expression) do { \
     status = (expression); \
     if (status != LINEARS_OK) return status; \
@@ -12,23 +14,11 @@
 #define U_TAKE(rows, cols) U_WORK_LOCAL(take)(&cursor, (rows), (cols))
 #if U_FIXED
 #define U_CHECK_FINITE(matrix) ((void)0)
-#define U_IMPORT_VIEW(matrix) U_LOCAL(import)((matrix), &cursor)
+#define U_IMPORT_VIEW(matrix) U_JOIN(ukf_import_, U_TAG)((matrix), &cursor)
 #else
 #define U_CHECK_FINITE(matrix) U_TRY(U_FINITE(matrix))
 #define U_IMPORT_VIEW(matrix) (*(matrix))
 #endif
-
-static linears_status_t U_LOCAL(symmetric)(const linears_matrix_t *matrix, int check_diagonal)
-{
-    size_t i, j, n = matrix->rows;
-    const U_SIGNAL *values = (const U_SIGNAL *)matrix->data;
-    for (i = 0; i < n; ++i) {
-        if (check_diagonal && values[i * n + i] < 0) return LINEARS_ERROR_DOMAIN;
-        for (j = 0; j < i; ++j)
-            if (values[i * n + j] != values[j * n + i]) return LINEARS_ERROR_DOMAIN;
-    }
-    return LINEARS_OK;
-}
 
 static linears_status_t U_LOCAL(state)(ukf_spans_t *spans, const U_STATE *state,
                                        size_t *states, size_t *measurements)
@@ -48,64 +38,6 @@ static linears_status_t U_LOCAL(state)(ukf_spans_t *spans, const U_STATE *state,
                     sizeof(U_SIGNAL), U_ALIGNOF(U_SIGNAL)));
     *states = n;
     *measurements = m;
-    return LINEARS_OK;
-}
-
-/* Register an init source: its own descriptor/storage is not a second range. */
-static linears_status_t U_LOCAL(source)(ukf_spans_t *spans, const linears_matrix_t *source,
-                                        const linears_matrix_t *target)
-{
-    linears_status_t status;
-    size_t bytes;
-    if (source != target)
-        U_TRY(ukf_span(spans, source, sizeof(*source), U_ALIGNOF(linears_matrix_t), UKF_DESCRIPTOR));
-    U_TRY(ukf_shape(source, target->rows, target->cols, sizeof(U_SIGNAL), &bytes));
-    if (source->data == target->data) return LINEARS_OK;
-    return ukf_span(spans, source->data, bytes, U_ALIGNOF(U_SIGNAL), UKF_INPUT);
-}
-
-#if U_FIXED
-static linears_matrix_t U_LOCAL(import)(const linears_matrix_t *source, U_WORK **cursor)
-{
-    size_t i, count = source->rows * source->cols;
-    linears_matrix_t result = U_WORK_LOCAL(take)(cursor, source->rows, source->cols);
-    const U_SIGNAL *input = (const U_SIGNAL *)source->data;
-    U_WORK *output = (U_WORK *)result.data;
-    for (i = 0; i < count; ++i) output[i] = U_IMPORT(input[i]);
-    return result;
-}
-#endif
-
-/* The kernel borrows everything after the filter's own staging and imports. */
-static U_WORKSPACE U_LOCAL(remaining)(U_WORKSPACE workspace, const U_WORK *cursor)
-{
-    workspace.capacity -= (size_t)(cursor - (const U_WORK *)workspace.data);
-    workspace.data = (U_WORK *)cursor;
-    return workspace;
-}
-
-static linears_status_t U_LOCAL(commit)(U_STATE *state, const linears_matrix_t *estimate,
-                                        const linears_matrix_t *covariance,
-                                        linears_workspace_unit_t *staging)
-{
-    size_t n = state->estimate.rows;
-#if U_FIXED
-    linears_status_t status;
-    size_t i;
-    const U_WORK *x = (const U_WORK *)estimate->data;
-    const U_WORK *p = (const U_WORK *)covariance->data;
-    U_SIGNAL *out_x = (U_SIGNAL *)state->estimate.data;
-    U_SIGNAL *out_p = (U_SIGNAL *)state->covariance.data;
-    /* Stage through declared union members so a late RANGE leaves state intact. */
-    for (i = 0; i < n; ++i) U_TRY(U_EXPORT(x[i], &staging[i].U_PACK_FIELD));
-    for (i = 0; i < n * n; ++i) U_TRY(U_EXPORT(p[i], &staging[n + i].U_PACK_FIELD));
-    for (i = 0; i < n; ++i) out_x[i] = staging[i].U_PACK_FIELD;
-    for (i = 0; i < n * n; ++i) out_p[i] = staging[n + i].U_PACK_FIELD;
-#else
-    (void)staging;
-    memcpy(state->estimate.data, estimate->data, n * sizeof(U_SIGNAL));
-    memcpy(state->covariance.data, covariance->data, n * n * sizeof(U_SIGNAL));
-#endif
     return LINEARS_OK;
 }
 
@@ -130,13 +62,14 @@ linears_status_t U_API(init)(U_STATE *state, U_WORK alpha, U_WORK beta, U_WORK k
     targets[1] = &state->covariance;
     targets[2] = &state->process_noise;
     targets[3] = &state->measurement_noise;
-    for (i = 0; i < 4; ++i) U_TRY(U_LOCAL(source)(&spans, sources[i], targets[i]));
+    for (i = 0; i < 4; ++i)
+        U_TRY(ukf_source(&spans, sources[i], targets[i], sizeof(U_SIGNAL), U_ALIGNOF(U_SIGNAL)));
     U_TRY(ukf_disjoint(&spans));
     U_TRY(U_KERNEL_API(weights)(n, alpha, beta, kappa, &weights));
     for (i = 0; i < 4; ++i) U_CHECK_FINITE(sources[i]);
-    U_TRY(U_LOCAL(symmetric)(covariance, 1));
-    U_TRY(U_LOCAL(symmetric)(process_noise, 1));
-    U_TRY(U_LOCAL(symmetric)(measurement_noise, 0));
+    U_TRY(U_SYMMETRIC(covariance, 1));
+    U_TRY(U_SYMMETRIC(process_noise, 1));
+    U_TRY(U_SYMMETRIC(measurement_noise, 0));
     for (i = 0; i < 4; ++i) {
         if (sources[i]->data != targets[i]->data)
             memcpy(targets[i]->data, sources[i]->data,
@@ -167,8 +100,8 @@ linears_status_t U_API(predict)(U_STATE *state, U_FN transition, void *transitio
     q_in = U_IMPORT_VIEW(&state->process_noise);
     U_TRY(U_KERNEL_API(predict_work)(&x_in, &p_in, &q_in, &state->weights, transition,
                                      transition_context, residual, residual_context, &xbar, &pbar,
-                                     U_LOCAL(remaining)(workspace, cursor)));
-    return U_LOCAL(commit)(state, &xbar, &pbar, workspace.basic);
+                                     U_WORK_LOCAL(remaining)(workspace, cursor)));
+    return U_EXPORT(&xbar, &pbar, &state->estimate, &state->covariance, workspace.basic);
 }
 
 linears_status_t U_API(update)(U_STATE *state, const linears_matrix_t *measurement,
@@ -195,14 +128,16 @@ linears_status_t U_API(update)(U_STATE *state, const linears_matrix_t *measureme
     z_in = U_IMPORT_VIEW(measurement);
     U_TRY(U_KERNEL_API(update_work)(&x_in, &p_in, &r_in, &z_in, &state->weights, observation,
                                     observation_context, residual, residual_context, &xbar, &pbar,
-                                    U_LOCAL(remaining)(workspace, cursor)));
-    return U_LOCAL(commit)(state, &xbar, &pbar, workspace.basic);
+                                    U_WORK_LOCAL(remaining)(workspace, cursor)));
+    return U_EXPORT(&xbar, &pbar, &state->estimate, &state->covariance, workspace.basic);
 }
 
 #undef U_IMPORT_VIEW
 #undef U_CHECK_FINITE
 #undef U_TAKE
 #undef U_TRY
+#undef U_EXPORT
+#undef U_SYMMETRIC
 #undef U_WORK_LOCAL
 #undef U_LOCAL
 #undef U_KERNEL_API
@@ -220,9 +155,6 @@ linears_status_t U_API(update)(U_STATE *state, const linears_matrix_t *measureme
 #undef U_FN
 #undef U_RESIDUAL_FN
 #undef U_FINITE
-#undef U_IMPORT
-#undef U_EXPORT
-#undef U_PACK_FIELD
 #undef U_PREDICT_STORAGE
 #undef U_PREDICT_BASIC
 #undef U_UPDATE_STORAGE

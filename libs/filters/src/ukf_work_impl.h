@@ -1,9 +1,12 @@
 /* Working-format UKF kernels; included by ukf.c once per kernel tag. */
+#include "ukf_scratch_impl.h"
+
 #define U_JOIN_INNER(a, b) a##b
 #define U_JOIN(a, b) U_JOIN_INNER(a, b)
 #define U_API(name) U_JOIN(U_JOIN(filters_ukf_, U_TAG), U_JOIN(_, name))
 #define U_LOCAL(name) U_JOIN(U_JOIN(ukf_work_, U_TAG), U_JOIN(_, name))
 #define U_LINEAR(name) U_JOIN(U_JOIN(linears_, name), U_JOIN(_, U_TAG))
+#define U_SYMMETRIC U_JOIN(ukf_symmetric_, U_TAG)
 #define U_TRY(expression) do { \
     status = (expression); \
     if (status != LINEARS_OK) return status; \
@@ -14,42 +17,6 @@
 #else
 #define U_CHECK_FINITE(matrix) U_TRY(U_FINITE(matrix))
 #endif
-
-static linears_matrix_t U_LOCAL(take)(U_WORK **cursor, size_t rows, size_t cols)
-{
-    linears_matrix_t result = {*cursor, rows, cols};
-    *cursor += rows * cols;
-    return result;
-}
-
-/* Row i of a row-major s-by-k matrix viewed as a contiguous k-by-1 vector. */
-static linears_matrix_t U_LOCAL(row)(const linears_matrix_t *matrix, size_t index)
-{
-    linears_matrix_t result;
-    result.data = (U_WORK *)matrix->data + index * matrix->cols;
-    result.rows = matrix->cols;
-    result.cols = 1;
-    return result;
-}
-
-static linears_status_t U_LOCAL(workspace)(ukf_spans_t *spans, U_WORKSPACE workspace,
-                                          size_t data_count, size_t basic_bytes,
-                                          size_t decomposition_count)
-{
-    linears_status_t status;
-    size_t data_bytes = LINEARS_SIZE_MUL(data_count, sizeof(U_WORK));
-    size_t decomposition_bytes = LINEARS_SIZE_MUL(decomposition_count, sizeof(U_WORK));
-    if (data_count == SIZE_MAX || data_bytes == SIZE_MAX || basic_bytes == SIZE_MAX ||
-        decomposition_count == SIZE_MAX || decomposition_bytes == SIZE_MAX)
-        return LINEARS_ERROR_SIZE;
-    if (workspace.capacity < data_count || workspace.basic_bytes < basic_bytes ||
-        workspace.decomposition.capacity < decomposition_count)
-        return LINEARS_ERROR_WORKSPACE;
-    U_TRY(ukf_scratch(spans, workspace.data, data_bytes, U_ALIGNOF(U_WORK)));
-    U_TRY(ukf_scratch(spans, workspace.basic, basic_bytes, U_ALIGNOF(linears_workspace_unit_t)));
-    U_TRY(ukf_scratch(spans, workspace.decomposition.data, decomposition_bytes, U_ALIGNOF(U_WORK)));
-    return ukf_disjoint(spans);
-}
 
 linears_status_t U_API(weights)(size_t states, U_WORK alpha, U_WORK beta, U_WORK kappa,
                                 U_WEIGHTS *out)
@@ -263,18 +230,6 @@ linears_status_t U_API(weighted_covariance)(const linears_matrix_t *a, const lin
     return U_LINEAR(mul)(&transposed, &scaled, out, U_BASIC);
 }
 
-static linears_status_t U_LOCAL(symmetric)(const linears_matrix_t *matrix, int check_diagonal)
-{
-    size_t i, j, n = matrix->rows;
-    const U_WORK *values = (const U_WORK *)matrix->data;
-    for (i = 0; i < n; ++i) {
-        if (check_diagonal && values[i * n + i] < 0) return LINEARS_ERROR_DOMAIN;
-        for (j = 0; j < i; ++j)
-            if (values[i * n + j] != values[j * n + i]) return LINEARS_ERROR_DOMAIN;
-    }
-    return LINEARS_OK;
-}
-
 static linears_status_t U_LOCAL(weights_valid)(const U_WEIGHTS *weights)
 {
     if (weights == NULL) return LINEARS_ERROR_ARGUMENT;
@@ -337,8 +292,8 @@ linears_status_t U_API(predict_work)(const linears_matrix_t *mean, const linears
     U_CHECK_FINITE(mean);
     U_CHECK_FINITE(covariance);
     U_CHECK_FINITE(process_noise);
-    U_TRY(U_LOCAL(symmetric)(covariance, 1));
-    U_TRY(U_LOCAL(symmetric)(process_noise, 1));
+    U_TRY(U_SYMMETRIC(covariance, 1));
+    U_TRY(U_SYMMETRIC(process_noise, 1));
     /* Pass only the used prefixes; unused supplied capacity stays untouched. */
     workspace.basic_bytes = basic_bytes;
     workspace.decomposition.capacity = decomposition_count;
@@ -403,8 +358,8 @@ linears_status_t U_API(update_work)(const linears_matrix_t *mean, const linears_
     U_CHECK_FINITE(covariance);
     U_CHECK_FINITE(measurement_noise);
     U_CHECK_FINITE(measurement);
-    U_TRY(U_LOCAL(symmetric)(covariance, 1));
-    U_TRY(U_LOCAL(symmetric)(measurement_noise, 0));
+    U_TRY(U_SYMMETRIC(covariance, 1));
+    U_TRY(U_SYMMETRIC(measurement_noise, 0));
     workspace.basic_bytes = basic_bytes;
     workspace.decomposition.capacity = decomposition_count;
     cursor = workspace.data;
@@ -466,6 +421,7 @@ linears_status_t U_API(update_work)(const linears_matrix_t *mean, const linears_
 #undef U_CHECK_FINITE
 #undef U_BASIC
 #undef U_TRY
+#undef U_SYMMETRIC
 #undef U_LINEAR
 #undef U_LOCAL
 #undef U_API
