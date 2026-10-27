@@ -102,7 +102,7 @@ xmake test -g xhive -v
 | ezctrl C++ 包装层 | `ezctrl_test_pid_cpp/pid_cpp` |
 | ezctrl C/C++ 头文件及链接检查 | `ezctrl_test_consumer/consumer` |
 | linears 四版基础运算、分解及数值边界 | `linears_test_*/*` |
-| filters 四版流式滤波、标量/矩阵 Kalman、UKF | `filters_test_*/*` |
+| filters 四版流式滤波、标量/矩阵 Kalman、UKF、PF/UPF | `filters_test_*/*` |
 | fieldctrl 四版控制基础、VVVF、FOC/SMO、DTC 软件测试 | `fieldctrl_test_*/*` |
 | C2 MMIO mock、C/C++ 头文件及链接检查 | `xhive_test_c2/host` |
 | SDK 入口、配置隔离、错误传播与清理检查 | `xhive_test_sdk_entry/sdk_entry` |

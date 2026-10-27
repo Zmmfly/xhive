@@ -118,7 +118,8 @@ Typed family functions use `_f32`, `_f64`, `_q15`, or `_q31` before the
 operation suffix: for example `filters_fir_q15_step`. `filters.h` exposes all
 families. Smaller includes are `filters_ema.h`, `filters_fir.h`,
 `filters_iir.h` (biquad/SOS), `filters_lpf.h`, `filters_hpf.h`,
-`filters_bpf.h`, `filters_kalman.h` and `filters_ukf.h`.
+`filters_bpf.h`, `filters_kalman.h`, `filters_ukf.h`, `filters_pf.h` and
+`filters_upf.h`.
 
 | Family | State and configuration | Scratch | Equation / cost per sample |
 | --- | --- | --- | --- |
@@ -133,6 +134,8 @@ families. Smaller includes are `filters_ema.h`, `filters_fir.h`,
 | Scalar Kalman | Estimate and variance in context | None | Separate predict/update; Joseph variance |
 | Matrix Kalman | Caller-owned state vector and covariance matrix | Three explicitly typed arrays | See [KALMAN.md](KALMAN.md) |
 | Unscented Kalman | Caller-owned x, P, Q, R and weights; callback f/h and residuals | Three explicitly typed arrays | 2n+1 sigma points per predict/update; see [UKF.md](UKF.md) |
+| Particle | Caller-owned N-by-n particles, N weights, Q, R; callback f/h, residuals and sampler | Three explicitly typed arrays | Bootstrap PF with systematic resampling; N callback evaluations per step; see [PF.md](PF.md) |
+| Unscented particle | Particle state plus N-by-(n*n) covariances and sigma weights | Three explicitly typed arrays | One UKF predict/update per particle per step; see [PF.md](PF.md) |
 `FILTERS_FIR_STATE_COUNT`, `FILTERS_BIQUAD_STATE_COUNT`,
 `FILTERS_BIQUAD_WORKSPACE_COUNT`, `FILTERS_MOVING_AVERAGE_STATE_COUNT`,
 `FILTERS_MEDIAN_STATE_COUNT`, and `FILTERS_MEDIAN_WORKSPACE_COUNT` give required
@@ -151,8 +154,8 @@ count and round once. There is no integer running-sum drift or per-term LSB
 loss. Floating means retain the finite-window recomputation to avoid drift.
 The additional 16-byte Q context state is intentional; not every context or
 workspace becomes smaller. Matrix Kalman working buffers can also grow; see
-its explicit type-specific storage formulas in [KALMAN.md](KALMAN.md) and the
-UKF formulas in [UKF.md](UKF.md).
+its explicit type-specific storage formulas in [KALMAN.md](KALMAN.md), the
+UKF formulas in [UKF.md](UKF.md) and the PF/UPF formulas in [PF.md](PF.md).
 
 FIR, SOS, moving-average and median histories initially contain zeros, and reset
 restores that same state. The moving average always divides by the full window,
@@ -249,6 +252,38 @@ working-format kernels. Algorithm, storage formulas and validation are in
   predict/update cycle performs two Cholesky factorizations of `P` plus the
   `R` and `S` checks.
 
+## Particle and unscented particle filters
+
+`filters_pf.h` keeps N particles and weights in caller storage and runs the
+bootstrap particle filter: `init` draws from `N(mean, P0)`, `predict` applies
+`f` and adds `L_Q*xi`, `update` weights by the Gaussian likelihood of `z`
+under `R`, `resample` performs systematic resampling from one uniform draw
+and `estimate` exports the weighted mean and covariance. `filters_upf.h` adds
+a covariance per particle and runs the UKF kernels of `filters_ukf.h` per
+particle as the proposal (unscented particle filter). The library contains no
+random generator: standard-normal draws arrive through a sampler callback
+and the resampling draw as an argument. The steps (perturb, Gaussian
+exponent, reweight, effective sample size, resampling indices, gather) are
+public working-format kernels. Algorithm, weight derivation, storage
+formulas and validation are in [PF.md](PF.md). Known limits:
+
+- Noise is additive Gaussian and the likelihood is the Gaussian of `R`;
+  other likelihoods need caller code around the kernels and the public
+  `weights` field.
+- Resampling is systematic only and never automatic: call
+  `effective_sample_size` and `resample` under the caller's threshold. There
+  is no roughening, MCMC move or adaptive particle count.
+- `Q` must be positive definite (its Cholesky factor generates the process
+  noise and, in the UPF, the prior exponent), and so must `P0` at init; a
+  semidefinite `Q` or `P0` fails with `NOT_POSITIVE_DEFINITE`.
+- Q particles and weights are `linears_fixed_t` working values; only
+  `estimate` narrows to the signal interval. F31 weights of particles more
+  than about 22 nats behind the best one become exactly zero.
+- The UPF transition must be deterministic, each step costs a full UKF
+  predict/update per particle, the state grows with `N*n*n`, and its weights
+  are not near-uniform even for linear Gaussian models because every
+  particle proposes from its own UKF posterior.
+
 ## Numeric, ownership and failure contracts
 
 - `f32` and `f64` use native float/double operations. They reject nonfinite
@@ -302,9 +337,9 @@ working-format kernels. Algorithm, storage formulas and validation are in
 
 Tests are separated into `fir.cc`, `fir_design.cc`, `biquad.cc`, `lpf.cc`,
 `hpf.cc`, `bpf.cc`, `moving_average.cc`, `ema.cc`, `median.cc`,
-`complementary.cc`, `kalman_scalar.cc`, `kalman_matrix.cc` and `ukf.cc`. Every category uses all four numeric
+`complementary.cc`, `kalman_scalar.cc`, `kalman_matrix.cc`, `ukf.cc`, `pf.cc` and `upf.cc`. Every category uses all four numeric
 formats. Independent difference equations or sorted-window oracles use the
-quantized public inputs; matrix Kalman and the UKF use Eigen only in tests. The exact fixed
+quantized public inputs; matrix Kalman, the UKF and the particle filters use Eigen only in tests. The exact fixed
 FIR oracle uses the host compiler's native `__int128`, deliberately independent
 of the portable production two-limb implementation. These tests are verified
 with Linux GCC/Clang; MSVC test compatibility is not claimed.
@@ -352,6 +387,11 @@ parent-owned `docs/fieldctrl-worklog.md`. Host tests are not hardware validation
 - The unscented Kalman filter follows the scaled sigma-point formulation of
   Wan and van der Merwe; weights, residual handling, kernel reuse and storage
   are documented in `UKF.md`.
+- The particle filter is the bootstrap filter of Gordon, Salmond and Smith
+  (1993) with systematic resampling (Kitagawa 1996; Carpenter, Clifford and
+  Fearnhead 1999); the unscented particle filter follows van der Merwe,
+  Doucet, de Freitas and Wan (2000). Weight derivation, fixed-point `exp`
+  and storage are documented in `PF.md`.
 
 The implementation is original C code derived from these published algorithms,
 not copied library source. Host tests are not a claim of on-target validation.
