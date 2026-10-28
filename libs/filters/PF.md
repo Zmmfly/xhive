@@ -209,24 +209,50 @@ The dedicated implementation is in
 complete floating PF kernel:
 
 - Weight products, maximum selection and normalized raw output use integer
-  arithmetic. `expf`/`exp` and one shared normalization reciprocal remain
-  floating; transient unsigned likelihoods use 31 fractional bits for q15
-  and 63 for q31. Those scalars are not persistent particle/weight storage.
+  arithmetic. A bounded fixed-point exponential supplies ordinary likelihoods;
+  local `expf`/`exp` retries retain the precision/cutoff boundary behavior.
+  One integer quotient replaces the normalization reciprocal. Transient
+  unsigned likelihoods use 31 fractional bits for q15 and 63 for q31 and
+  reuse consumed exponent slots through bytewise copies, without an extra
+  N-element array. Advertised IEEE layouts use integer exponent comparison
+  and F40/F64 differences; other supported binary layouts retain portable
+  input comparison/conversion before the same integer kernel. Persistent
+  weight storage is unchanged.
 - ESS accumulates the raw weight sum and sum of squares in integers, then
   forms the float/double result. Systematic resampling uses integer
   cumulative masses and an exact representation of the supplied binary
   uniform draw; it does not allocate a floating weight vector.
-- Mean/covariance loops accumulate raw weighted moments. Without a residual
-  callback, each two-word sum stays local across its particle loop and is
-  written to `basic` once, not loaded/stored for every contribution. The
-  accumulator width and particle order are unchanged; no widened particle
-  cloud is retained. A caller residual outside the signal interval contributes
-  through a local float/double term rather than being clipped.
-- Gaussian operations keep Cholesky and scalar divisions in float/double.
-  Their mixed dot products use Q integer MACs for bounded operands and
-  local floating products for operands needing more range, including
-  standard-normal draws. Direct triangular solves reuse the factor instead
-  of running a pivoted LU for each particle.
+- Without a residual callback, mean/covariance estimation is entirely integer,
+  including final division, centering and nearest rounding (ties away from
+  zero). Exact mean remainders occupy only `2n` basic units; covariance sums
+  stay local and their raw results are staged one entry at a time. q15 uses
+  proven 64-bit sums at ordinary particle counts, otherwise 128-bit sums;
+  q31 retains 128-bit sums and its existing per-product Q31 rounding. A
+  centering correction can move a raw covariance by at most `1/(4*2^B)`
+  cells, so an integer distance-to-half-cell test normally avoids larger
+  arithmetic. Ambiguous cells use a local 192-bit (q15) or 256-bit (q31)
+  exact rational, not a widened particle array or floating retry. All public
+  workspace capacities remain unchanged; the default path does not access
+  floating `data`. A custom residual retains the original row-local mixed
+  arithmetic and callback order, without clipping extended values.
+- Cholesky remains in float/double. Its prepared factors and callback vectors
+  feed the shared [Gaussian integer kernels](src/pf_q_gaussian_impl.h): raw-byte
+  F30/F62 caches, integer perturbation MACs, triangular divisions and squared
+  norms. Exact positive pivots and explicit input/solve error bounds decide
+  acceptance; insufficient precision uses the original local mixed arithmetic
+  without repeating a callback or sampler. Wider integer accumulation at the
+  same scale handles native-width capacity failures. Default residual
+  subtraction and final mean/noise addition still use the working type.
+- Q UPF evaluates `sum(log(L[j][j]))` with an
+  [integer normalized-mantissa logarithm](src/pf_q_log_impl.h): F30 for q15,
+  F54 for q31, and one signed 128-bit scalar sum. It never forms the absolute
+  determinant product, so subnormal diagonals do not cause an artificial
+  product-underflow retry. Only the final scalar returns to float/double;
+  unsupported precision/exponent formats retain the original log path.
+  PF helpers share [integer bit-length operations](src/q_integer_bits.h) and
+  [wide multiply/rounding primitives](src/q_integer_wide.h). UPF continues to
+  reuse the UKF cores and PF density, weighting, resampling and estimation
+  components.
 
 [`upf_q_filter_impl.h`](src/upf_q_filter_impl.h) combines those helpers with
 the dedicated Q UKF cores. It retains only one particle's extended
@@ -259,7 +285,9 @@ integer weight, ESS and moment accumulation removes corresponding floating
 array passes. These source-backed changes explain reduced work and
 workspace, but do not imply that integer instructions always beat an FPU.
 Actual host timing and counted RAM must come from the same-revision
-[benchmark](README.md#measurements).
+[benchmark](README.md#measurements). The selected shared integer-kernel
+[N32H474 results](bench/n32h474/q-integer.md) record measured gains, small
+regressions, memory cost and the unchanged numerical tolerances.
 
 ## Migrating Q callers
 

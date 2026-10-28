@@ -308,12 +308,37 @@ void check_reweight(Reweight reweight) {
         }
         weights[trial % count] = maximum;
         linears_matrix_t view{weights.data(), count, 1};
+        const auto input_exponents = exponents;
         auto reference_exponents = exponents;
+        W lowest = 0;
+        bool found = false;
+        for (size_t i = 0; i < count; ++i) {
+            if (weights[i] != 0 && (!found || input_exponents[i] < lowest)) {
+                lowest = input_exponents[i];
+                found = true;
+            }
+        }
         ASSERT_EQ((old_reweight<W, S, B>(&view, reference_exponents.data(), expected.data(), count)), LINEARS_OK);
         ASSERT_EQ(reweight(&view, exponents.data(), actual.data(), count), LINEARS_OK);
         ASSERT_EQ(actual, expected) << trial;
-        for (size_t i = 0; i < count; ++i)
-            ASSERT_EQ(representation(exponents[i]), representation(reference_exponents[i])) << trial << ' ' << i;
+        for (size_t i = 0; i < count; ++i) {
+            /* Scratch now contains raw likelihood bytes, not a float/double. */
+            uint64_t raw;
+            if constexpr (sizeof(W) == 4) {
+                uint32_t value;
+                std::memcpy(&value, exponents.data() + i, sizeof(value));
+                raw = value;
+            } else {
+                std::memcpy(&raw, exponents.data() + i, sizeof(raw));
+            }
+            if (weights[i] == 0) {
+                EXPECT_EQ(raw, 0) << trial << ' ' << i;
+            } else if constexpr (B == 15) {
+                EXPECT_EQ(raw, pf_q_q15_likelihood(input_exponents[i] - lowest)) << trial << ' ' << i;
+            } else {
+                EXPECT_EQ(raw, pf_q_q31_likelihood(input_exponents[i] - lowest)) << trial << ' ' << i;
+            }
+        }
     }
     for (int failure = 0; failure < 4; ++failure) {
         std::array<S, 3> weights{1, maximum, 1}, staged{7, 7, 7};
@@ -332,7 +357,7 @@ void check_reweight(Reweight reweight) {
     }
 }
 
-TEST(ParticleQArithmetic, ReweightKeepsExactWeightsAndAtomicFailures) {
+TEST(ParticleQArithmetic, ReweightKeepsLegacyWeightsRawCacheAndAtomicFailures) {
     check_reweight<float, int16_t, 15>(pf_q_q15_reweight);
     check_reweight<double, int32_t, 31>(pf_q_q31_reweight);
 }

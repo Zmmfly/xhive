@@ -3,7 +3,9 @@
 #ifndef FILTERS_PF_Q_INTEGER_HELPERS
 #define FILTERS_PF_Q_INTEGER_HELPERS
 
-typedef struct { uint64_t lo, hi; } pf_q_u128_t;
+#include "q_integer_wide.h"
+
+typedef filters_q_u128_t pf_q_u128_t;
 typedef struct { uint64_t lo; int64_t hi; } pf_q_i128_t;
 
 static pf_q_u128_t pf_q_uadd(pf_q_u128_t a, pf_q_u128_t b)
@@ -20,17 +22,10 @@ static int pf_q_ucmp(pf_q_u128_t a, pf_q_u128_t b)
     return a.lo == b.lo ? 0 : (a.lo < b.lo ? -1 : 1);
 }
 
-/* Full 64-by-64 multiplication using the native 32-by-32 products. */
+/* Keep the PF-local spelling while sharing the exact scalar product. */
 static pf_q_u128_t pf_q_umul(uint64_t a, uint64_t b)
 {
-    const uint64_t mask = UINT64_C(0xffffffff);
-    uint64_t a0 = a & mask, a1 = a >> 32, b0 = b & mask, b1 = b >> 32;
-    uint64_t low = a0 * b0, middle = a1 * b0 + (low >> 32), carry = middle >> 32;
-    pf_q_u128_t r;
-    middle = (middle & mask) + a0 * b1;
-    r.lo = (middle << 32) | (low & mask);
-    r.hi = a1 * b1 + carry + (middle >> 32);
-    return r;
+    return filters_q_multiply_u64(a, b);
 }
 
 /* The callers prove a*b fits 128 bits. */
@@ -41,27 +36,21 @@ static pf_q_u128_t pf_q_umul32(pf_q_u128_t a, uint32_t b)
     return r;
 }
 
+/**
+ * @brief Extend the shared magnitude bit count to a two-limb integer.
+ *
+ * @param[in] a Any unsigned 128-bit value.
+ * @return unsigned Zero for zero, otherwise the significant bit count (1 to 128).
+ */
 static unsigned pf_q_ubits(pf_q_u128_t a)
 {
-    uint64_t top = a.hi != 0 ? a.hi : a.lo;
-    unsigned bits = a.hi != 0 ? 64 : 0;
-    while (top != 0) { ++bits; top >>= 1; }
-    return bits;
+    return filters_q_u128_bit_length(a);
 }
 
-/* Round a positive product divided by 2^shift; the result fits 32 bits. */
+/* PF callers prove that the rounded product fits uint64_t. */
 static uint64_t pf_q_uround(pf_q_u128_t a, unsigned shift)
 {
-    uint64_t result, rounding;
-    if (shift >= 64) {
-        unsigned tail = shift - 64;
-        result = a.hi >> tail;
-        rounding = tail != 0 ? ((a.hi >> (tail - 1)) & 1) : (a.lo >> 63);
-    } else {
-        result = (a.lo >> shift) | (a.hi << (64 - shift));
-        rounding = (a.lo >> (shift - 1)) & 1;
-    }
-    return result + rounding;
+    return filters_q_round_u128(a, shift).value;
 }
 
 /* a/d is at most a raw weight. Only two such divisions are needed by a
@@ -354,10 +343,12 @@ static linears_status_t PQ(resample_indices)(const linears_matrix_t *weights, U_
     return LINEARS_OK;
 }
 
-/* The factor is a checked Cholesky lower triangle. Reusing it avoids the
- * old per-particle pivoted LU and its matrix-sized scratch. */
-static linears_status_t PQ(gaussian)(const U_WORK *deviation, const U_WORK *lower, size_t k,
-                                     U_WORK *solve, U_WORK *out)
+#include "pf_q_gaussian_impl.h"
+
+/* Original mixed triangular path, retained for local numerical retries. The
+ * factor is a checked Cholesky lower triangle; no callback is repeated. */
+static linears_status_t PQ(gaussian_mixed)(const U_WORK *deviation, const U_WORK *lower, size_t k,
+                                           U_WORK *solve, U_WORK *out)
 {
     size_t i;
     U_WORK value;
@@ -372,16 +363,70 @@ static linears_status_t PQ(gaussian)(const U_WORK *deviation, const U_WORK *lowe
     return LINEARS_OK;
 }
 
+static linears_status_t PQ(gaussian_retry)(const U_WORK *deviation, const U_WORK *lower, size_t k,
+                                           U_WORK *solve, U_WORK *out, const U_WORK *raw_a,
+                                           PQ(scale_t) sa, U_WORK *raw_b, U_WORK *raw_error)
+{
+    PQ(scale_t) sb;
+    if (PQ(vector_prepare)(deviation, k, raw_b, &sb) &&
+        PQ(gaussian_try)(raw_a, sa, raw_b, sb, k, solve, raw_error, out)) return LINEARS_OK;
+    return PQ(gaussian_mixed)(deviation, lower, k, solve, out);
+}
+
+#include "pf_q_exp_impl.h"
+
 /* Likelihood precision covers both the input and output weight dynamic
- * ranges: F31 for q15, F63 for q31. These are scalar unsigned probabilities,
- * never persistent signals. Only exp and one common reciprocal are floating;
- * all weight products, maximum comparisons and normalization are integer. */
+ * ranges: F31 for q15, F63 for q31. Fixed evaluation runs only inside its
+ * proof envelope; every other case uses the original exponential locally. */
+static uint64_t PQ(likelihood)(U_WORK delta)
+{
+#if U_BITS == 15
+    uint32_t value;
+    if (pf_q15_exp_neg_try(delta, &value)) return value;
+#else
+    uint64_t value;
+    if (pf_q31_exp_neg_try(delta, &value)) return value;
+#endif
+    {
+        U_WORK probability = U_EXP_NEG(delta);
+        return (uint64_t)(probability * (U_WORK)U_LIKELIHOOD_SCALE + (U_WORK)0.5);
+    }
+}
+
+#include "pf_q_likelihood_impl.h"
+#include "pf_q_log_impl.h"
+
+/* Once the exponent difference is consumed, its scratch slot holds raw
+ * likelihood bytes. No pointer cast or floating read occurs in that lifetime. */
+static void PQ(cache_likelihood)(U_WORK *slot, uint64_t likelihood)
+{
+#if U_BITS == 15
+    uint32_t raw = (uint32_t)likelihood;
+    memcpy(slot, &raw, sizeof(raw));
+#else
+    memcpy(slot, &likelihood, sizeof(likelihood));
+#endif
+}
+
+static uint64_t PQ(cached_likelihood)(const U_WORK *slot)
+{
+#if U_BITS == 15
+    uint32_t raw;
+    memcpy(&raw, slot, sizeof(raw));
+    return raw;
+#else
+    uint64_t raw;
+    memcpy(&raw, slot, sizeof(raw));
+    return raw;
+#endif
+}
+
 static linears_status_t PQ(reweight)(const linears_matrix_t *weights, U_WORK *exponents,
                                      U_SIGNAL *staged, size_t count)
 {
     const U_SIGNAL *w = (const U_SIGNAL *)weights->data;
-    pf_q_u128_t maximum = {0, 0};
-    U_WORK lowest = 0, reciprocal;
+    pf_q_u128_t maximum = {0, 0}, numerator;
+    U_WORK lowest = 0;
     uint32_t multiplier;
     unsigned shift;
     size_t i;
@@ -389,31 +434,30 @@ static linears_status_t PQ(reweight)(const linears_matrix_t *weights, U_WORK *ex
     for (i = 0; i < count; ++i) {
         if (w[i] < 0) return LINEARS_ERROR_DOMAIN;
         if (!PQ_ISFINITE(exponents[i])) return LINEARS_ERROR_RANGE;
-        if (w[i] != 0 && (!found || exponents[i] < lowest)) { lowest = exponents[i]; found = 1; }
+        if (w[i] != 0 && (!found || PQ(exponent_less)(exponents[i], lowest))) { lowest = exponents[i]; found = 1; }
     }
     if (!found) return LINEARS_ERROR_DOMAIN;
     for (i = 0; i < count; ++i) {
         pf_q_u128_t product;
         uint64_t likelihood;
-        /* A zero-weight row must not overflow exp when its exponent is lower. */
-        exponents[i] = w[i] == 0 ? 0 : U_EXP_NEG(exponents[i] - lowest);
-#if U_BITS == 15
-        likelihood = (uint32_t)(exponents[i] * (U_WORK)U_LIKELIHOOD_SCALE + (U_WORK)0.5);
-#else
-        likelihood = (uint64_t)(exponents[i] * (U_WORK)U_LIKELIHOOD_SCALE + (U_WORK)0.5);
-#endif
+        if (w[i] == 0) {
+            likelihood = 0;
+        } else {
+            /* Keep both original operands for a zero/one-cell retry; the
+             * ordinary difference and exponential stay on integer grids. */
+            likelihood = PQ(likelihood_pair)(exponents[i], lowest);
+        }
+        PQ(cache_likelihood)(exponents + i, likelihood);
         product = pf_q_umul(likelihood, (uint64_t)w[i]);
         if (pf_q_ucmp(product, maximum) > 0) maximum = product;
     }
     shift = pf_q_ubits(maximum);
-    reciprocal = U_LDEXP((U_WORK)U_SIGNAL_MAX / PQ(unsigned_value)(maximum), (int)shift);
-    multiplier = (uint32_t)(reciprocal + (U_WORK)0.5);
+    /* max<2^46/2^94 and W<2^15/2^31 prove 64/128-bit numerator
+     * and product bounds. The rounded shared quotient fits uint32_t. */
+    numerator = pf_q_exp_shl((pf_q_u128_t){(uint64_t)U_SIGNAL_MAX, 0}, shift);
+    multiplier = (uint32_t)pf_q_exp_round_div(numerator, maximum);
     for (i = 0; i < count; ++i) {
-#if U_BITS == 15
-        uint64_t likelihood = (uint32_t)(exponents[i] * (U_WORK)U_LIKELIHOOD_SCALE + (U_WORK)0.5);
-#else
-        uint64_t likelihood = (uint64_t)(exponents[i] * (U_WORK)U_LIKELIHOOD_SCALE + (U_WORK)0.5);
-#endif
+        uint64_t likelihood = PQ(cached_likelihood)(exponents + i);
         pf_q_u128_t product = pf_q_umul(likelihood, (uint64_t)w[i]);
         uint64_t value = pf_q_ucmp(product, maximum) == 0 ? (uint64_t)U_SIGNAL_MAX :
             pf_q_uround(pf_q_umul32(product, multiplier), shift);

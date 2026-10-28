@@ -10,7 +10,6 @@
 #define P_SCRATCH(name) P_JOIN(P_JOIN(ukf_work_, U_TAG), P_JOIN(_, name))
 #define P_LINEAR(name) P_JOIN(P_JOIN(linears_, name), P_JOIN(_, U_KERNEL))
 #define P_WIDEN P_JOIN(ukf_widen_, U_TAG)
-#define P_WIDEN_VALUE P_JOIN(ukf_widen_value_, U_TAG)
 #define P_FITS P_JOIN(ukf_fits_, U_TAG)
 #define P_STORE P_JOIN(ukf_store_, U_TAG)
 #define P_FINITE P_JOIN(ukf_finite_, U_KERNEL)
@@ -55,17 +54,27 @@ static linears_status_t P_LOCAL(init_validated)(U_STATE *state, const linears_ma
     linears_matrix_t mean_in = P_TAKE(mean->rows, 1);
     linears_matrix_t draw = P_TAKE(mean->rows, 1);
     linears_matrix_t result = P_TAKE(mean->rows, 1);
+    P_LOCAL(scale_t) factor_scale;
+    int integer_factor;
     size_t i, j, n = mean->rows, count = state->particles.rows, m = state->measurement_noise.rows;
     P_WIDEN((const U_SIGNAL *)mean->data, n, (U_WORK *)mean_in.data);
     P_WIDEN((const U_SIGNAL *)covariance->data, n * n, (U_WORK *)covariance_in.data);
     workspace.decomposition.capacity = FILTERS_PF_PREDICT_DECOMP_STORAGE(n);
     P_TRY(P_LINEAR(cholesky)(&covariance_in, &factor, workspace.decomposition));
+    integer_factor = P_LOCAL(gaussian_prepare)((const U_WORK *)factor.data, n,
+                                                (U_WORK *)covariance_in.data, &factor_scale);
     for (i = 0; i < count; ++i) {
         P_TRY(sample(&draw, context));
         P_TRY(P_FINITE(&draw));
-        for (j = 0; j < n; ++j)
-            ((U_WORK *)result.data)[j] = ((const U_WORK *)mean_in.data)[j] +
-                P_LOCAL(dot)((const U_WORK *)factor.data + j * n, 1, (const U_WORK *)draw.data, 1, j + 1);
+        if (integer_factor) {
+            P_LOCAL(perturb_retry)((const U_WORK *)factor.data, (const U_WORK *)draw.data, n,
+                                   (const U_WORK *)covariance_in.data, factor_scale,
+                                   (U_WORK *)workspace.decomposition.data, (U_WORK *)result.data);
+        } else {
+            P_LOCAL(perturb_mixed)((const U_WORK *)factor.data, (const U_WORK *)draw.data, n,
+                                   (U_WORK *)result.data);
+        }
+        for (j = 0; j < n; ++j) ((U_WORK *)result.data)[j] += ((const U_WORK *)mean_in.data)[j];
         P_TRY(P_FITS((const U_WORK *)result.data, n));
         P_STORE((const U_WORK *)result.data, n, workspace.signal + i * n);
     }
@@ -108,7 +117,9 @@ linears_status_t P_API(predict)(U_STATE *state, U_FN transition, void *transitio
     linears_status_t status;
     ukf_spans_t spans;
     linears_matrix_t q, factor, input, predicted, draw;
+    P_LOCAL(scale_t) factor_scale;
     U_WORK *cursor;
+    int integer_factor;
     size_t count, n, m, i, j;
     if (transition == NULL || sample == NULL) return LINEARS_ERROR_ARGUMENT;
     spans.count = 0;
@@ -123,6 +134,8 @@ linears_status_t P_API(predict)(U_STATE *state, U_FN transition, void *transitio
     P_WIDEN((const U_SIGNAL *)state->process_noise.data, n * n, (U_WORK *)q.data);
     workspace.decomposition.capacity = FILTERS_PF_PREDICT_DECOMP_STORAGE(n);
     P_TRY(P_LINEAR(cholesky)(&q, &factor, workspace.decomposition));
+    integer_factor = P_LOCAL(gaussian_prepare)((const U_WORK *)factor.data, n,
+                                                (U_WORK *)q.data, &factor_scale);
     /* Unlike the floating PF, Q processes a complete particle before moving
      * on. An unbounded transition result is not quantized before adding noise. */
     for (i = 0; i < count; ++i) {
@@ -131,9 +144,15 @@ linears_status_t P_API(predict)(U_STATE *state, U_FN transition, void *transitio
         P_TRY(P_FINITE(&predicted));
         P_TRY(sample(&draw, sample_context));
         P_TRY(P_FINITE(&draw));
-        for (j = 0; j < n; ++j)
-            ((U_WORK *)predicted.data)[j] +=
-                P_LOCAL(dot)((const U_WORK *)factor.data + j * n, 1, (const U_WORK *)draw.data, 1, j + 1);
+        if (integer_factor) {
+            P_LOCAL(perturb_retry)((const U_WORK *)factor.data, (const U_WORK *)draw.data, n,
+                                   (const U_WORK *)q.data, factor_scale,
+                                   (U_WORK *)workspace.decomposition.data, (U_WORK *)input.data);
+        } else {
+            P_LOCAL(perturb_mixed)((const U_WORK *)factor.data, (const U_WORK *)draw.data, n,
+                                   (U_WORK *)input.data);
+        }
+        for (j = 0; j < n; ++j) ((U_WORK *)predicted.data)[j] += ((const U_WORK *)input.data)[j];
         P_TRY(P_FITS((const U_WORK *)predicted.data, n));
         P_STORE((const U_WORK *)predicted.data, n, workspace.signal + i * n);
     }
@@ -149,7 +168,9 @@ linears_status_t P_API(update)(U_STATE *state, const linears_matrix_t *measureme
     ukf_spans_t spans;
     linears_matrix_t r, factor, particle, measured, z, deviation;
     pf_q_u128_t total;
-    U_WORK *cursor, *exponents, *solve;
+    P_LOCAL(scale_t) factor_scale;
+    U_WORK *cursor, *exponents, *solve, *raw_b, *raw_error, local_b, local_error;
+    int integer_factor;
     size_t count, n, m, i, j;
     if (observation == NULL) return LINEARS_ERROR_ARGUMENT;
     spans.count = 0;
@@ -171,6 +192,12 @@ linears_status_t P_API(update)(U_STATE *state, const linears_matrix_t *measureme
     P_WIDEN((const U_SIGNAL *)measurement->data, m, (U_WORK *)z.data);
     workspace.decomposition.capacity = FILTERS_PF_Q_UPDATE_DECOMP_STORAGE(m);
     P_TRY(P_LINEAR(cholesky)(&r, &factor, workspace.decomposition));
+    integer_factor = P_LOCAL(gaussian_prepare)((const U_WORK *)factor.data, m,
+                                                (U_WORK *)r.data, &factor_scale);
+    if (integer_factor) P_LOCAL(gaussian_prepare_division)((U_WORK *)r.data, m);
+    raw_b = (U_WORK *)workspace.decomposition.data;
+    raw_error = raw_b + m;
+    if (m == 1) { raw_b = &local_b; raw_error = &local_error; }
     for (i = 0; i < count; ++i) {
         P_WIDEN((const U_SIGNAL *)state->particles.data + i * n, n, (U_WORK *)particle.data);
         P_TRY(observation(&particle, &measured, observation_context));
@@ -182,8 +209,14 @@ linears_status_t P_API(update)(U_STATE *state, const linears_matrix_t *measureme
             for (j = 0; j < m; ++j)
                 ((U_WORK *)deviation.data)[j] = ((const U_WORK *)measured.data)[j] - ((const U_WORK *)z.data)[j];
         }
-        P_TRY(P_LOCAL(gaussian)((const U_WORK *)deviation.data, (const U_WORK *)factor.data,
-                                 m, solve, exponents + i));
+        if (integer_factor) {
+            P_TRY(P_LOCAL(gaussian_retry)((const U_WORK *)deviation.data, (const U_WORK *)factor.data,
+                                           m, solve, exponents + i, (const U_WORK *)r.data,
+                                           factor_scale, raw_b, raw_error));
+        } else {
+            P_TRY(P_LOCAL(gaussian_mixed)((const U_WORK *)deviation.data, (const U_WORK *)factor.data,
+                                           m, solve, exponents + i));
+        }
     }
     P_TRY(P_LOCAL(reweight)(&state->weights, exponents, workspace.signal, count));
     memcpy(state->weights.data, workspace.signal, count * sizeof(U_SIGNAL));
@@ -229,6 +262,8 @@ static uint64_t P_LOCAL(covariance_product)(int64_t a, int64_t b, U_SIGNAL weigh
     return product * (uint64_t)weight;
 }
 
+#include "pf_q_moments_impl.h"
+
 linears_status_t P_API(estimate)(const U_STATE *state, U_RESIDUAL_FN residual, void *residual_context,
                                  linears_matrix_t *mean, linears_matrix_t *covariance, U_WORKSPACE workspace)
 {
@@ -250,6 +285,7 @@ linears_status_t P_API(estimate)(const U_STATE *state, U_RESIDUAL_FN residual, v
     particles = (const U_SIGNAL *)state->particles.data;
     weights = (const U_SIGNAL *)state->weights.data;
     P_TRY(P_LOCAL(weight_total)(weights, count, &total));
+    if (residual == NULL) return P_LOCAL(estimate_integer)(state, mean, covariance, workspace, total);
     denominator = P_LOCAL(unsigned_value)(total);
     center = workspace.data; row = center + n; delta = row + n; extended = delta + n;
     mean_stage = workspace.signal; covariance_stage = mean_stage + n; raw_row = covariance_stage + n * n;
@@ -257,77 +293,49 @@ linears_status_t P_API(estimate)(const U_STATE *state, U_RESIDUAL_FN residual, v
     reference.data = center; reference.rows = n; reference.cols = 1;
     difference.data = delta; difference.rows = n; difference.cols = 1;
     P_LOCAL(clear_accumulators)(workspace.basic, extended, n);
-    if (residual == NULL) {
-        /* One exact wide sum stays local across its particle loop. Each
-         * element retains the original particle order, without loading and
-         * storing both workspace limbs for every contribution. */
+    P_WIDEN(particles, n, center);
+    for (i = 0; i < count; ++i) {
+        P_WIDEN(particles + i * n, n, row);
+        P_TRY(residual(&input, &reference, &difference, residual_context));
+        P_TRY(P_FINITE(&difference));
         for (j = 0; j < n; ++j) {
-            pf_q_i128_t sum = {0, 0};
-            for (i = 0; i < count; ++i) {
-                int64_t value = particles[i * n + j];
-                pf_q_iadd(&sum, pf_q_magnitude(value) * (uint64_t)weights[i], value < 0);
-            }
-            pf_q_acc_write(workspace.basic + 2 * j, sum);
-        }
-    } else {
-        P_WIDEN(particles, n, center);
-        for (i = 0; i < count; ++i) {
-            P_WIDEN(particles + i * n, n, row);
-            P_TRY(residual(&input, &reference, &difference, residual_context));
-            P_TRY(P_FINITE(&difference));
-            for (j = 0; j < n; ++j) {
-                if (P_IN_UNIT(delta[j])) {
-                    int64_t value = P_LOCAL(raw)(delta[j]);
-                    pf_q_acc_add(workspace.basic + 2 * j, pf_q_magnitude(value) * (uint64_t)weights[i], value < 0);
-                } else {
-                    extended[j] += ((U_WORK)weights[i] / denominator) * delta[j];
-                }
+            if (P_IN_UNIT(delta[j])) {
+                int64_t value = P_LOCAL(raw)(delta[j]);
+                pf_q_acc_add(workspace.basic + 2 * j, pf_q_magnitude(value) * (uint64_t)weights[i], value < 0);
+            } else {
+                extended[j] += ((U_WORK)weights[i] / denominator) * delta[j];
             }
         }
     }
     for (j = 0; j < n; ++j) {
         U_WORK value = P_LOCAL(signed_value)(pf_q_acc_read(workspace.basic + 2 * j)) / denominator / (U_WORK)U_SCALE;
-        center[j] = value + extended[j] + (residual != NULL ? center[j] : (U_WORK)0);
+        center[j] = value + extended[j] + center[j];
     }
     P_TRY(P_FITS(center, n));
     P_STORE(center, n, mean_stage);
     P_LOCAL(clear_accumulators)(workspace.basic, extended, n * n);
-    if (residual == NULL) {
+    /* Callback order is observable: residuals retain their row-major
+     * path and extended-range accumulation exactly as before. */
+    for (i = 0; i < count; ++i) {
+        P_WIDEN(particles + i * n, n, row);
+        P_TRY(residual(&input, &reference, &difference, residual_context));
+        P_TRY(P_FINITE(&difference));
+        for (j = 0; j < n; ++j)
+            if (P_IN_UNIT(delta[j])) {
+                int64_t value = P_LOCAL(raw)(delta[j]);
+                raw_row[j] = (U_SIGNAL)(value > U_SIGNAL_MAX ? U_SIGNAL_MAX : value);
+            }
         for (j = 0; j < n; ++j) {
             for (k = 0; k <= j; ++k) {
-                pf_q_i128_t sum = {0, 0};
-                for (i = 0; i < count; ++i) {
-                    int64_t a = (int64_t)particles[i * n + j] - mean_stage[j];
-                    int64_t b = (int64_t)particles[i * n + k] - mean_stage[k];
-                    pf_q_iadd(&sum, P_LOCAL(covariance_product)(a, b, weights[i]), (a < 0) != (b < 0));
-                }
-                pf_q_acc_write(workspace.basic + 2 * (j * n + k), sum);
-            }
-        }
-    } else {
-        /* Callback order is observable: residuals retain their row-major
-         * path and extended-range accumulation exactly as before. */
-        for (i = 0; i < count; ++i) {
-            P_WIDEN(particles + i * n, n, row);
-            P_TRY(residual(&input, &reference, &difference, residual_context));
-            P_TRY(P_FINITE(&difference));
-            for (j = 0; j < n; ++j)
-                if (P_IN_UNIT(delta[j])) {
-                    int64_t value = P_LOCAL(raw)(delta[j]);
-                    raw_row[j] = (U_SIGNAL)(value > U_SIGNAL_MAX ? U_SIGNAL_MAX : value);
-                }
-            for (j = 0; j < n; ++j) {
-                for (k = 0; k <= j; ++k) {
-                    size_t element = j * n + k;
-                    if (P_IN_UNIT(delta[j]) && P_IN_UNIT(delta[k])) {
-                        U_WORK positive_cell = ((U_WORK)U_SIGNAL_MAX + (U_WORK)0.5) / (U_WORK)U_SCALE;
-                        int64_t a = delta[j] >= positive_cell ? (int64_t)U_SCALE : raw_row[j];
-                        int64_t b = delta[k] >= positive_cell ? (int64_t)U_SCALE : raw_row[k];
-                        pf_q_acc_add(workspace.basic + 2 * element,
-                                     P_LOCAL(covariance_product)(a, b, weights[i]), (a < 0) != (b < 0));
-                    } else {
-                        extended[element] += ((U_WORK)weights[i] / denominator) * delta[j] * delta[k];
-                    }
+                size_t element = j * n + k;
+                if (P_IN_UNIT(delta[j]) && P_IN_UNIT(delta[k])) {
+                    U_WORK positive_cell = ((U_WORK)U_SIGNAL_MAX + (U_WORK)0.5) / (U_WORK)U_SCALE;
+                    int64_t a = delta[j] >= positive_cell ? (int64_t)U_SCALE : raw_row[j];
+                    int64_t b = delta[k] >= positive_cell ? (int64_t)U_SCALE : raw_row[k];
+                    pf_q_acc_add(workspace.basic + 2 * element,
+                                 P_LOCAL(covariance_product)(a, b, weights[i]), (a < 0) != (b < 0));
+                } else {
+                    extended[element] += ((U_WORK)weights[i] / denominator) * delta[j] * delta[k];
                 }
             }
         }
@@ -342,11 +350,6 @@ linears_status_t P_API(estimate)(const U_STATE *state, U_RESIDUAL_FN residual, v
             size_t element = j * n + k;
             U_WORK value = P_LOCAL(signed_value)(pf_q_acc_read(workspace.basic + 2 * element)) /
                            denominator / covariance_scale + extended[element];
-            if (residual == NULL) {
-                U_WORK a = center[j] - P_WIDEN_VALUE(mean_stage[j]);
-                U_WORK b = center[k] - P_WIDEN_VALUE(mean_stage[k]);
-                value -= a * b;
-            }
             P_TRY(P_FITS(&value, 1));
             P_STORE(&value, 1, covariance_stage + element);
             covariance_stage[k * n + j] = covariance_stage[element];
@@ -364,7 +367,6 @@ linears_status_t P_API(estimate)(const U_STATE *state, U_RESIDUAL_FN residual, v
 #undef P_FINITE
 #undef P_STORE
 #undef P_FITS
-#undef P_WIDEN_VALUE
 #undef P_WIDEN
 #undef P_LINEAR
 #undef P_SCRATCH

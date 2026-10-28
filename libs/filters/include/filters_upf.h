@@ -184,9 +184,11 @@ typedef struct {
 /**
  * @brief Q step decomposition elements: max(n*n,m*m); SIZE_MAX on overflow.
  *
- * Allocate float for q15 and double for q31. The step currently factors
- * into data and does not write this array, but still validates its capacity
- * and disjointness. The Gaussian density uses direct triangular solves.
+ * Allocate float for q15 and double for q31. After each UKF call, the step
+ * reuses this array for transient integer factor caches. Its contents are
+ * unspecified after the call; capacity, alignment and disjointness are
+ * checked. Gaussian densities use checked integer triangular solves with
+ * local mixed-arithmetic retries on the original operands.
  */
 #define FILTERS_UPF_Q_STEP_DECOMP_STORAGE(n, m) FILTERS_UKF_Q_UPDATE_DECOMP_STORAGE((n), (m))
 

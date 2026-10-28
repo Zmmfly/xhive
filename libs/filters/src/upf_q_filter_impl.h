@@ -92,7 +92,9 @@ linears_status_t U_API(step)(U_STATE *state, const linears_matrix_t *measurement
     linears_matrix_t q_in, r_in, z_in, q_factor, r_factor, measured, innovation, raw_covariance;
     U_WORKSPACE kernel;
     U_WORK *cursor, *exponents, exponent, term, log_determinant;
+    U_PF_LOCAL(scale_t) factor_scale, draw_scale;
     U_SIGNAL *signal_cursor;
+    int factor_valid, draw_valid;
     size_t count, n, m, i, j;
     if (model == NULL || model->transition == NULL || model->observation == NULL || sample == NULL)
         return LINEARS_ERROR_ARGUMENT;
@@ -158,16 +160,38 @@ linears_status_t U_API(step)(U_STATE *state, const linears_matrix_t *measurement
         U_TRY(U_CHOLESKY((const U_WORK *)covariance.data, n, (U_WORK *)prior_covariance.data));
         U_TRY(sample(&draw, sample_context));
         U_TRY(U_FINITE(&draw));
-        for (j = 0; j < n; ++j)
-            ((U_WORK *)prior_mean.data)[j] = ((const U_WORK *)posterior_mean.data)[j] +
-                U_PF_LOCAL(dot)((const U_WORK *)prior_covariance.data + j * n, 1,
-                                  (const U_WORK *)draw.data, 1, j + 1);
+        /* Preserve the posterior base before its dead slot becomes draw bytes.
+         * The decomposition is rebuilt after every UKF call, never cached
+         * across one. kernel.data remains dead until the next particle. */
+        memcpy(prior_mean.data, posterior_mean.data, n * sizeof(U_WORK));
+        factor_valid = U_PF_LOCAL(gaussian_prepare)((const U_WORK *)prior_covariance.data, n,
+                                                     (U_WORK *)kernel.decomposition.data, &factor_scale);
+        draw_valid = U_PF_LOCAL(vector_prepare)((const U_WORK *)draw.data, n,
+                                                 (U_WORK *)posterior_mean.data, &draw_scale);
+        if (factor_valid && draw_valid &&
+            U_PF_LOCAL(perturb_try)((const U_WORK *)kernel.decomposition.data, factor_scale,
+                                    (const U_WORK *)posterior_mean.data, draw_scale, n, kernel.data)) {
+            for (j = 0; j < n; ++j) ((U_WORK *)prior_mean.data)[j] += kernel.data[j];
+        } else {
+            for (j = 0; j < n; ++j)
+                ((U_WORK *)prior_mean.data)[j] +=
+                    U_PF_LOCAL(dot)((const U_WORK *)prior_covariance.data + j * n, 1,
+                                    (const U_WORK *)draw.data, 1, j + 1);
+        }
         U_TRY(U_FINITE(&prior_mean));
-        exponent = (U_WORK)-0.5 * U_PF_LOCAL(dot)((const U_WORK *)draw.data, 1,
-                                                 (const U_WORK *)draw.data, 1, n);
-        log_determinant = (U_WORK)0;
-        for (j = 0; j < n; ++j)
-            log_determinant += U_LOG(((const U_WORK *)prior_covariance.data)[j * n + j]);
+        if (draw_valid &&
+            U_PF_LOCAL(dot_try)((const U_WORK *)posterior_mean.data, draw_scale,
+                                (const U_WORK *)posterior_mean.data, draw_scale, n, &term)) {
+            exponent = (U_WORK)-0.5 * term;
+        } else {
+            exponent = (U_WORK)-0.5 * U_PF_LOCAL(dot)((const U_WORK *)draw.data, 1,
+                                                     (const U_WORK *)draw.data, 1, n);
+        }
+        if (!U_PF_LOCAL(log_determinant_try)((const U_WORK *)prior_covariance.data, n, &log_determinant)) {
+            log_determinant = (U_WORK)0;
+            for (j = 0; j < n; ++j)
+                log_determinant += U_LOG(((const U_WORK *)prior_covariance.data)[j * n + j]);
+        }
         exponent -= log_determinant;
         /* Likelihood of z given the new particle. Callback and residual
          * views remain float/double and retain their full finite range. */
@@ -175,8 +199,19 @@ linears_status_t U_API(step)(U_STATE *state, const linears_matrix_t *measurement
         U_TRY(U_FINITE(&measured));
         U_TRY(U_LOCAL(residual)(&measured, &z_in, model->measurement_residual,
                                 model->measurement_residual_context, &innovation));
-        U_TRY(U_PF_LOCAL(gaussian)((const U_WORK *)innovation.data, (const U_WORK *)r_factor.data,
-                                    m, kernel.data, &term));
+        factor_valid = U_PF_LOCAL(gaussian_prepare)((const U_WORK *)r_factor.data, m,
+                                                     (U_WORK *)kernel.decomposition.data, &factor_scale);
+        /* The remaining UKF data arena has at least 8*m elements, so Z and
+         * its Q32 error vector need no n-versus-m dimension assumption. */
+        if (factor_valid) {
+            U_TRY(U_PF_LOCAL(gaussian_retry)((const U_WORK *)innovation.data, (const U_WORK *)r_factor.data,
+                                              m, kernel.data, &term,
+                                              (const U_WORK *)kernel.decomposition.data, factor_scale,
+                                              (U_WORK *)measured.data, kernel.data + m));
+        } else {
+            U_TRY(U_PF_LOCAL(gaussian_mixed)((const U_WORK *)innovation.data, (const U_WORK *)r_factor.data,
+                                              m, kernel.data, &term));
+        }
         exponent += term;
         /* posterior_mean and draw are no longer live: reuse them for f(x)
          * and the transition residual, rather than retaining N work rows. */
@@ -184,8 +219,17 @@ linears_status_t U_API(step)(U_STATE *state, const linears_matrix_t *measurement
         U_TRY(U_FINITE(&posterior_mean));
         U_TRY(U_LOCAL(residual)(&prior_mean, &posterior_mean, model->state_residual,
                                 model->state_residual_context, &draw));
-        U_TRY(U_PF_LOCAL(gaussian)((const U_WORK *)draw.data, (const U_WORK *)q_factor.data,
-                                    n, kernel.data, &term));
+        factor_valid = U_PF_LOCAL(gaussian_prepare)((const U_WORK *)q_factor.data, n,
+                                                     (U_WORK *)kernel.decomposition.data, &factor_scale);
+        if (factor_valid) {
+            U_TRY(U_PF_LOCAL(gaussian_retry)((const U_WORK *)draw.data, (const U_WORK *)q_factor.data,
+                                              n, kernel.data, &term,
+                                              (const U_WORK *)kernel.decomposition.data, factor_scale,
+                                              (U_WORK *)posterior_mean.data, kernel.data + n));
+        } else {
+            U_TRY(U_PF_LOCAL(gaussian_mixed)((const U_WORK *)draw.data, (const U_WORK *)q_factor.data,
+                                              n, kernel.data, &term));
+        }
         exponent += term;
         if (!U_JOIN(ukf_isfinite_, U_KERNEL)(exponent)) return LINEARS_ERROR_RANGE;
         exponents[i] = exponent;

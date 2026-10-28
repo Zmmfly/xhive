@@ -18,11 +18,12 @@
  * f32/f64 filters store particles, weights, Q and R as float/double and
  * their callbacks and kernels see those values directly. q15/q31 filters
  * store every persistent array in the raw signal type (int16_t/2^15,
- * int32_t/2^31). Their dedicated kernels use integer weight arithmetic,
- * exact integer resampling and integer statistical MACs. Callback rows,
- * Cholesky factors, exponentials and genuinely extended-range products use
- * float for q15 and double for q31. Typed Q workspaces separate raw staging
- * from this local floating work. Final particles and estimates must lie
+ * int32_t/2^31). Dedicated kernels use integer weight arithmetic, exact
+ * resampling, default moments and certified Gaussian MAC/division/norm
+ * arithmetic. Callback rows, Cholesky and local numerical retries retain
+ * float for q15 and double for q31. Typed working arrays also hold transient
+ * integer caches through bytewise copies, separate from raw output staging.
+ * Final particles and estimates must lie
  * in [-1,+1]; RANGE preserves the entire transaction. See the q15 state
  * type for weight scaling. Q calls process one particle at a time and stop
  * at the first failure; callback side effects are not rolled back.
@@ -241,7 +242,10 @@ typedef struct {
 #define FILTERS_PF_Q_UPDATE_BASIC_BYTES(m) ((size_t)0)
 
 /**
- * @brief Q update decomposition elements: m*m for the Cholesky factorization.
+ * @brief Q update decomposition elements: m*m, reused after Cholesky.
+ *
+ * The array also holds transient integer vector/error caches; its contents
+ * are unspecified after the call. Allocate float for q15 or double for q31.
  */
 #define FILTERS_PF_Q_UPDATE_DECOMP_STORAGE(m) LINEARS_CHOLESKY_WORKSPACE(m)
 
@@ -274,6 +278,9 @@ typedef struct {
 
 /**
  * @brief Local float/double elements for Q estimate: n*n + 3*n, independent of N.
+ *
+ * The default residual does not access data, but the capacity and aliasing
+ * contract is retained. Custom residuals use this region for their local work.
  */
 #define FILTERS_PF_Q_ESTIMATE_STORAGE(N, n) \
     LINEARS_SIZE_ADD(LINEARS_SIZE_MUL((n), (n)), LINEARS_SIZE_MUL(3, (n)))
@@ -287,7 +294,9 @@ typedef struct {
 /**
  * @brief Q estimate basic bytes: two integer accumulator words per covariance element.
  *
- * These are exact scalar integer sums, not wide fixed signal arrays.
+ * These are exact integer arithmetic values, not wide fixed signal arrays.
+ * The default residual retains only n signed-128 mean remainders; custom
+ * residuals use the full covariance-accumulator region. Capacity is unchanged.
  */
 #define FILTERS_PF_Q_ESTIMATE_BASIC_BYTES(N, n) \
     LINEARS_SIZE_MUL(LINEARS_SIZE_MUL(2, LINEARS_SIZE_MUL((n), (n))), sizeof(linears_workspace_unit_t))
@@ -648,9 +657,11 @@ linears_status_t filters_pf_q15_predict(filters_pf_q15_t *state, filters_ukf_f32
  *
  * Process each particle in order: observation, optional residual, Gaussian
  * exponent. Stop at the first failure. Callback rows can exceed [-1,+1].
- * Exponentials use float; high-resolution integer likelihoods multiply the
- * raw weights, which are rescaled once so the largest equals INT16_MAX.
- * Only N scalar exponents and N raw staged weights grow with particle count.
+ * Bounded exponentials use a fixed-point kernel, with local expf retries
+ * at its precision/cutoff boundary. High-resolution integer likelihoods
+ * multiply the raw weights; one integer quotient supplies normalization.
+ * The largest raw weight equals INT16_MAX. Consumed exponent scratch is
+ * reused bytewise for likelihoods, without an additional particle-count array.
  *
  * @param[in,out] state Non-NULL initialized q15 filter with m-by-m R.
  * @param[in] measurement Non-NULL m-by-1 raw q15 z.
@@ -689,10 +700,12 @@ linears_status_t filters_pf_q15_resample(filters_pf_q15_t *state, float uniform,
 /**
  * @brief Export the q15 weighted mean and covariance; contract as filters_pf_f32_estimate.
  *
- * Raw particles and weights feed integer weighted sums and centered
- * covariance MACs, with scalar division only after accumulation. Custom
- * residuals receive one float row at a time; products requiring extended
- * range stay local to that row. Both output arrays commit together.
+ * With residual NULL, raw weighted sums, centering corrections, division and
+ * final rounding are all integer operations. Nearest rounding uses ties away
+ * from zero. Only a final half-cell or endpoint ambiguity needs the wider
+ * local rational product; no floating working element is accessed. Custom
+ * residuals receive one float row at a time and retain local extended-range
+ * arithmetic. Both output arrays commit together.
  *
  * @param[in] state Non-NULL initialized q15 filter.
  * @param[in] residual Float state-space residual, or NULL for plain subtraction.
@@ -793,6 +806,10 @@ linears_status_t filters_pf_q31_resample(filters_pf_q31_t *state, double uniform
 
 /**
  * @brief Export the q31 weighted mean and covariance; contract as filters_pf_q15_estimate.
+ *
+ * Each centered raw product retains the existing rounding to 31 fractional
+ * bits before weighting. With residual NULL, final rational division and
+ * centering are integer.
  *
  * @param[in] state Non-NULL initialized q31 filter.
  * @param[in] residual Double state-space residual, or NULL for plain subtraction.
