@@ -13,8 +13,13 @@
 #define Q_WEIGHTS_VALID Q_JOIN(ukf_weights_valid_, U_FLOAT_TAG)
 #define Q_TRY(expression) do { status = (expression); if (status != LINEARS_OK) return status; } while (0)
 
+/* Column summary tags (see Q_LOCAL(quantize)) share the byte width of
+ * U_WORK, so a tag occupies one slot of the third metadata vector. */
 #if U_BITS == 15
 #define Q_SIGNAL_MAX INT16_MAX
+#define Q_EPSILON FLT_EPSILON
+typedef uint32_t Q_LOCAL(tag_t);
+#define Q_TAG_SATURATED (UINT32_C(1) << 20)
 typedef int64_t Q_LOCAL(accum_t);
 #define Q_ACCUM_ZERO INT64_C(0)
 static inline void Q_LOCAL(mac)(Q_LOCAL(accum_t) *sum, int64_t product)
@@ -29,6 +34,9 @@ static inline U_WORK Q_LOCAL(accum_value)(Q_LOCAL(accum_t) sum)
 }
 #else
 #define Q_SIGNAL_MAX INT32_MAX
+#define Q_EPSILON DBL_EPSILON
+typedef uint64_t Q_LOCAL(tag_t);
+#define Q_TAG_SATURATED (UINT64_C(1) << 40)
 typedef linears_accum_t Q_LOCAL(accum_t);
 #define Q_ACCUM_ZERO {UINT64_C(0), UINT64_C(0)}
 static inline void Q_LOCAL(mac)(Q_LOCAL(accum_t) *sum, int64_t product)
@@ -75,50 +83,135 @@ static U_WORK Q_LOCAL(dot_difference)(const U_SIGNAL *a, const U_SIGNAL *positiv
     return Q_LOCAL(accum_value)(sum);
 }
 
-/* Three k-element metadata vectors: maximum magnitude, weighted conversion
- * error, and all-in-range flag. An out-of-range sample is not clipped or
- * rejected; its column keeps the original floating calculation. */
-static void Q_LOCAL(columns)(const linears_matrix_t *points, U_WORK first_weight,
-                              U_WORK other_weight, U_SIGNAL *raw, U_WORK *metadata)
+/* Three k-element metadata vectors summarize each sample column (or factor
+ * row): maximum magnitude, weighted conversion error, and an integer tag
+ * stored in the bytes of the third vector's slot. The error is the sum the
+ * exact bound below needs; it is negative until a pair beyond the integer
+ * screen first requests it, because ordinary pairs never read it. An
+ * out-of-range sample is not clipped or rejected; its column keeps the
+ * original floating calculation. */
+typedef char Q_LOCAL(tag_fits_slot)[sizeof(Q_LOCAL(tag_t)) == sizeof(U_WORK) ? 1 : -1];
+#define Q_TAG_ONE ((Q_LOCAL(tag_t))1 << U_BITS)
+
+static inline Q_LOCAL(tag_t) Q_LOCAL(tag)(const U_WORK *slot)
+{
+    Q_LOCAL(tag_t) tag;
+    memcpy(&tag, slot, sizeof(tag));
+    return tag;
+}
+
+/* Quantize one sample and fold it into a running summary. Tag 0 marks a
+ * summary that must keep floating products: a sample outside [-1,+1], or a
+ * nonzero sub-LSB sample that would collapse a positive working covariance
+ * needed by the next UPF solve. Otherwise the tag is max|raw| + 1, with
+ * Q_TAG_SATURATED once a sample rounded to the positive maximum, whose cell
+ * may carry a whole LSB of conversion error. */
+static void Q_LOCAL(quantize)(U_WORK value, U_SIGNAL *raw, U_WORK *maximum, Q_LOCAL(tag_t) *tag)
+{
+    Q_LOCAL(tag_t) magnitude;
+    if (Q_JOIN(ukf_abs_greater_, U_FLOAT_TAG)(value, *maximum)) *maximum = U_ABS(value);
+    if (!U_IN_UNIT(value)) {
+        *raw = 0;
+        *tag = 0;
+        return;
+    }
+    Q_JOIN(ukf_store_, U_TAG)(&value, 1, raw);
+    if (*raw == 0 && value != (U_WORK)0) *tag = 0;
+    if (*tag == 0) return;
+    magnitude = (Q_LOCAL(tag_t))(*raw < 0 ? -(int64_t)*raw : (int64_t)*raw) + 1;
+    if (*raw == Q_SIGNAL_MAX) *tag |= Q_TAG_SATURATED;
+    if (magnitude > (*tag & ~Q_TAG_SATURATED)) *tag = (*tag & Q_TAG_SATURATED) | magnitude;
+}
+
+static void Q_LOCAL(summarize)(U_WORK *metadata, size_t count, size_t index, U_WORK maximum,
+                               Q_LOCAL(tag_t) tag)
+{
+    metadata[index] = maximum;
+    metadata[count + index] = (U_WORK)-1;
+    memcpy(metadata + 2 * count + index, &tag, sizeof(tag));
+}
+
+static void Q_LOCAL(columns)(const linears_matrix_t *points, U_SIGNAL *raw, U_WORK *metadata)
 {
     const U_WORK *values = (const U_WORK *)points->data;
     size_t i, j, count = points->rows, k = points->cols;
-    U_WORK *maximum = metadata, *error = metadata + k, *valid = metadata + 2 * k;
     for (j = 0; j < k; ++j) {
-        maximum[j] = error[j] = (U_WORK)0;
-        valid[j] = (U_WORK)1;
-        for (i = 0; i < count; ++i) {
-            U_WORK value = values[i * k + j];
-            if (Q_JOIN(ukf_abs_greater_, U_FLOAT_TAG)(value, maximum[j])) maximum[j] = U_ABS(value);
-            if (!U_IN_UNIT(value)) {
-                valid[j] = (U_WORK)0;
-                raw[i * k + j] = 0;
-            } else {
-                U_WORK difference;
-                Q_JOIN(ukf_store_, U_TAG)(&value, 1, raw + i * k + j);
-                difference = Q_JOIN(ukf_quantization_error_, U_TAG)(value, raw[i * k + j]);
-                /* A nonzero sub-LSB deviation must not collapse a positive
-                 * working covariance needed by the next UPF solve. */
-                if (raw[i * k + j] == 0 && value != (U_WORK)0) valid[j] = (U_WORK)0;
-                error[j] += U_ABS(i == 0 ? first_weight : other_weight) * difference;
-            }
-        }
+        U_WORK maximum = (U_WORK)0;
+        Q_LOCAL(tag_t) tag = 1;
+        for (i = 0; i < count; ++i)
+            Q_LOCAL(quantize)(values[i * k + j], raw + i * k + j, &maximum, &tag);
+        Q_LOCAL(summarize)(metadata, k, j, maximum, tag);
     }
+}
+
+/* The weighted conversion error of a valid column, in the original sum order. */
+static void Q_LOCAL(column_error)(const linears_matrix_t *points, const U_SIGNAL *raw,
+                                  const U_WEIGHTS *weights, U_WORK *metadata, size_t j)
+{
+    const U_WORK *values = (const U_WORK *)points->data;
+    size_t i, k = points->cols;
+    U_WORK error = (U_WORK)0;
+    if (metadata[k + j] >= (U_WORK)0) return;
+    for (i = 0; i < points->rows; ++i)
+        error += U_ABS(i == 0 ? weights->covariance0 : weights->other) *
+                 Q_JOIN(ukf_quantization_error_, U_TAG)(values[i * k + j], raw[i * k + j]);
+    metadata[k + j] = error;
+}
+
+/* Error units of a deviation column: every nonsaturated sample rounds to
+ * within half an LSB, so its weighted error is at most units*LSB. */
+static U_WORK Q_LOCAL(column_units)(const U_WEIGHTS *weights, size_t count)
+{
+    return (U_ABS(weights->covariance0) + (U_WORK)(count - 1) * U_ABS(weights->other)) * (U_WORK)0.5;
+}
+
+/* Integer screen budget. With |values| <= (max|raw|+1)*LSB and errors at
+ * most units*LSB, the exact bound below is at most
+ * units*LSB^2*(tag_a + tag_b + 1). The limit keeps that within one LSB after
+ * a relative margin for the floating evaluation of up to terms additions
+ * in the exact error sums and bound, including directed rounding. */
+static Q_LOCAL(tag_t) Q_LOCAL(limit)(U_WORK units, size_t terms)
+{
+    U_WORK scaled = units * ((U_WORK)1 + (U_WORK)(terms + 8) * (U_WORK)Q_EPSILON);
+    /* Every nonsaturated pair sum is below 4*2^bits; saturated tags exceed it. */
+    if (!(scaled > (U_WORK)0.25)) return Q_TAG_ONE * 4;
+    return (Q_LOCAL(tag_t))((U_WORK)Q_TAG_ONE / scaled);
+}
+
+/* Select raw products for a pair of summaries from integer tags: 1 accepts
+ * the raw-Q dot, 0 keeps floating products, and -1 defers to the exact
+ * bound of product_fits. An accepted pair also passes the exact bound, so
+ * the screen changes only how often the floating bound is evaluated.
+ * |a| lies in [(max|raw|-1/2)*LSB, (max|raw|+1)*LSB], so integer brackets
+ * settle the sub-LSB product scale test except within a narrow band. An
+ * all-zero column has max|raw| == 0 and is never below that scale. */
+static int Q_LOCAL(screen)(const U_WORK *a, size_t acount, size_t ai,
+                           const U_WORK *b, size_t bcount, size_t bi, Q_LOCAL(tag_t) limit)
+{
+    Q_LOCAL(tag_t) at = Q_LOCAL(tag)(a + 2 * acount + ai), bt = Q_LOCAL(tag)(b + 2 * bcount + bi);
+    Q_LOCAL(tag_t) ra, rb;
+    if (at == 0 || bt == 0) return 0;
+    ra = (at & ~Q_TAG_SATURATED) - 1;
+    rb = (bt & ~Q_TAG_SATURATED) - 1;
+    if (ra != 0 && rb != 0 && (ra - 1) * (rb - 1) < Q_TAG_ONE &&
+        ((ra + 1) * (rb + 1) <= Q_TAG_ONE || a[ai] * b[bi] < U_LSB))
+        return 0;
+    return at + bt + 1 <= limit ? 1 : -1;
 }
 
 /* A covariance entry is allowed at most one signal LSB of conversion error.
  * That absolute budget cannot resolve a working covariance whose nonzero
  * product scale is itself below one signal LSB: retain floating products
  * there, even when each deviation rounds to a nonzero Q value. Both checks
- * are outside the MAC loop and select a local dot, never an entire filter. */
+ * are outside the MAC loop and select a local dot, never an entire filter.
+ * screen has already applied the validity and scale checks; this is the
+ * exact error bound for a pair beyond its integer budget, and both actual
+ * errors must be present. */
 static int Q_LOCAL(product_fits)(const U_WORK *a, size_t acount, size_t ai,
                                  const U_WORK *b, size_t bcount, size_t bi)
 {
     U_WORK ae = a[acount + ai], be = b[bcount + bi];
-    U_WORK bound;
-    if (a[2 * acount + ai] == 0 || b[2 * bcount + bi] == 0) return 0;
-    if (a[ai] != (U_WORK)0 && b[bi] != (U_WORK)0 && a[ai] * b[bi] < U_LSB) return 0;
-    bound = a[ai] * be + b[bi] * ae + U_LSB * (ae < be ? ae : be);
+    U_WORK bound = a[ai] * be + b[bi] * ae + U_LSB * (ae < be ? ae : be);
     return bound <= U_LSB;
 }
 
@@ -219,8 +312,9 @@ static linears_status_t Q_LOCAL(deviations)(linears_matrix_t *points, const line
 }
 
 static linears_status_t Q_LOCAL(covariance)(const linears_matrix_t *deviations, const U_SIGNAL *raw,
-                                            const U_WORK *metadata, const U_WEIGHTS *weights,
-                                            const linears_matrix_t *noise, linears_matrix_t *out)
+                                            U_WORK *metadata, const U_WEIGHTS *weights,
+                                            Q_LOCAL(tag_t) limit, const linears_matrix_t *noise,
+                                            linears_matrix_t *out)
 {
     const U_WORK *values = (const U_WORK *)deviations->data, *q = (const U_WORK *)noise->data;
     U_WORK *result = (U_WORK *)out->data;
@@ -228,7 +322,13 @@ static linears_status_t Q_LOCAL(covariance)(const linears_matrix_t *deviations, 
     for (r = 0; r < k; ++r) {
         for (c = 0; c <= r; ++c) {
             U_WORK value;
-            if (Q_LOCAL(product_fits)(metadata, k, r, metadata, k, c)) {
+            int fits = Q_LOCAL(screen)(metadata, k, r, metadata, k, c, limit);
+            if (fits < 0) {
+                Q_LOCAL(column_error)(deviations, raw, weights, metadata, r);
+                Q_LOCAL(column_error)(deviations, raw, weights, metadata, c);
+                fits = Q_LOCAL(product_fits)(metadata, k, r, metadata, k, c);
+            }
+            if (fits) {
                 U_WORK first = Q_LOCAL(dot)(raw + r, k, raw + c, k, 1);
                 U_WORK others = Q_LOCAL(dot)(raw + k + r, k, raw + k + c, k, count - 1);
                 value = weights->covariance0 * first + weights->other * others;
@@ -305,8 +405,10 @@ linears_status_t Q_CORE(predict_core)(const linears_matrix_t *mean, const linear
     Q_TRY(Q_LOCAL(mean)(&samples, weights, residual, residual_context, out_mean,
                          workspace.signal, temporary));
     Q_TRY(Q_LOCAL(deviations)(&samples, out_mean, residual, residual_context, temporary));
-    Q_LOCAL(columns)(&samples, weights->covariance0, weights->other, workspace.signal, metadata);
-    return Q_LOCAL(covariance)(&samples, workspace.signal, metadata, weights, process_noise, out_covariance);
+    Q_LOCAL(columns)(&samples, workspace.signal, metadata);
+    return Q_LOCAL(covariance)(&samples, workspace.signal, metadata, weights,
+                               Q_LOCAL(limit)(Q_LOCAL(column_units)(weights, s), s),
+                               process_noise, out_covariance);
 }
 
 linears_status_t Q_API(predict_work)(const linears_matrix_t *mean, const linears_matrix_t *covariance,
@@ -337,47 +439,54 @@ linears_status_t Q_API(predict_work)(const linears_matrix_t *mean, const linears
                                 residual, residual_context, out_mean, out_covariance, workspace);
 }
 
-/* Cache the untransposed factor in Q. Each row represents the paired state
- * deviations +L[:,j], -L[:,j], so its weighted error counts each entry twice. */
-static void Q_LOCAL(factor_signals)(const linears_matrix_t *factor, U_WORK other,
-                                    U_SIGNAL *raw, U_WORK *metadata)
+/* Cache the untransposed factor in Q, summarized per row like columns. */
+static void Q_LOCAL(factor_signals)(const linears_matrix_t *factor, U_SIGNAL *raw, U_WORK *metadata)
 {
     const U_WORK *values = (const U_WORK *)factor->data;
     size_t r, j, n = factor->rows;
     for (r = 0; r < n; ++r) {
-        U_WORK maximum = 0, error = 0, valid = 1;
-        for (j = 0; j <= r; ++j) {
-            U_WORK value = values[r * n + j];
-            if (Q_JOIN(ukf_abs_greater_, U_FLOAT_TAG)(value, maximum)) maximum = U_ABS(value);
-            if (!U_IN_UNIT(value)) {
-                valid = 0;
-                raw[r * n + j] = 0;
-            } else {
-                Q_JOIN(ukf_store_, U_TAG)(&value, 1, raw + r * n + j);
-                if (raw[r * n + j] == 0 && value != (U_WORK)0) valid = 0;
-                error += Q_JOIN(ukf_quantization_error_, U_TAG)(value, raw[r * n + j]);
-            }
-        }
+        U_WORK maximum = (U_WORK)0;
+        Q_LOCAL(tag_t) tag = 1;
+        for (j = 0; j <= r; ++j) Q_LOCAL(quantize)(values[r * n + j], raw + r * n + j, &maximum, &tag);
         /* Cholesky writes exact zeros above the diagonal. */
         for (j = r + 1; j < n; ++j) raw[r * n + j] = 0;
-        metadata[r] = maximum;
-        metadata[n + r] = ((U_WORK)2 * U_ABS(other)) * error;
-        metadata[2 * n + r] = valid;
+        Q_LOCAL(summarize)(metadata, n, r, maximum, tag);
     }
 }
 
+/* Each factor row represents the paired state deviations +L[:,j], -L[:,j],
+ * so its weighted error counts each entry twice. */
+static void Q_LOCAL(row_error)(const linears_matrix_t *factor, const U_SIGNAL *raw, U_WORK other,
+                               U_WORK *metadata, size_t r)
+{
+    const U_WORK *values = (const U_WORK *)factor->data;
+    size_t j, n = factor->rows;
+    U_WORK error = (U_WORK)0;
+    if (metadata[n + r] >= (U_WORK)0) return;
+    for (j = 0; j <= r; ++j)
+        error += Q_JOIN(ukf_quantization_error_, U_TAG)(values[r * n + j], raw[r * n + j]);
+    metadata[n + r] = ((U_WORK)2 * U_ABS(other)) * error;
+}
+
 static linears_status_t Q_LOCAL(cross)(const linears_matrix_t *factor, const U_SIGNAL *raw_factor,
-                                       const U_WORK *factor_metadata, const linears_matrix_t *deviations,
-                                       const U_SIGNAL *raw_deviations, const U_WORK *metadata,
-                                       U_WORK weight, linears_matrix_t *out)
+                                       U_WORK *factor_metadata, const linears_matrix_t *deviations,
+                                       const U_SIGNAL *raw_deviations, U_WORK *metadata,
+                                       const U_WEIGHTS *weights, Q_LOCAL(tag_t) limit,
+                                       linears_matrix_t *out)
 {
     const U_WORK *l = (const U_WORK *)factor->data, *d = (const U_WORK *)deviations->data;
-    U_WORK *result = (U_WORK *)out->data;
+    U_WORK *result = (U_WORK *)out->data, weight = weights->other;
     size_t r, c, j, n = factor->rows, m = deviations->cols;
     for (r = 0; r < n; ++r) {
         for (c = 0; c < m; ++c) {
             U_WORK value;
-            if (Q_LOCAL(product_fits)(factor_metadata, n, r, metadata, m, c)) {
+            int fits = Q_LOCAL(screen)(factor_metadata, n, r, metadata, m, c, limit);
+            if (fits < 0) {
+                Q_LOCAL(row_error)(factor, raw_factor, weight, factor_metadata, r);
+                Q_LOCAL(column_error)(deviations, raw_deviations, weights, metadata, c);
+                fits = Q_LOCAL(product_fits)(factor_metadata, n, r, metadata, m, c);
+            }
+            if (fits) {
                 value = weight * Q_LOCAL(dot_difference)(raw_factor + r * n,
                     raw_deviations + m + c, raw_deviations + (n + 1) * m + c, m, r + 1);
             } else {
@@ -395,21 +504,25 @@ static linears_status_t Q_LOCAL(cross)(const linears_matrix_t *factor, const U_S
 }
 
 /* S = L*L^T was already checked SPD. Solve one C row without a second LU
- * factorization or a whole gain/transpose matrix. No Q range applies to K. */
-static linears_status_t Q_LOCAL(gain_row)(const linears_matrix_t *factor, const U_WORK *rhs, U_WORK *gain)
+ * factorization or a whole gain/transpose matrix. No Q range applies to K.
+ * inverse holds the m reciprocal pivots. Each pivot is the square root of a
+ * positive finite value, so its reciprocal is finite and normal; the shared
+ * pivot division keeps each quotient's overflow status. */
+static linears_status_t Q_LOCAL(gain_row)(const linears_matrix_t *factor, const U_WORK *inverse,
+                                          const U_WORK *rhs, U_WORK *gain)
 {
     const U_WORK *l = (const U_WORK *)factor->data;
     size_t i, j, m = factor->rows;
     for (i = 0; i < m; ++i) {
         U_WORK value = rhs[i];
         for (j = 0; j < i; ++j) value -= l[i * m + j] * gain[j];
-        gain[i] = value / l[i * m + i];
+        gain[i] = Q_JOIN(ukf_pivot_divide_, U_FLOAT_TAG)(value, inverse[i], l[i * m + i]);
         if (!U_ISFINITE(gain[i])) return LINEARS_ERROR_RANGE;
     }
     for (i = m; i-- > 0;) {
         U_WORK value = gain[i];
         for (j = i + 1; j < m; ++j) value -= l[j * m + i] * gain[j];
-        gain[i] = value / l[i * m + i];
+        gain[i] = Q_JOIN(ukf_pivot_divide_, U_FLOAT_TAG)(value, inverse[i], l[i * m + i]);
         if (!U_ISFINITE(gain[i])) return LINEARS_ERROR_RANGE;
     }
     return LINEARS_OK;
@@ -425,10 +538,11 @@ linears_status_t Q_CORE(update_core)(const linears_matrix_t *mean, const linears
 {
     linears_status_t status;
     linears_matrix_t scaled, factor, samples, cross, zbar, innovation, s_matrix;
-    U_WORK *cursor, *row, *temporary, *gain, *factor_metadata, *metadata;
+    U_WORK *cursor, *row, *temporary, *gain, *factor_metadata, *metadata, *inverse;
     U_SIGNAL *raw_factor, *raw_deviations;
     const U_WORK *x, *p;
     U_WORK *xout, *pout;
+    Q_LOCAL(tag_t) limit;
     size_t n = mean->rows, m = measurement_noise->rows, s = FILTERS_UKF_SIGMA_COUNT(n);
     size_t k = FILTERS_KALMAN_MAX_SIZE(n, m), i, j, r;
     cursor = workspace.data;
@@ -450,15 +564,24 @@ linears_status_t Q_CORE(update_core)(const linears_matrix_t *mean, const linears
     Q_TRY(Q_LOCAL(propagate)(mean, &factor, observation, observation_context, &samples, row));
     Q_TRY(Q_LOCAL(mean)(&samples, weights, residual, residual_context, &zbar, raw_deviations, temporary));
     Q_TRY(Q_LOCAL(deviations)(&samples, &zbar, residual, residual_context, temporary));
-    Q_LOCAL(columns)(&samples, weights->covariance0, weights->other, raw_deviations, metadata);
-    Q_LOCAL(factor_signals)(&factor, weights->other, raw_factor, factor_metadata);
+    Q_LOCAL(columns)(&samples, raw_deviations, metadata);
+    Q_LOCAL(factor_signals)(&factor, raw_factor, factor_metadata);
+    /* A factor row's error is at most |other|*n LSB (n entries, each within
+     * half an LSB and counted twice), never above the deviation columns'
+     * |covariance0|/2 + n*|other|, so cross pairs share the column limit. */
+    limit = Q_LOCAL(limit)(Q_LOCAL(column_units)(weights, s), s);
     Q_TRY(Q_LOCAL(cross)(&factor, raw_factor, factor_metadata, &samples, raw_deviations, metadata,
-                          weights->other, &cross));
+                          weights, limit, &cross));
     s_matrix = scaled;
     s_matrix.rows = s_matrix.cols = m;
-    Q_TRY(Q_LOCAL(covariance)(&samples, raw_deviations, metadata, weights, measurement_noise, &s_matrix));
+    Q_TRY(Q_LOCAL(covariance)(&samples, raw_deviations, metadata, weights, limit, measurement_noise,
+                              &s_matrix));
     factor.rows = factor.cols = m;
     Q_TRY(Q_CHOLESKY((const U_WORK *)s_matrix.data, m, (U_WORK *)factor.data));
+    /* S is dead once factored; its first m slots hold the reciprocal pivots,
+     * disjoint from the live factor, C rows and gain. */
+    inverse = (U_WORK *)scaled.data;
+    for (j = 0; j < m; ++j) inverse[j] = (U_WORK)1 / ((const U_WORK *)factor.data)[j * m + j];
     if (residual != NULL) Q_TRY(residual(measurement, &zbar, &innovation, residual_context));
     else for (j = 0; j < m; ++j)
         ((U_WORK *)innovation.data)[j] = ((const U_WORK *)measurement->data)[j] - ((const U_WORK *)zbar.data)[j];
@@ -469,22 +592,20 @@ linears_status_t Q_CORE(update_core)(const linears_matrix_t *mean, const linears
     pout = (U_WORK *)out_covariance->data;
     for (r = 0; r < n; ++r) {
         U_WORK correction = (U_WORK)0;
-        Q_TRY(Q_LOCAL(gain_row)(&factor, (const U_WORK *)cross.data + r * m, gain));
+        Q_TRY(Q_LOCAL(gain_row)(&factor, inverse, (const U_WORK *)cross.data + r * m, gain));
         for (j = 0; j < m; ++j) correction += gain[j] * ((const U_WORK *)innovation.data)[j];
         xout[r] = x[r] + correction;
         if (!U_ISFINITE(xout[r])) return LINEARS_ERROR_RANGE;
-        for (i = 0; i < n; ++i) {
+        /* K*C^T = C*S^-1*C^T is symmetric: form the lower triangle of row r
+         * and mirror it, which also keeps the stored output exactly symmetric. */
+        for (i = 0; i <= r; ++i) {
             U_WORK reduction = (U_WORK)0;
             for (j = 0; j < m; ++j) reduction += gain[j] * ((const U_WORK *)cross.data)[i * m + j];
             pout[r * n + i] = p[r * n + i] - reduction;
             if (!U_ISFINITE(pout[r * n + i])) return LINEARS_ERROR_RANGE;
+            pout[i * n + r] = pout[r * n + i];
         }
     }
-    for (r = 0; r < n; ++r)
-        for (i = 0; i < r; ++i) {
-            U_WORK value = (U_WORK)0.5 * pout[r * n + i] + (U_WORK)0.5 * pout[i * n + r];
-            pout[r * n + i] = pout[i * n + r] = value;
-        }
     return LINEARS_OK;
 }
 
@@ -526,6 +647,9 @@ linears_status_t Q_API(update_work)(const linears_matrix_t *mean, const linears_
                                workspace);
 }
 
+#undef Q_TAG_ONE
+#undef Q_TAG_SATURATED
+#undef Q_EPSILON
 #undef Q_ACCUM_ZERO
 #undef Q_SIGNAL_MAX
 #undef Q_TRY

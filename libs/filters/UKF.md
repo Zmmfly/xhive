@@ -174,7 +174,12 @@ persistent signal arrays or a new fixed-point state format.
 
 The integer mean path requires a weighted conversion-error bound of at
 most half a signal LSB; covariance/cross-covariance entries require a bound
-of at most one LSB. An offset/deviation/factor column outside `[-1,+1]`,
+of at most one LSB. A two-tier integer screen uses raw magnitude summaries
+and a conservative weighted rounding budget for ordinary pairs. Only an
+inconclusive pair computes and caches the actual weighted conversion error,
+in the original accumulation order. Saturated positive cells bypass the
+fast budget; the one-LSB error and sub-LSB product-scale requirements remain.
+An offset/deviation/factor column outside `[-1,+1]`,
 one exceeding that error bound, or one with a nonzero value that would
 quantize to zero keeps a local floating sum/product. A covariance or cross
 entry also stays floating when both participating columns are nonzero and
@@ -189,8 +194,15 @@ float/double residuals locally. None of these cases calls the complete
 f32/f64 UKF kernel.
 
 Cholesky, gain-row triangular solves and final corrections use float/double.
-The Q path retains real integer MAC work without claiming that sigma
-generation, manifold callbacks or all matrix operations are integer-only.
+The Q update computes each reciprocal Cholesky pivot once and reuses it in
+the triangular solves. Products in the highest finite binade or beyond use
+direct division so reciprocal rounding cannot hide or introduce quotient
+overflow. The reciprocals reuse the dead innovation-covariance scratch; no
+extra capacity is needed. Posterior covariance computes the lower triangle
+and mirrors it instead of averaging two separately rounded evaluations.
+These changes permit working-precision rounding differences; they do not
+promise bit-identical results to the previous solve. The Q path retains real
+integer MAC work without claiming that all matrix operations are integer-only.
 
 ### Computation changes
 
@@ -205,7 +217,8 @@ host timing result:
   the general floating composition.
 - The update reuses the Cholesky factor of `S` for gain-row triangular
   solves, rather than factoring `S` again with LU or storing a full
-  transposed gain matrix.
+  transposed gain matrix. Ordinary pivot divisions are reduced from `2nm`
+  to `m`, and only `n(n+1)/2` posterior covariance entries are evaluated.
 - On verified IEEE layouts, finite magnitude comparisons and the exact
   error between a working value and its quantized Q value use integer bit
   operations. The weighted error sum and the decision budget are unchanged;

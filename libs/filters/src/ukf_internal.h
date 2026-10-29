@@ -546,6 +546,61 @@ static inline int ukf_abs_greater_f64(double a, double b)
 #endif
 }
 
+/**
+ * @brief Divide by a Cholesky pivot through its reciprocal without changing
+ *        the quotient's overflow status.
+ *
+ * value*inverse carries two roundings, a few ulps from value/pivot in any
+ * rounding mode. Below the top finite binade the quotient is therefore
+ * finite as well, and the product is returned. At or above it, including
+ * an infinite or NaN product, only the directly rounded quotient decides
+ * between a finite result and overflow, so it is returned instead.
+ *
+ * @param[in] value Finite dividend.
+ * @param[in] inverse 1/pivot rounded once; finite and normal.
+ * @param[in] pivot Positive finite pivot.
+ * @return float value*inverse when its magnitude is below 2^127, otherwise
+ *         value/pivot, which may be infinite.
+ * @pre pivot is the square root of a positive finite float, which keeps
+ *      inverse finite and normal.
+ */
+static inline float ukf_pivot_divide_f32(float value, float inverse, float pivot)
+{
+    float product = value * inverse;
+#if UKF_IEEE_BINARY32
+    uint32_t bits;
+    memcpy(&bits, &product, sizeof(bits));
+    if ((bits & UINT32_C(0x7fffffff)) < UINT32_C(0x7f000000)) return product;
+#else
+    if (fabsf(product) < 0x1p127f) return product;
+#endif
+    return value / pivot;
+}
+
+/**
+ * @brief Double-precision ukf_pivot_divide_f32; the top binade starts at 2^1023.
+ *
+ * @param[in] value Finite dividend.
+ * @param[in] inverse 1/pivot rounded once; finite and normal.
+ * @param[in] pivot Positive finite pivot.
+ * @return double value*inverse when its magnitude is below 2^1023, otherwise
+ *         value/pivot, which may be infinite.
+ * @pre pivot is the square root of a positive finite double, which keeps
+ *      inverse finite and normal.
+ */
+static inline double ukf_pivot_divide_f64(double value, double inverse, double pivot)
+{
+    double product = value * inverse;
+#if UKF_IEEE_BINARY64
+    uint64_t bits;
+    memcpy(&bits, &product, sizeof(bits));
+    if ((bits & UINT64_C(0x7fffffffffffffff)) < UINT64_C(0x7fe0000000000000)) return product;
+#else
+    if (fabs(product) < 0x1p1023) return product;
+#endif
+    return value / pivot;
+}
+
 /* Gather rows in place for nondecreasing indices (systematic resampling).
  * Forward moves copy from later rows, which no earlier forward move has
  * overwritten; backward moves copy from earlier rows p = indices[i] < i,

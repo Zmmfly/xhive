@@ -57,7 +57,9 @@ def main():
                 function = match.group(1)
                 if "_q15_" in function or "_q31_" in function:
                     counts[function] = int(match.group(2))
-            if "if (Q_LOCAL(product_fits)" in line and function.endswith(("_covariance", "_cross")):
+            # Both forms select the actual integer dot, not just the first
+            # screening tier: legacy direct bound or the resolved two-tier gate.
+            if ("if (Q_LOCAL(product_fits)" in line or "if (fits)" in line) and function.endswith(("_covariance", "_cross")):
                 collect = True
                 product_branches[function] = []
             elif collect:
@@ -65,6 +67,10 @@ def main():
                 if branch:
                     product_branches[function].append(int(branch.group(1)))
                     collect = len(product_branches[function]) < 2
+    expected = {f"ukf_q_{tag}_{operation}" for tag in ("q15", "q31")
+                for operation in ("covariance", "cross")}
+    if not expected.issubset(product_branches) or any(len(product_branches[key]) != 2 for key in expected):
+        raise RuntimeError("missing integer/floating branch counts; inspect the retained .gcov source")
     commands = json.loads(json.dumps(commands).replace(str(base), "${BENCHMARK_BUILD}")
                           .replace(str(build), "${COVERAGE_BUILD}"))
     evidence = {"method": "GCC -O1 --coverage; counts include warmup and benchmark initialization; not timings",
